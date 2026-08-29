@@ -1,0 +1,46 @@
+# ECG competition project: provisional unified data specification
+# This file defines the current internal representation only.
+
+spec_status: provisional
+
+ecg:
+  model_internal_unit: "μV"
+  model_internal_sampling_rate_hz: 500
+  twelve_lead_order:
+    - I
+    - II
+    - III
+    - aVR
+    - aVL
+    - aVF
+    - V1
+    - V2
+    - V3
+    - V4
+    - V5
+    - V6
+  six_lead_order:
+    - I
+    - II
+    - III
+    - aVR
+    - aVL
+    - aVF
+
+windowing:
+  length_sec: 10
+  step_sec: 10
+
+ppg:
+  raw_sampling_rate_hz: 100
+  input_to_model_v1: false
+
+acceleration:
+  input_to_model_v1: false
+
+data_protection:
+  raw_data_overwrite_allowed: false
+
+competition_output:
+  sampling_rate_hz: "TBD"
+  note: "The final competition output sampling rate is unknown; do not infer it."

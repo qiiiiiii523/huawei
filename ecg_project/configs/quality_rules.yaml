@@ -1,0 +1,52 @@
+# ECG project quality-control rules
+# Status values are intentionally limited to these three values.
+
+spec_status: provisional
+allowed_quality_status:
+  - usable
+  - review
+  - reject
+
+duration:
+  minimum_record_duration_sec: 30
+  under_30_sec: review_or_reject
+  from_30_to_90_sec: review
+  over_90_sec: usable_candidate
+  note: "A short record may be reject when a structural failure or truncation is also present."
+
+required_leads_and_channels:
+  d12:
+    required: [I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6]
+    missing_required_lead: reject
+  d6:
+    required: [I, II, III, aVR, aVL, aVF]
+    missing_required_limb_lead: reject
+    v1_to_v6_all_zero: allowed_for_d6
+  body_scale_d6:
+    required_channels: [1, 2, 9, 10, 11, 12]
+    missing_mapped_channel: reject
+
+signal_content:
+  all_zero_or_nearly_constant: review_or_reject
+  rule: "Mark review first; use reject only when the required signal is unusable or the problem is structural."
+  isolated_large_ecg_peak: retain_and_review_window
+
+timestamps:
+  non_monotonic: review
+  long_interval_gap: review
+  recommendation: "Preserve the record and flag the anomalous window for later inspection or masking."
+  pervasive_gap_or_truncation: reject
+
+download_and_parsing:
+  unfinished_downloading_file: reject
+  unreadable_or_unparseable_file: reject
+  readable_file_with_uncertain_content: review
+
+missing_values:
+  nan_or_inf: review_or_reject
+  rule: "Reject when NaN/Inf makes a required channel unusable; otherwise retain and review the affected window."
+
+protection:
+  raw_data_must_not_be_modified: true
+  final_windowing_in_this_stage: false
+  model_training_in_this_stage: false

@@ -1,0 +1,14 @@
+﻿review_id,task,input_type,input_record_id,subject_id,raw_externalid,groupid,candidate_target_ids,candidate_subject_ids,issue_type,reason,recommended_action
+TASK1_375e0a18d04062,task1,watch_ecg,ECG_ea84e37ee36550,7DE,7DE,dfad1cad07104ab0a2e41c9b81dafdf2,,,unreliable_subject_id,subject_id is not a reliable HNU identifier,manual ID confirmation / obtain corresponding d12
+TASK1_830fa32488365a,task1,watch_ecg,ECG_a522877b2a6520,A51,A51,169dee2eb14442499473375e1e93c4d5,,,unreliable_subject_id,subject_id is not a reliable HNU identifier,manual ID confirmation / obtain corresponding d12
+TASK1_9d93608da6f6e9,task1,watch_ecg,ECG_2d1cde3ea4ff20,A51,A51,50d5905045b74ed5b415ade95b6f2db0,,,unreliable_subject_id,subject_id is not a reliable HNU identifier,manual ID confirmation / obtain corresponding d12
+TASK1_57c0402cb5a6ef,task1,watch_ecg,ECG_b974b48800bb9b,test,test,b1a00685856a4483a150b7c8bea621aa,,,unreliable_subject_id,subject_id is not a reliable HNU identifier,manual ID confirmation / obtain corresponding d12
+TASK1_5908235321db08,task1,watch_ecg,ECG_38837c489b0f1e,HNU11108,HNU11108,b21c6e6078d7484f910910646c38e6f9,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
+TASK1_6942af9c38f918,task1,watch_ecg,ECG_4ddcfdcb89eac7,HNU11107,HNU11107,50048e862a4c41ce804c1059b49235e2,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
+TASK1_bdddc59a727a33,task1,watch_ecg,ECG_57c5b3bf3cee42,HNU11107,HNU11107,1576fba66aa043629f783b8bb9f98302,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
+TASK1_a65befd9f379b3,task1,watch_ecg,ECG_7f6b0fa55e49fc,HNU11106,HNU11106,4958cf28d87c4bd4a0dd296690c8b711,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
+TASK1_ffe62f4f66d96c,task1,watch_ecg,ECG_ff1dd13a731aa8,HNU11105,HNU11105,09714ff3e6814e1f9cd399f2bc02cc01,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
+TASK1_e643b3bf0320b0,task1,watch_ecg,ECG_2a00102a89d798,HNU11104,HNU11104,12128f288bfb4302a1036fa7330cb0ea,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
+TASK1_68aa74609fbc17,task1,watch_ecg,ECG_b39e3b9a0867ad,HNU11103,HNU11103,51e4398ea01c467e8517e0c2758c3d41,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
+TASK1_d5325f84760e08,task1,watch_ecg,ECG_60f626fd61e9a7,HNU11103,HNU11103,ad1444cd4da8435597687403cb4b6989,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
+TASK1_0dd77fea17decd,task1,watch_ecg,ECG_2fb66cc99f5f7f,HNU11102,HNU11102,0a00f5c732224d5e868b0900365b51dd,,,missing_target,no d12 with exact subject_id,manual ID confirmation / obtain corresponding d12
