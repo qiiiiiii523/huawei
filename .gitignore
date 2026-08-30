@@ -1,0 +1,15 @@
+# Generated data, model artefacts, and local reports must stay out of Git.
+outputs/
+evaluation_results/
+check_results/
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env

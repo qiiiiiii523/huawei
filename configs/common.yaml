@@ -1,0 +1,25 @@
+# Paths are repository-relative; ${data_root} is expanded by ecg12gen.config.
+paths:
+  data_root: ".."
+  task1_output: "${data_root}/task1_output"
+  task2_output: "${data_root}/task2_output"
+  subject_split_csv: "ecg_project/metadata/subject_split.csv"
+  task1_pair_manifest_csv: "ecg_project/metadata/pair_manifest_task1.csv"
+  task2_pair_manifest_csv: "ecg_project/metadata/pair_manifest_task2.csv"
+  output_dir: "outputs"
+signal:
+  ecg_sampling_rate_hz: 500
+  ppg_sampling_rate_hz: 100
+  acceleration_sampling_rate_hz: 100
+  window_seconds: 10
+  window_samples: 5000
+  ecg_unit: "uV"
+  twelve_lead_order: [I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6]
+  six_lead_order: [I, II, III, aVR, aVL, aVF]
+runtime:
+  task_id: "task1"
+  supervision_mode: "cross_device_weak_adaptation"
+  random_seed: 42
+  use_ppg: false
+  use_acceleration: false
+  allow_nonpaired_supervision: false
