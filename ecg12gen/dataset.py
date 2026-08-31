@@ -65,7 +65,7 @@ class UnifiedECGDataset:
         if signal["ecg_sampling_rate_hz"] != ECG_SAMPLING_RATE_HZ:
             raise ContractError("D0 requires ECG sampling rate of 500 Hz")
         if signal["window_samples"] != WINDOW_SAMPLES or signal["window_seconds"] != 10:
-            raise ContractError("D0 requires 10-second / 5000-point ECG windows")
+            raise ContractError("D0 requires 10-second / 5000-point, non-overlapping ECG windows")
         if tuple(signal["twelve_lead_order"]) != D12_LEADS:
             raise ContractError("D12 lead order differs from the required canonical order")
         if tuple(signal["six_lead_order"]) != D12_LEADS[:6]:

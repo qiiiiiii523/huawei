@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ecg12gen.contracts import D12_LEADS, ContractError, SupervisionMode
 from ecg12gen.dataset import ECGDataConfig, UnifiedECGDataset
-from ecg12gen.evaluate import evaluate_predictions, write_report
+from ecg12gen.evaluate import evaluate_predictions, evaluate_task2_diagnostics, write_report, write_task2_diagnostics
 
 def _all_subjects_match_fixed_split(config: ECGDataConfig, task_id: str) -> None:
     task_dir = config.path(f"{task_id}_output")
@@ -45,8 +45,18 @@ def main() -> None:
     _all_subjects_match_fixed_split(config, "task1"); _all_subjects_match_fixed_split(config, "task2")
     # Synthetic data only: no competition validation target is used as prediction.
     target = np.linspace(-1, 1, num=2 * 12 * 5000, dtype=np.float32).reshape(2, 12, 5000)
-    overall, details = evaluate_predictions(target + 0.1, target, "task2")
-    write_report(args.output_dir, overall, details)
+    prediction = target + 0.1
+    overall, details = evaluate_predictions(prediction, target, "task2")
+    report_paths = write_report(args.output_dir, overall, details)
+    diagnostic_metadata = [
+        {"subject_id": "synthetic_machine", "input_type": "ecg_machine_d6"},
+        {"subject_id": "synthetic_scale", "input_type": "body_scale_d6"},
+    ]
+    subject_rows, device_rows = evaluate_task2_diagnostics(prediction, target, diagnostic_metadata)
+    diagnostic_paths = write_task2_diagnostics(args.output_dir, subject_rows, device_rows, report_paths[2])
+    assert len(subject_rows) == 2 and {row["input_type"] for row in device_rows} == {"all", "ecg_machine_d6", "body_scale_d6"}
+    assert all("generated_v1_v6_mean_pearson_r" in row for row in device_rows)
+    assert all(path.is_file() for path in diagnostic_paths)
     print("PASS: D0 shapes/order, D1 gates/split protection, and V0 synthetic report")
     print(f"Rows: task1 train={len(task1_train)}, validation={len(task1_val)}; task2 train={len(task2_train)}, validation={len(task2_val)}")
 

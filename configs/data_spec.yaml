@@ -1,7 +1,7 @@
-# ECG competition project: provisional unified data specification
+# ECG competition project: v0.1 main unified data specification
 # This file defines the current internal representation only.
 
-spec_status: provisional
+spec_status: v0.1-main
 
 ecg:
   model_internal_unit: "μV"

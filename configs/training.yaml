@@ -1,0 +1,36 @@
+# 主分支公共训练协议。此文件不定义 B0/B1/B2 模型结构或启动训练。
+protocol_version: "v0.1-experiment-protocol"
+
+reproducibility:
+  seed: 42
+  deterministic: true
+
+data:
+  split_source: "metadata/subject_split.csv"
+  split_strategy: "fixed_subject_level"
+  train_split: "train"
+  validation_split: "validation"
+  normalization: "none"  # 启用标准化前，必须在实验记录中声明同一套 train/validation 规则。
+  default_training_quality: "usable_only"
+  under_30_sec_policy: "exclude_from_training"
+
+loader:
+  batch_size: 16
+  num_workers: 0           # 保证 Windows 与不同机器的默认可移植性。
+  pin_memory: false
+
+optimization_defaults:
+  epochs: 100
+  optimizer: "AdamW"
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+validation:
+  run_on: "validation_only"
+  primary_metric_task1: "task1_r1"
+  primary_metric_task2: "task2_r2"
+  report_format: ["overall_metrics.csv", "lead_metrics.csv", "report.md", "task2_subject_metrics.csv", "task2_device_metrics.csv", "competition_score.csv", "competition_score.md"]
+
+results:
+  record_template: "docs/experiment-record-template.md"
+  generated_output_dir: "results"  # 生成结果被 .gitignore 排除；模板可提交。

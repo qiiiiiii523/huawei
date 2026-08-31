@@ -1,0 +1,22 @@
+# 预处理提案 v1：仅定义模型读取时的动态变换，不改写原始 NPY。
+protocol_status: proposal_pending_team_confirmation
+raw_data_mutation: false
+
+baseline:
+  method: per_window_per_lead_median
+  # 这是 DC/慢基线的稳健代理；后续如改为滤波，必须升级协议版本并重跑比较。
+
+scaling:
+  method: train_median_p5_p95_range
+  fit_split: train
+  minimum_scale_uV: 25.0
+  clip_model_signal: 12.0
+
+# 输入随设备类型变化；d12 target 始终只使用 d12 这一套 canonical transform。
+sources:
+  watch_ecg: {expected_leads: 1}
+  ecg_machine_d6: {expected_leads: 6}
+  body_scale_d6: {expected_leads: 6}
+  d12: {expected_leads: 12}
+
+target_transform: d12

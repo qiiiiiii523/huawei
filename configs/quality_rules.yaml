@@ -1,7 +1,7 @@
 # ECG project quality-control rules
 # Status values are intentionally limited to these three values.
 
-spec_status: provisional
+spec_status: v0.1-main
 allowed_quality_status:
   - usable
   - review
@@ -46,7 +46,13 @@ missing_values:
   nan_or_inf: review_or_reject
   rule: "Reject when NaN/Inf makes a required channel unusable; otherwise retain and review the affected window."
 
+training_eligibility:
+  default: usable_only
+  under_30_sec: exclude_from_training
+  note: "Records shorter than 30 seconds are retained for audit but are not used for training in v0.1."
+
 protection:
   raw_data_must_not_be_modified: true
-  final_windowing_in_this_stage: false
+  final_windowing_in_this_stage: true
+  final_windowing_note: "v0.1 D0 consumes the team-generated 10-second window products; this repository does not recreate them."
   model_training_in_this_stage: false
