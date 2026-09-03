@@ -1,4 +1,4 @@
-"""可审计、模型无关的 ECG 动态预处理提案。
+"""可审计、模型无关的 ECG 动态预处理协议。
 
 本模块永远不写回原始数组。所有尺度仅可用训练集拟合；验证和推理只
 应用已冻结的统计量。不同设备有不同输入 transform，d12 target 始终使用
@@ -114,6 +114,42 @@ class ECGPreprocessor:
         """Apply the same canonical d12 transform in every task and pretraining mode."""
         return self.transform_window(raw_d12, self.config.target_transform)
 
+    def model_view_to_uV(self, model_window: np.ndarray, source_type: str) -> np.ndarray:
+        """Convert a centered/scaled model output to centered morphology in μV.
+
+        This inverts only the frozen train-fitted scale. It deliberately does
+        not add a window baseline, because the true target baseline is unknown
+        at inference.
+        """
+        model = np.asarray(model_window, dtype=np.float32)
+        expected = self.config.expected_leads.get(source_type)
+        if expected is None or model.ndim != 2 or model.shape[0] != expected:
+            raise PreprocessingError(f"{source_type} model window must have shape [{expected}, T]")
+        if source_type not in self.scale_uV_by_source:
+            raise PreprocessingError(f"No frozen train scale for source type: {source_type}")
+        return model * self.scale_uV_by_source[source_type][:, None]
+
+    def d12_model_view_to_morphology_uV(self, d12_model_window: np.ndarray) -> np.ndarray:
+        """Return a d12 centered morphology output in μV, without a baseline."""
+        return self.model_view_to_uV(d12_model_window, self.config.target_transform)
+
+    def compose_raw_d12_prediction(self, d12_model_window: np.ndarray,
+                                   predicted_baseline_uV: np.ndarray) -> np.ndarray:
+        """Compose a raw-μV d12 prediction using a model-predicted baseline.
+
+        ``predicted_baseline_uV`` must be shape ``[12]`` or ``[12, 1]`` and
+        originate from the model (for example a baseline head), never from the
+        held-out target window.
+        """
+        morphology = self.d12_model_view_to_morphology_uV(d12_model_window)
+        baseline = np.asarray(predicted_baseline_uV, dtype=np.float32)
+        if baseline.shape == (12,):
+            baseline = baseline[:, None]
+        if baseline.shape != (12, 1):
+            raise PreprocessingError("predicted_baseline_uV must have shape [12] or [12, 1]")
+        if not np.isfinite(baseline).all():
+            raise PreprocessingError("predicted_baseline_uV must be finite")
+        return morphology + baseline
     def transform_batch(self, raw_batch: np.ndarray, source_type: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Vectorized non-destructive transform for [N, C, T] arrays."""
         raw = np.asarray(raw_batch)

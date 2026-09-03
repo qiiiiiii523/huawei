@@ -1,0 +1,28 @@
+protocol_version: "v1.0-task1-rpeak-pseudopair"
+task_id: task1
+allowed_split: train
+detector: wfdb_xqrs
+detector_input: centered_signal
+additional_baseline_removal: false
+sampling_rate_hz: 500
+window_samples: 5000
+beat_pre_samples: 200
+beat_post_samples: 300
+beat_samples: 500
+min_detected_peaks: 5
+min_matched_beats: 6
+max_peak_count_difference: 2
+min_match_ratio: 0.80
+min_warp_ratio: 0.80
+max_warp_ratio: 1.25
+accept_similarity_quantile: 0.75
+mapping:
+  source: d12_target_time
+  destination: watch_input_time
+  interpolation: linear
+  endpoint_policy: reject_if_mapping_out_of_bounds
+  all_twelve_leads_share_one_mapping: true
+output:
+  derived_dir: "../task1_rpeak_pseudo_output"
+  manifest: "../task1_rpeak_pseudo_output/beat_pseudopair_manifest.csv"
+  overwrite_task1_output: false

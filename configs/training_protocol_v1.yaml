@@ -1,0 +1,85 @@
+# 主分支公共训练协议 v1：不定义 B0/B1/B2/M1 的具体网络或启动训练。
+protocol_version: "v1.0-experiment-protocol"
+protocol_status: frozen_for_b0_b1_b2_m1
+
+reproducibility:
+  seed: 42
+  deterministic: true
+
+data:
+  split_source: "metadata/subject_split.csv"
+  split_strategy: "fixed_subject_level"
+  train_split: "train"
+  validation_split: "validation"
+  preprocessing: "unified_runtime_preprocessing_v1"
+  preprocessing_config: "configs/preprocessing.yaml"
+  raw_data_mutation: false
+  default_training_quality: "paired_and_usable_only"
+  under_30_sec_policy: "exclude_from_training"
+
+model_input_output:
+  input_view: "centered_scaled_ecg_with_lead_mask"
+  target_view: "centered_scaled_d12"
+  morphology_output: "centered_scaled_d12"
+  raw_output_for_official_evaluation: "morphology_uV + model_predicted_d12_baseline_uV"
+  true_target_baseline_at_inference: "forbidden"
+
+supervision_and_loss:
+  missing_leads_are_primary: true
+  observed_lead_consistency: "permitted_for_synchronous_d12_only"
+  d12_sync_pretrain: "pointwise_or_correlation_loss_permitted_on_same_window"
+  cross_device_weak_pair: "raw_window_pointwise_mse_forbidden_by_default"
+  loss_selection: "must_be_recorded_per_experiment; validation_selection_uses_official_v0"
+
+model_family_policy:
+  common_preprocessing_required: true
+  b0_b1_b2_adapter: "forbidden"
+  m1_first_arm: "m1_no_adapter"
+  m1_adapter_gate: "add_only_after_device_stratified_centered_diagnostic_is_worse"
+  baseline_head_gate: "ablate_if_raw_metrics_are_worse_than_centered_metrics"
+
+loader:
+  batch_size: 16
+  num_workers: 0
+  pin_memory: false
+
+optimization_defaults:
+  epochs: 100
+  optimizer: "AdamW"
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+# B0/B1/B2 首轮横向比较必须使用同一训练预算和优化设置；其他实验可覆盖并记录。
+fair_baseline_comparison:
+  scope: [B0, B1, B2]
+  same_data_route_required: true
+  same_input_variant_required: true
+  seed: 42
+  deterministic: true
+  batch_size: 16
+  epochs_per_stage: 100
+  optimizer: AdamW
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  scheduler: none
+  gradient_clip_norm: null
+  early_stopping:
+    enabled: false
+  checkpoint_selection:
+    rule: best_validation_official_v0
+    tie_break: earliest_epoch
+  adapter: disabled
+  baseline_head: disabled_for_first_comparison
+
+validation:
+  run_on: "validation_only"
+  official_view: "raw_uV"
+  primary_metric_task1: "task1_r1"
+  primary_metric_task2: "task2_r2"
+  task2_bonus_metric: "task2_missing_lead_mean_rmse_uV"
+  morphology_diagnostic_view: "centered_per_window_uV"
+  report_format: ["overall_metrics.csv", "lead_metrics.csv", "report.md", "centered_diagnostic/overall_metrics.csv", "task2_subject_metrics.csv", "task2_device_metrics.csv", "competition_score.csv", "competition_score.md"]
+
+results:
+  record_template: "docs/experiment-record-template.md"
+  generated_output_dir: "results"

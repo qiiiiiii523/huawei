@@ -20,7 +20,7 @@
 - ECG：μV、500 Hz、10 秒窗口、10 秒步长
 - 导联顺序：I、II、III、aVR、aVL、aVF、V1、V2、V3、V4、V5、V6
 - 训练数据门控：`pair_status=paired`、usable；不包含 review/unmatched
-- 归一化规则：none / 具体规则（必须同时适用于 train 与 validation）
+- 预处理协议：`configs/preprocessing.yaml` v1（train-only scale；train、validation、推理使用同一冻结实例）
 - 是否使用 PPG / acceleration：
 
 ## 训练参数

@@ -55,8 +55,8 @@ class UnifiedECGDataset:
             raise ContractError("split must be train or validation")
         self.task_id, self.split = task_id, split
         self.supervision_mode = SupervisionMode(supervision_mode)
-        if self.supervision_mode != SupervisionMode.CROSS_DEVICE_WEAK_ADAPTATION and split != "train":
-            raise ContractError("D12 reconstruction pretraining may use only split=train")
+        if self.supervision_mode != SupervisionMode.CROSS_DEVICE_WEAK_ADAPTATION:
+            raise ContractError("UnifiedECGDataset is for cross-device weak pairs only; use StrictD12PretrainDataset for de-duplicated d12 pretraining")
         self._validate_config()
         self._load_sources()
 
@@ -116,20 +116,17 @@ class UnifiedECGDataset:
         array_index = self._indices[index]
         row, pair = self._rows[array_index], self._pairs[self._rows[array_index]["pair_id"]]
         target = np.asarray(self._targets[array_index], dtype=np.float32)
-        if self.supervision_mode == SupervisionMode.D12_I_PRETRAIN:
-            x_ecg, lead_mask, pairing_type, alignment_mode = target[:1], canonical_lead_mask(1), "within_d12_sync", "same_window"
-        elif self.supervision_mode == SupervisionMode.D12_SIX_PRETRAIN:
-            x_ecg, lead_mask, pairing_type, alignment_mode = target[:6], canonical_lead_mask(6), "within_d12_sync", "same_window"
-        else:
-            x_ecg = np.asarray(self._inputs[array_index], dtype=np.float32)
-            lead_mask, pairing_type, alignment_mode = canonical_lead_mask(x_ecg.shape[0]), "reliable_subject_id_cross_device", "weak_subject_pair_record_start"
+        x_ecg = np.asarray(self._inputs[array_index], dtype=np.float32)
+        lead_mask, pairing_type, alignment_mode = canonical_lead_mask(x_ecg.shape[0]), "reliable_subject_id_cross_device", "weak_subject_pair_record_start"
         device_type = pair.get("input_type") or row.get("input_type") or "watch_ecg"
         sample = ECGSample(
             X_ecg=x_ecg, lead_mask=lead_mask, Y_12lead=target, missing_mask=~lead_mask,
             task_id="task1" if x_ecg.shape[0] == 1 else "task2", ppg=None, acc=None,
             meta={"subject_id": row["subject_id"], "window_id": row["window_id"], "pair_id": row["pair_id"],
                   "device_type": device_type, "source_task_id": self.task_id,
-                  "pointwise_mse_allowed": self.supervision_mode != SupervisionMode.CROSS_DEVICE_WEAK_ADAPTATION},
+                  "alignment_quality_score": 0.0,
+                  "pointwise_mse_allowed": False,
+                  "pointwise_loss_allowed": False},
             modality_mask={"ppg": False, "acc": False}, split=self.split, supervision_mode=self.supervision_mode.value,
             pairing_type=pairing_type, alignment_mode=alignment_mode,
             pair_confidence=pair.get("pair_confidence", "not_applicable"), pair_status=pair.get("pair_status", "unknown"))

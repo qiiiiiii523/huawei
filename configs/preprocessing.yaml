@@ -1,10 +1,11 @@
-# 预处理提案 v1：仅定义模型读取时的动态变换，不改写原始 NPY。
-protocol_status: proposal_pending_team_confirmation
+# 统一预处理协议 v1：只在运行时创建模型视图，绝不改写原始 NPY。
+protocol_version: "v1.0-unified-preprocessing"
+protocol_status: frozen_for_b0_b1_b2_m1
 raw_data_mutation: false
 
 baseline:
   method: per_window_per_lead_median
-  # 这是 DC/慢基线的稳健代理；后续如改为滤波，必须升级协议版本并重跑比较。
+  # 这是 DC/慢基线的稳健代理；改为滤波或其他方法必须升级协议版本并重跑比较。
 
 scaling:
   method: train_median_p5_p95_range
@@ -12,7 +13,7 @@ scaling:
   minimum_scale_uV: 25.0
   clip_model_signal: 12.0
 
-# 输入随设备类型变化；d12 target 始终只使用 d12 这一套 canonical transform。
+# 输入随设备类型变化；d12 target 始终只使用 canonical d12 transform。
 sources:
   watch_ecg: {expected_leads: 1}
   ecg_machine_d6: {expected_leads: 6}
@@ -20,3 +21,16 @@ sources:
   d12: {expected_leads: 12}
 
 target_transform: d12
+
+# target 每窗口 baseline 只可作为训练标签/诊断保存；推理时不得读取真实 target。
+target_baseline_policy: train_label_only_predict_at_inference
+
+output_contract:
+  model_output_view: "centered_scaled_d12"
+  morphology_uV: "model_output_view * frozen_d12_scale_uV"
+  raw_uV: "morphology_uV + model_predicted_d12_baseline_uV"
+  prohibited_at_inference: "using_true_target_baseline_uV"
+
+evaluation_views:
+  official: raw_uV
+  morphology_diagnostic: centered_per_window_uV

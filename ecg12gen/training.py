@@ -35,13 +35,13 @@ def seed_everything(seed: int = 42, deterministic: bool = True) -> dict[str, Any
     return state
 
 
-def load_training_protocol(path: str | Path = "configs/training.yaml") -> dict[str, Any]:
+def load_training_protocol(path: str | Path = "configs/training_protocol_v1.yaml") -> dict[str, Any]:
     """Load and minimally validate the fixed shared experiment protocol."""
     with Path(path).open("r", encoding="utf-8") as handle:
         protocol = yaml.safe_load(handle)
     required = {"protocol_version", "reproducibility", "data", "loader", "optimization_defaults", "validation", "results"}
     if not isinstance(protocol, dict) or required - set(protocol):
-        raise ValueError("training.yaml is missing required protocol sections")
+        raise ValueError("training protocol is missing required protocol sections")
     if protocol["reproducibility"].get("seed") != 42:
         raise ValueError("The initial main protocol fixes seed=42")
     if protocol["data"].get("split_strategy") != "fixed_subject_level":

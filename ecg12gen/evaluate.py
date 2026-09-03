@@ -54,6 +54,28 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
         "task2_r2": mean_r if task_id == "task2" else float("nan"),
         "task2_missing_lead_mean_rmse_uV": float(np.mean(rmses[missing_leads])) if task_id == "task2" else float("nan")}
     return overall, details
+def _center_per_window_uV(values: np.ndarray) -> np.ndarray:
+    """Remove each [lead, window] median for a morphology-only diagnostic."""
+    array = np.asarray(values, dtype=np.float32)
+    if array.ndim != 3 or array.shape[1:] != (12, 5000):
+        raise ContractError("Centered diagnostic requires [N, 12, 5000] arrays in μV")
+    return array - np.median(array, axis=2, keepdims=True)
+
+
+def evaluate_centered_diagnostic(prediction_uV: np.ndarray, target_uV: np.ndarray, task_id: str,
+                                 lead_mask: np.ndarray | None = None) -> tuple[dict[str, float | str], list[dict[str, float | str]]]:
+    """Evaluate morphology after independent per-window median centering.
+
+    This is a diagnostic view only. Official r1/r2/RMSE must always be
+    computed by ``evaluate_predictions`` on raw-μV predictions and raw-μV
+    targets. Callers must invert the frozen d12 scale before using it.
+    """
+    centered_prediction = _center_per_window_uV(prediction_uV)
+    centered_target = _center_per_window_uV(target_uV)
+    overall, details = evaluate_predictions(centered_prediction, centered_target, task_id, lead_mask)
+    overall = {**overall, "evaluation_view": "centered_diagnostic_not_official"}
+    return overall, details
+
 def _summary_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, float]:
     """Summarize a task-2 subset without changing the official V0 metric."""
     _, details = evaluate_predictions(prediction, target, "task2")
@@ -164,7 +186,7 @@ def write_competition_score(output_dir: str | Path, summary: dict[str, float]) -
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return csv_path, markdown_path
 
-def write_report(output_dir: str | Path, overall: dict[str, Any], details: list[dict[str, Any]]) -> tuple[Path, Path, Path]:
+def write_report(output_dir: str | Path, overall: dict[str, Any], details: list[dict[str, Any]], title: str = "V0 validation report") -> tuple[Path, Path, Path]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     overall_csv, lead_csv, markdown = output / "overall_metrics.csv", output / "lead_metrics.csv", output / "report.md"
@@ -172,7 +194,7 @@ def write_report(output_dir: str | Path, overall: dict[str, Any], details: list[
         writer = csv.DictWriter(handle, fieldnames=list(overall)); writer.writeheader(); writer.writerow(overall)
     with lead_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(details[0])); writer.writeheader(); writer.writerows(details)
-    lines = ["# V0 validation report", "", "## Overall", "", "| Metric | Value |", "|---|---:|"]
+    lines = [f"# {title}", "", "## Overall", "", "| Metric | Value |", "|---|---:|"]
     lines.extend(f"| {key} | {value} |" for key, value in overall.items())
     lines += ["", "## Per-lead metrics", "", "| Lead | Pearson r | RMSE (uV) | Input present |", "|---|---:|---:|:---:|"]
     lines.extend(f"| {row['lead']} | {row['pearson_r']:.6f} | {row['rmse_uV']:.6f} | {row['input_present']} |" for row in details)
@@ -230,6 +252,7 @@ def main() -> None:
     parser.add_argument("--metadata", required=True, help="Window metadata CSV; validation rows are required")
     parser.add_argument("--task-id", required=True, choices=("task1", "task2"))
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--write-centered-diagnostic", action="store_true", help="Also write a non-official per-window-centered morphology report.")
     args = parser.parse_args()
     prediction, target = np.load(args.prediction, mmap_mode="r"), np.load(args.target, mmap_mode="r")
     metadata_rows = _validation_metadata_rows(Path(args.metadata), len(prediction))
@@ -238,6 +261,16 @@ def main() -> None:
     if args.task_id == "task2":
         subject_rows, device_rows = evaluate_task2_diagnostics(prediction, target, metadata_rows)
         paths.extend(write_task2_diagnostics(args.output_dir, subject_rows, device_rows, paths[-1]))
+    if args.write_centered_diagnostic:
+        centered_prediction = _center_per_window_uV(prediction)
+        centered_target = _center_per_window_uV(target)
+        centered_overall, centered_details = evaluate_centered_diagnostic(centered_prediction, centered_target, args.task_id)
+        centered_dir = Path(args.output_dir) / "centered_diagnostic"
+        centered_paths = list(write_report(centered_dir, centered_overall, centered_details, title="Centered morphology diagnostic (not official)"))
+        if args.task_id == "task2":
+            subject_rows, device_rows = evaluate_task2_diagnostics(centered_prediction, centered_target, metadata_rows)
+            centered_paths.extend(write_task2_diagnostics(centered_dir, subject_rows, device_rows, centered_paths[-1]))
+        paths.extend(centered_paths)
     print("Wrote:", *paths, sep="\n")
 
 if __name__ == "__main__":

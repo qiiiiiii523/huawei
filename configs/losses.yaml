@@ -1,0 +1,26 @@
+protocol_version: "v1.0-loss-contract"
+strict_sync:
+  huber_missing: 1.00
+  pcc_missing: 0.10
+  physiology: 0.05
+  observed_consistency: 0.02
+raw_weak:
+  observed_consistency: 0.10
+  spectral_stat: 0.20
+  physiology: 0.05
+  # 仅与严格 train d12 reference bank 的批级统计比较，禁止逐条配对 target loss。
+  target_reference: "strict_train_d12_distribution_bank"
+rpeak_pseudo:
+  huber_missing: 1.00
+  pcc_missing: 0.10
+  physiology: 0.05
+  observed_consistency: 0.10
+  quality_weight: "alignment_quality_score"
+mixture:
+  arm_b_weak_branch_weight: 0.20
+  arm_c_pseudo_branch_weight: 0.20
+calibration:
+  split: train
+  max_batches: 200
+  method: median_unweighted_component_loss
+  automatic_weight_rewrite: false

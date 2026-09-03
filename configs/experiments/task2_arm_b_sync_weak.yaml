@@ -1,0 +1,17 @@
+experiment_arm: B
+status: runnable_after_compatible_model
+references: {common: configs/common.yaml, training: configs/training_protocol_v1.yaml, preprocessing: configs/preprocessing.yaml, losses: configs/losses.yaml, strict_index: metadata/d12_strict_pretrain_index.csv}
+task_id: task2
+visible_leads: [I, II, III, aVR, aVL, aVF]
+stages:
+  - name: strict_d12_six_pretrain
+    supervision_mode: d12_six_pretrain
+    alignment_mode: same_window
+    pointwise_loss_allowed: true
+    loss_profile: strict_sync
+  - name: mixed_sync_weak_adaptation
+    strict_branch_weight: 1.0
+    weak_branch_weight: 0.20
+    weak_pointwise_loss_allowed: false
+    loss_profile: [strict_sync, raw_weak]
+report_groups: [ecg_machine_d6, body_scale_d6]

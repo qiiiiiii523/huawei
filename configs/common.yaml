@@ -3,11 +3,16 @@ paths:
   data_root: ".."
   task1_output: "${data_root}/task1_output"
   task2_output: "${data_root}/task2_output"
+  task2_body_scale_ablation: "${data_root}/task2_body_scale_ablation"
+  task2_body_scale_ablation_manifest: "${data_root}/task2_body_scale_ablation/ablation_manifest.csv"
+  task2_body_scale_b_train_input: "${data_root}/task2_body_scale_ablation/body_scale_train_input_B_raw_detrended_0p2Hz.npy"
+  task2_body_scale_b_validation_input: "${data_root}/task2_body_scale_ablation/body_scale_validation_input_B_raw_detrended_0p2Hz.npy"
+  task2_body_scale_b_metadata: "${data_root}/task2_body_scale_ablation/window_metadata_B_raw.csv"
   subject_split_csv: "metadata/subject_split.csv"
   task1_pair_manifest_csv: "metadata/pair_manifest_task1.csv"
   task2_pair_manifest_csv: "metadata/pair_manifest_task2.csv"
   output_dir: "outputs"
-  training_protocol_config: "configs/training.yaml"
+  training_protocol_config: "configs/training_protocol_v1.yaml"
   experiment_record_template: "docs/experiment-record-template.md"
   preprocessing_config: "configs/preprocessing.yaml"
 signal:
@@ -27,3 +32,26 @@ runtime:
   use_ppg: false
   use_acceleration: false
   allow_nonpaired_supervision: false
+
+input_variants:
+  task2_body_scale:
+    default: A_raw_window
+    allowed: [A_raw_window, B_detrend_0p2Hz_then_window]
+    A_raw_window:
+      input_type: body_scale_d6
+      source: task2_output/task2_{split}_input.npy
+      metadata: task2_output/task2_window_metadata.csv
+      selection: input_type==body_scale_d6
+      index_field: array_index
+      preprocessing: none_before_shared_runtime_preprocessing
+    B_detrend_0p2Hz_then_window:
+      input_type: body_scale_d6
+      source: task2_body_scale_ablation/body_scale_{split}_input_B_raw_detrended_0p2Hz.npy
+      metadata: task2_body_scale_ablation/window_metadata_B_raw.csv
+      selection: all_rows
+      index_field: local_array_index
+      target_index_field: canonical_array_index
+      preprocessing: continuous_0p2Hz_order2_butterworth_sos_zero_phase_then_10s_window
+    target_source: task2_output/task2_{split}_target.npy
+    target_index_field: canonical_array_index
+    comparison_requires_same_windows: true

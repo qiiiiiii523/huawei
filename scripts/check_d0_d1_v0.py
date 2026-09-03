@@ -8,6 +8,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ecg12gen.contracts import D12_LEADS, ContractError, SupervisionMode
 from ecg12gen.dataset import ECGDataConfig, UnifiedECGDataset
+from ecg12gen.d12_pretrain import StrictD12PretrainDataset
 from ecg12gen.evaluate import evaluate_predictions, evaluate_task2_diagnostics, write_report, write_task2_diagnostics
 
 def _all_subjects_match_fixed_split(config: ECGDataConfig, task_id: str) -> None:
@@ -32,13 +33,14 @@ def main() -> None:
     assert s1.X_ecg.shape == (1, 5000) and s1.Y_12lead.shape == (12, 5000)
     assert s2.X_ecg.shape == (6, 5000) and s2.Y_12lead.shape == (12, 5000)
     assert tuple(config.signal["twelve_lead_order"]) == D12_LEADS
-    assert UnifiedECGDataset(config, "task1", "train", SupervisionMode.D12_I_PRETRAIN.value)[0].X_ecg.shape == (1, 5000)
-    assert UnifiedECGDataset(config, "task2", "train", SupervisionMode.D12_SIX_PRETRAIN.value)[0].X_ecg.shape == (6, 5000)
-    try:
-        UnifiedECGDataset(config, "task1", "validation", SupervisionMode.D12_I_PRETRAIN.value)
-        raise AssertionError("Validation D12 pretraining unexpectedly accepted")
-    except ContractError:
-        pass
+    for mode in (SupervisionMode.D12_I_PRETRAIN.value, SupervisionMode.D12_SIX_PRETRAIN.value):
+        try:
+            UnifiedECGDataset(config, "task1", "train", mode)
+            raise AssertionError("Legacy UnifiedECGDataset d12 pretraining entry unexpectedly accepted")
+        except ContractError:
+            pass
+    assert StrictD12PretrainDataset(config, SupervisionMode.D12_I_PRETRAIN.value)[0].X_ecg.shape == (1, 5000)
+    assert StrictD12PretrainDataset(config, SupervisionMode.D12_SIX_PRETRAIN.value)[0].X_ecg.shape == (6, 5000)
     for dataset in (task1_train, task1_val, task2_train, task2_val):
         assert len(dataset) > 0 and all(sample.pair_status == "paired" for sample in dataset)
         assert all(not sample.meta["pointwise_mse_allowed"] for sample in dataset)

@@ -15,3 +15,5 @@ venv/
 .env
 
 results/
+
+task1_rpeak_pseudo_output/

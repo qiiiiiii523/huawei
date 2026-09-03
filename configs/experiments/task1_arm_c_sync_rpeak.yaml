@@ -1,0 +1,20 @@
+experiment_arm: C
+status: runnable_after_rpeak_manifest_validation
+references: {common: configs/common.yaml, training: configs/training_protocol_v1.yaml, preprocessing: configs/preprocessing.yaml, losses: configs/losses.yaml, strict_index: metadata/d12_strict_pretrain_index.csv, rpeak: configs/rpeak_pseudopair.yaml}
+task_id: task1
+visible_leads: [I]
+stages:
+  - name: strict_d12_i_pretrain
+    supervision_mode: d12_i_pretrain
+    alignment_mode: same_window
+    pointwise_loss_allowed: true
+    loss_profile: strict_sync
+  - name: mixed_sync_rpeak_pseudo_adaptation
+    strict_branch_weight: 1.0
+    pseudo_branch_weight: 0.20
+    supervision_mode: rpeak_pseudo_adaptation
+    alignment_mode: pseudo_rpeak_monotonic_warp
+    physical_sync: false
+    pseudo_pointwise_loss_allowed: true
+    required_pair_status: accepted
+    loss_profile: rpeak_pseudo
