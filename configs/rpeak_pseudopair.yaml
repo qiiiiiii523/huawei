@@ -16,6 +16,18 @@ min_match_ratio: 0.80
 min_warp_ratio: 0.80
 max_warp_ratio: 1.25
 accept_similarity_quantile: 0.75
+selection:
+  c1:
+    rule: top_similarity_quantile
+    similarity_quantile: 0.75
+    derived_dir: "../task1_rpeak_pseudo_output"
+    manifest: "../task1_rpeak_pseudo_output/beat_pseudopair_manifest.csv"
+  c2:
+    rule: preserve_c1_plus_candidate_thresholds
+    min_morphology_similarity: 0.90
+    min_alignment_quality: 0.85
+    derived_dir: "../task1_rpeak_pseudo_output_c2"
+    manifest: "../task1_rpeak_pseudo_output_c2/beat_pseudopair_manifest.csv"
 mapping:
   source: d12_target_time
   destination: watch_input_time

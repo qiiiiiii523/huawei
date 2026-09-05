@@ -1,21 +1,24 @@
 experiment_arm: C
-experiment_variant: C1
+experiment_variant: C2
 status: runnable_after_rpeak_manifest_validation
 references: {common: configs/common.yaml, training: configs/training_protocol_v1.yaml, preprocessing: configs/preprocessing.yaml, losses: configs/losses.yaml, strict_index: metadata/d12_strict_pretrain_index.csv, rpeak: configs/rpeak_pseudopair.yaml}
 task_id: task1
 visible_leads: [I]
 pseudo_data:
-  derived_dir: "../task1_rpeak_pseudo_output"
-  selection: top_similarity_quantile
-  similarity_quantile: 0.75
-  expected_windows: 18
+  derived_dir: "../task1_rpeak_pseudo_output_c2"
+  selection: preserve_c1_plus_candidate_thresholds
+  min_morphology_similarity: 0.90
+  min_alignment_quality: 0.85
+  expected_windows: 33
+  c1_windows_preserved: 18
+  added_medium_quality_windows: 15
 stages:
   - name: strict_d12_i_pretrain
     supervision_mode: d12_i_pretrain
     alignment_mode: same_window
     pointwise_loss_allowed: true
     loss_profile: strict_sync
-  - name: mixed_sync_rpeak_pseudo_adaptation
+  - name: mixed_rpeak_pseudo_adaptation
     strict_branch_weight: 1.0
     pseudo_branch_weight: 0.20
     supervision_mode: rpeak_pseudo_adaptation
@@ -23,4 +26,5 @@ stages:
     physical_sync: false
     pseudo_pointwise_loss_allowed: true
     required_pair_status: accepted
+    sample_weighting: alignment_quality_score
     loss_profile: rpeak_pseudo

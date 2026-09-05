@@ -49,6 +49,33 @@ def spectral_stat_loss(prediction: torch.Tensor, strict_train_d12_reference: tor
     return mean_term + std_term
 
 
+def pair_invariant_stat_loss(prediction: torch.Tensor, paired_d12_reference: torch.Tensor) -> torch.Tensor:
+    """Compare per-window phase-invariant spectrum and amplitude statistics.
+
+    The paired d12 reference supplies subject/window-specific statistics only.
+    Fourier magnitudes discard phase, and no time-domain pointwise operation is
+    used, so this remains a weak-pair loss rather than target reconstruction.
+    """
+    if prediction.ndim != 3 or paired_d12_reference.ndim != 3 or prediction.shape != paired_d12_reference.shape:
+        raise ValueError("prediction and paired_d12_reference must have matching [batch, 12, time] shapes")
+    pred_centered = prediction - prediction.mean(dim=-1, keepdim=True)
+    ref_centered = paired_d12_reference - paired_d12_reference.mean(dim=-1, keepdim=True)
+
+    pred_std = pred_centered.std(dim=-1, unbiased=False)
+    ref_std = ref_centered.std(dim=-1, unbiased=False)
+    pred_abs_mean = pred_centered.abs().mean(dim=-1)
+    ref_abs_mean = ref_centered.abs().mean(dim=-1)
+    amplitude_term = F.smooth_l1_loss(torch.log1p(pred_std), torch.log1p(ref_std))
+    amplitude_term = amplitude_term + F.smooth_l1_loss(torch.log1p(pred_abs_mean), torch.log1p(ref_abs_mean))
+
+    pred_power = torch.log1p(torch.fft.rfft(pred_centered, dim=-1).abs().square())
+    ref_power = torch.log1p(torch.fft.rfft(ref_centered, dim=-1).abs().square())
+    pred_shape = pred_power / pred_power.mean(dim=-1, keepdim=True).clamp_min(EPS)
+    ref_shape = ref_power / ref_power.mean(dim=-1, keepdim=True).clamp_min(EPS)
+    spectral_term = F.smooth_l1_loss(pred_shape, ref_shape)
+    return amplitude_term + spectral_term
+
+
 def physiology_constraint_loss(prediction: torch.Tensor) -> torch.Tensor:
     """Apply limb-lead algebraic constraints to a full 12-lead prediction."""
     if prediction.ndim != 3 or prediction.shape[1] != 12:

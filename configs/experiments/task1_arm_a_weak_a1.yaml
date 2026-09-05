@@ -1,15 +1,16 @@
 experiment_arm: A
-experiment_variant: A0
+experiment_variant: A1
 status: runnable_after_compatible_model
 references: {common: configs/common.yaml, training: configs/training_protocol_v1.yaml, preprocessing: configs/preprocessing.yaml, losses: configs/losses.yaml}
-task_id: task2
-visible_leads: [I, II, III, aVR, aVL, aVF]
-missing_leads: [V1, V2, V3, V4, V5, V6]
+task_id: task1
+visible_leads: [I]
+missing_leads: [II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6]
 stages:
-  - name: raw_weak_adaptation
+  - name: raw_weak_a1_adaptation
     supervision_mode: cross_device_weak_adaptation
     alignment_mode: weak_subject_pair_record_start
     pointwise_loss_allowed: false
-    loss_profile: raw_weak_a0
+    loss_profile: raw_weak_a1
     target_reference: strict_train_d12_distribution_bank
-report_groups: [ecg_machine_d6, body_scale_d6]
+    pair_reference: same_subject_paired_d12_statistics
+    pair_statistic_mode: phase_invariant_spectral_amplitude

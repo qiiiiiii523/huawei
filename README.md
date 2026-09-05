@@ -40,6 +40,7 @@ HW/
 ├── task2_body_scale_ablation/     # 体脂秤 B 版本输入
 └── task1_rpeak_pseudo_output/     # task1 C 路线派生数据，可选
 ```
++-- task1_rpeak_pseudo_output_c2/    # task1 C2 Route C derived data, optional
 
 ## 二、已固定的 v0.1 实验协议
 
@@ -69,6 +70,8 @@ HW/
 - d12-six：Y_12lead[0:6] → Y_12lead[0:12]；
 - 只使用 train，索引按 target_record_id 和窗口采样范围去重。
 
+C1 uses the strict 18-window set. 
+C2 preserves those 18 windows and adds the quality-gated candidates from `task1_rpeak_pseudo_output_c2/`.
 R 峰伪配对只用于 task1 C 路线。当前已生成 task1_rpeak_pseudo_output/；task2 不生成 R 峰伪配对数据，也不设置 C 路线。
 
 ## 四、窗口对齐和体脂秤 A/B
@@ -105,7 +108,10 @@ train_b = BodyScaleVariantDataset(config, "train", "B_detrend_0p2Hz_then_window"
 ## 六、loss 和评价
 
 - 同步 d12：缺失导联 Huber/PCC + observed consistency + 生理约束。
+- Route C variants: C1 uses 18 strict windows; C2 uses 33 windows total (18 C1 + 15 additions), with `alignment_quality_score` sample weighting for the added pseudo-paired windows.
 - 普通弱配对：observed consistency + 独立 strict-train d12 分布约束 + 生理约束，默认不做逐点 target MSE。
+- A0 uses the original weak loss: observed consistency + independent strict-train d12 spectral statistics + physiology.
+- A1 adds `0.20 * pair_invariant_stat` using the current paired d12 window's phase-invariant spectral/amplitude statistics; it still forbids pointwise target MSE/Huber/PCC.
 - R 峰伪配对：只使用 accepted 样本，并按 alignment_quality_score 加权。
 - 初始权重在 configs/losses.yaml，权重校准只能使用 train。
 

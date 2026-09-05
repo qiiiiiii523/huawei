@@ -27,6 +27,8 @@
 
 - 严格同步：missing leads 上的 Huber/PCC；完整 12 导联生理约束；低权重 observed consistency。
 - 原始弱配对：禁止与同一行配对 d12 计算逐点 Huber/MSE/PCC；只允许 observed consistency、独立 d12 reference bank 的统计约束与生理约束。
+- A0 is the original weak loss: observed consistency + independent strict-train d12 statistics + physiology.
+- A1 adds `0.20 * pair_invariant_stat`; the paired d12 contributes only phase-invariant spectral/amplitude statistics, never pointwise Huber/MSE/PCC.
 - R 峰伪配对：`physical_sync=false`；只有 `accepted=true`、带 `alignment_quality_score` 的样本才允许 `pseudo_pointwise_loss_allowed=true`，且按质量加权。
 
 `calibrate_loss_weights.py` 仅汇总 train dry-run 的最多 200 个 batch，不自动改写权重；权重确认后才人工更新 `losses.yaml`。
@@ -38,13 +40,16 @@
 候选心搏采用顺序保持、一对一动态规划匹配，代价包含形态相关、RR 差异和 QRS 宽度差。通过质量门控后，以匹配 R 峰构造 watch-time → d12-time 的单调映射。生成 pseudo d12 时，才以线性插值将原始 d12 全部 12 导联映射到 watch 的 500 Hz、5000 点栅格；全导联共享同一映射。若映射越界或不单调则拒绝窗口。
 
 派生产物仅位于被忽略的 `task1_rpeak_pseudo_output/`：输入仍为 `[N,1,5000]`，伪 target 为 `[N,12,5000]`。manifest 记录每个候选心搏对及 `accepted`、`alignment_quality_score`、`loss_weight`、检测器版本；只有 accepted 窗口可进入 C1。
+The C2 derived set is stored separately in `task1_rpeak_pseudo_output_c2/`; it preserves the 18 C1 windows and adds 15 candidates passing morphology similarity >= 0.90 and alignment quality >= 0.85.
 
 ## 架构接入
 
 - B0：严格同步 Ridge 映射后迁移到 task1/task2 validation，必须输出 V0 结果；不实现复杂弱配对/C1 训练。
 - B1/B2/M1：可读取 A/B/C1 配置；B2 的随机导联 mask 仅用于 strict d12 同步增强。
+- Route C has two variants: C1 uses `task1_arm_c_sync_rpeak.yaml`; C2 uses `task1_arm_c_sync_rpeak_c2.yaml` and keeps the strict d12-I branch as the anchor.
 - 所有架构必须保留 `lead_mask`、`missing_mask`、`supervision_mode`、`alignment_mode`、`alignment_quality_score`、`pointwise_loss_allowed`（伪配对为 `pseudo_pointwise_loss_allowed`）。
 
 ## 必须检查
 
 形状、互补 mask、subject split、validation d12 未进入 strict/R 峰构造、严格索引去重、R 峰一对一/单调/不越界/12 导联同映射、仅 accepted 进入 C1，以及 V0 task1/task2 和 task2 分设备 subject-macro 报告。
+For C2, additionally verify 18 preserved C1 windows, 15 added windows, accepted status, mapping/warp validity, and quality-based sample weighting.

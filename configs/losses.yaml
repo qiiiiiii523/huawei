@@ -10,6 +10,18 @@ raw_weak:
   physiology: 0.05
   # 仅与严格 train d12 reference bank 的批级统计比较，禁止逐条配对 target loss。
   target_reference: "strict_train_d12_distribution_bank"
+raw_weak_a0:
+  observed_consistency: 0.10
+  spectral_stat: 0.20
+  physiology: 0.05
+  target_reference: "strict_train_d12_distribution_bank"
+raw_weak_a1:
+  observed_consistency: 0.10
+  spectral_stat: 0.20
+  pair_invariant_stat: 0.20
+  physiology: 0.05
+  target_reference: "strict_train_d12_distribution_bank"
+  pair_reference: "same_subject_paired_d12_statistics"
 rpeak_pseudo:
   huber_missing: 1.00
   pcc_missing: 0.10

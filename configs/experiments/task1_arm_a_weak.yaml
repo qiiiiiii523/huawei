@@ -1,4 +1,5 @@
 experiment_arm: A
+experiment_variant: A0
 status: runnable_after_compatible_model
 references: {common: configs/common.yaml, training: configs/training_protocol_v1.yaml, preprocessing: configs/preprocessing.yaml, losses: configs/losses.yaml}
 task_id: task1
@@ -9,5 +10,5 @@ stages:
     supervision_mode: cross_device_weak_adaptation
     alignment_mode: weak_subject_pair_record_start
     pointwise_loss_allowed: false
-    loss_profile: raw_weak
+    loss_profile: raw_weak_a0
     target_reference: strict_train_d12_distribution_bank
