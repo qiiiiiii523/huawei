@@ -24,6 +24,11 @@ def main() -> None:
     with (ROOT / "configs" / "preprocessing.yaml").open(encoding="utf-8") as handle:
         preprocessing = yaml.safe_load(handle)
     protocol = load_training_protocol(ROOT / "configs" / "training_protocol_v1.yaml")
+    assert protocol["supervision_and_loss"]["observed_lead_consistency"] == {
+        "synchronous_d12": "permitted",
+        "cross_device_weak_pair": "permitted_as_low_weight_input_only",
+        "paired_d12_pointwise_reconstruction": "forbidden",
+    }
 
     assert spec["ecg"]["model_internal_unit"] == "μV" and common["signal"]["ecg_unit"] == "μV"
     assert spec["ecg"]["model_internal_sampling_rate_hz"] == 500 and common["signal"]["ecg_sampling_rate_hz"] == 500
