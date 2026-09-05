@@ -1,0 +1,81 @@
+experiment:
+  id: "B0"
+  name: "ridge_baseline"
+  seed: 42
+
+data:
+  common_config: "configs/common.yaml"
+  strict_pretrain_index: "metadata/d12_strict_pretrain_index.csv"
+
+model:
+  type: "ridge"
+  alpha: 1.0
+  fit_intercept: false
+  chunk_windows: 16
+
+tasks:
+  task1:
+    mode: "d12_i_pretrain"
+    input_leads:
+      - "I"
+    output_leads:
+      - "I"
+      - "II"
+      - "III"
+      - "aVR"
+      - "aVL"
+      - "aVF"
+      - "V1"
+      - "V2"
+      - "V3"
+      - "V4"
+      - "V5"
+      - "V6"
+
+  task2:
+    mode: "d12_six_pretrain"
+    input_leads:
+      - "I"
+      - "II"
+      - "III"
+      - "aVR"
+      - "aVL"
+      - "aVF"
+    output_leads:
+      - "I"
+      - "II"
+      - "III"
+      - "aVR"
+      - "aVL"
+      - "aVF"
+      - "V1"
+      - "V2"
+      - "V3"
+      - "V4"
+      - "V5"
+      - "V6"
+
+preprocessing:
+  use_repository_preprocessing: true
+  baseline_head: false
+  predicted_baseline_uv: 0.0
+
+evaluation:
+  protocol: "V0"
+  output_unit: "uV"
+  task1_metric: "mean_pearson_r_12_leads"
+  task2_metric: "mean_pearson_r_12_leads"
+  task2_rmse_leads:
+    - "V1"
+    - "V2"
+    - "V3"
+    - "V4"
+    - "V5"
+    - "V6"
+  centered_metrics_diagnostic_only: true
+
+output:
+  directory: "outputs/b0"
+  save_models: true
+  save_predictions: true
+  save_per_lead_metrics: true
