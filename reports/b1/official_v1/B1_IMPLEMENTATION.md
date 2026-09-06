@@ -29,6 +29,13 @@ python -m b1.run_official_matrix --device cuda
 python -m b1.summarize_official
 ```
 
-## 四、当前状态
+## 四、正式结果
 
-正式矩阵已在 AutoDL 独立工作副本启动，结果位于 `/root/autodl-tmp/huawei_B1_official/results/b1/official_v1/`。AutoDL SSH 会话中断时，使用各实验目录的 `checkpoint_latest.pt` 续跑；在所有 14 组完成前，不将结果表标记为最终结果。
+14 组实验已经全部完成。完整结果原目录为 `/root/autodl-tmp/huawei_B1_official/results/b1/official_v1/`；交付目录只保留小型 CSV/Markdown 汇总。
+
+- task1 最佳 E1 raw-uV r1：`B1_T1_C2`，`0.009718`；
+- task2 最佳 E1 raw-uV r2：`B1_T2_AA_L0`，`0.017907`；
+- task2 的 machine/body subject-macro 结果见 `B1_TASK2_DEVICE_SUMMARY.csv`；
+- E2 是 copy-at-eval 诊断，centered 是形态诊断，均不替代官方 E1 选择。
+
+完整 checkpoint、预测数组和日志仍留在 AutoDL，不提交 GitHub。
