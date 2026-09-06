@@ -1,0 +1,37 @@
+protocol: B1_full_matrix_v1
+network: LightweightUNet
+loss_variants: [L0, L1]
+evaluation_views: [raw_prediction_E1, copy_at_eval_E2]
+experiments:
+  - id: B1_T1_A
+    task: task1
+    data: watch
+    route: A_raw_weak
+  - id: B1_T1_B
+    task: task1
+    data: watch
+    route: B_strict_d12_i_then_weak
+  - id: B1_T1_C1
+    task: task1
+    data: task1_rpeak_pseudo_output
+    route: C1_strict_d12_i_then_pseudo
+  - id: B1_T1_C2
+    task: task1
+    data: task1_rpeak_pseudo_output_c2
+    route: C2_strict_d12_i_then_pseudo
+  - id: B1_T2_A_A
+    task: task2
+    data: task2_output_A_machine_plus_body_scale_raw
+    route: A_raw_weak
+  - id: B1_T2_A_B
+    task: task2
+    data: task2_output_A_machine_plus_body_scale_raw
+    route: B_strict_d12_six_then_weak
+  - id: B1_T2_B_A
+    task: task2
+    data: task2_body_scale_ablation_B
+    route: A_raw_weak
+  - id: B1_T2_B_B
+    task: task2
+    data: task2_body_scale_ablation_B
+    route: B_strict_d12_six_then_weak
