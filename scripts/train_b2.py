@@ -55,6 +55,11 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--strict-epochs", type=int, default=None)
     parser.add_argument("--finetune-epochs", type=int, default=None)
+    parser.add_argument(
+        "--finetune-mode", choices=("frozen_encoder", "full"), default="frozen_encoder",
+        help="staged B/C adaptation: freeze Transformer encoder or update all parameters",
+    )
+    parser.add_argument("--strict-anchor-weight", type=float, default=0.20)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--experiment-config", default=None)
@@ -113,6 +118,13 @@ def main() -> None:
         "weak_profile": weak_profile, "parameter_count": B2MaskedPatchTransformer().parameter_count,
         "seed": 42, "deterministic": True,
         "training_protocol": "strict_pretrain_then_finetune" if args.stage == "staged" else "single_stage",
+        "finetune_mode": args.finetune_mode,
+        "strict_anchor_weight": args.strict_anchor_weight,
+        "finetune_policy": (
+            "freeze_transformer_encoder_train_stem_and_head_with_strict_anchor"
+            if args.stage == "staged" and args.finetune_mode == "frozen_encoder"
+            else "full_parameter_finetune" if args.stage == "staged" else "not_applicable"
+        ),
         "strict_validation_protocol": "held_out_d12_same_window_diagnostic_only",
         "strict_epochs": args.strict_epochs if args.strict_epochs is not None else args.epochs,
         "finetune_epochs": args.finetune_epochs if args.finetune_epochs is not None else args.epochs,
@@ -127,6 +139,7 @@ def main() -> None:
             args.finetune_epochs if args.finetune_epochs is not None else args.epochs,
             args.route, weak, pseudo, strict if args.route == "B" else None,
             strict_validation_dataset=strict_validation, weak_profile=weak_profile,
+            finetune_mode=args.finetune_mode, strict_anchor_weight=args.strict_anchor_weight,
         )
     else:
         checkpoint = fit_b2(

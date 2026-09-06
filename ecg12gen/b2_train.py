@@ -119,6 +119,25 @@ def _loader(dataset: B2PreparedDataset, batch_size: int, shuffle: bool, seed: in
                       collate_fn=b2_collate, generator=generator)
 
 
+def _set_finetune_trainability(model: B2MaskedPatchTransformer, mode: str) -> list[str]:
+    """Configure which B2 parameters may change during adaptation.
+
+    ``frozen_encoder`` keeps the Transformer representation learned from the
+    synchronous d12 task fixed, while leaving the input stem and output head
+    available for the watch/body-scale domain shift.  This is deliberately
+    different from freezing every parameter: a completely frozen model cannot
+    adapt to the cross-device input at all.
+    """
+    if mode not in {"full", "frozen_encoder"}:
+        raise ValueError("finetune mode must be full or frozen_encoder")
+    for parameter in model.parameters():
+        parameter.requires_grad = True
+    if mode == "frozen_encoder":
+        for parameter in model.encoder.parameters():
+            parameter.requires_grad = False
+    return [name for name, parameter in model.named_parameters() if parameter.requires_grad]
+
+
 def _model_to_morphology(model_output: np.ndarray, d12_scale_uV: np.ndarray) -> np.ndarray:
     return np.asarray(model_output, dtype=np.float32) * np.asarray(d12_scale_uV, dtype=np.float32)[None, :, None]
 
@@ -175,8 +194,15 @@ def _run_epoch(
     strict_reference: torch.Tensor | None = None,
     mode: str = "strict",
     weak_profile: str = "A0",
+    strict_anchor_weight: float = 0.20,
+    freeze_encoder: bool = False,
 ) -> float:
     model.train()
+    # Transformer dropout/normalization must also stay in eval mode when the
+    # encoder is frozen; otherwise a supposedly fixed representation would
+    # still change stochastically during adaptation.
+    if freeze_encoder:
+        model.encoder.eval()
     total = 0.0
     steps = 0
     strict_iterator = iter(strict_loader) if strict_loader is not None else None
@@ -184,6 +210,8 @@ def _run_epoch(
     pseudo_iterator = iter(pseudo_loader) if pseudo_loader is not None else None
     if mode == "mixed" and (strict_loader is None or weak_loader is None or strict_reference is None):
         raise ValueError("mixed mode requires strict and weak loaders plus a reference bank")
+    if mode in {"weak_with_strict_anchor", "pseudo_with_strict_anchor"} and strict_loader is None:
+        raise ValueError(f"{mode} requires strict_loader")
     for batch in loader:
         optimizer.zero_grad(set_to_none=True)
         if mode == "weak":
@@ -224,6 +252,22 @@ def _run_epoch(
             loss = quality_weighted_pseudo_loss(
                 output, moved["target_model"], moved["missing_mask"], _quality_from_batch(moved, device)
             )
+        elif mode in {"weak_with_strict_anchor", "pseudo_with_strict_anchor"}:
+            strict_batch, strict_iterator = _next_batch(strict_iterator, strict_loader)  # type: ignore[arg-type]
+            strict_batch = _move_batch(strict_batch, device)
+            moved = _move_batch(batch, device)
+            strict_output = model(strict_batch["input_model"], strict_batch["lead_mask"], strict_batch["missing_mask"])
+            strict_loss = strict_missing_loss(strict_output, strict_batch["target_model"], strict_batch["missing_mask"])
+            output = model(moved["input_model"], moved["lead_mask"], moved["missing_mask"])
+            if mode == "weak_with_strict_anchor":
+                if strict_reference is None:
+                    raise ValueError("weak_with_strict_anchor requires a strict reference bank")
+                adaptation_loss = weak_route_loss(output, moved, strict_reference, weak_profile)
+            else:
+                adaptation_loss = quality_weighted_pseudo_loss(
+                    output, moved["target_model"], moved["missing_mask"], _quality_from_batch(moved, device)
+                )
+            loss = adaptation_loss + strict_anchor_weight * strict_loss
         else:
             raise ValueError(f"unknown training mode: {mode}")
         loss.backward()
@@ -349,6 +393,8 @@ def fit_b2_staged(
     strict_reference_dataset: B2PreparedDataset | None = None,
     strict_validation_dataset: B2PreparedDataset | None = None,
     weak_profile: str = "A0",
+    finetune_mode: str = "frozen_encoder",
+    strict_anchor_weight: float = 0.20,
 ) -> Path:
     """Run strict pretraining, then load its best checkpoint for fine-tuning.
 
@@ -365,6 +411,10 @@ def fit_b2_staged(
         raise ValueError("staged route B requires weak_dataset")
     if route == "C" and pseudo_dataset is None:
         raise ValueError("staged route C requires pseudo_dataset")
+    if finetune_mode not in {"full", "frozen_encoder"}:
+        raise ValueError("finetune_mode must be full or frozen_encoder")
+    if strict_anchor_weight < 0:
+        raise ValueError("strict_anchor_weight must be non-negative")
     if route == "B":
         check_weak_protocol_compatibility(
             Path(__file__).resolve().parents[1] / "configs" / "training_protocol_v1.yaml",
@@ -393,7 +443,15 @@ def fit_b2_staged(
         mode: str,
         checkpoint_path: Path,
     ) -> tuple[list[dict[str, Any]], int | None, float]:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.0001)
+        is_finetune = phase != "strict_pretrain"
+        trainable_parameter_names = _set_finetune_trainability(
+            model, finetune_mode if is_finetune else "full"
+        )
+        optimizer = torch.optim.AdamW(
+            [parameter for parameter in model.parameters() if parameter.requires_grad],
+            lr=0.001,
+            weight_decay=0.0001,
+        )
         phase_history: list[dict[str, Any]] = []
         best_value = -float("inf")
         best_epoch: int | None = None
@@ -402,11 +460,17 @@ def fit_b2_staged(
                 loss = _run_epoch(model, optimizer, loader, target_device, mode="strict")
             elif mode == "weak":
                 loss = _run_epoch(
-                    model, optimizer, loader, target_device,
-                    strict_reference=reference_tensor, mode="weak", weak_profile=weak_profile,
+                    model, optimizer, loader, target_device, strict_loader=strict_loader,
+                    strict_reference=reference_tensor, mode="weak_with_strict_anchor",
+                    weak_profile=weak_profile, strict_anchor_weight=strict_anchor_weight,
+                    freeze_encoder=finetune_mode == "frozen_encoder",
                 )
             elif mode == "pseudo_only":
-                loss = _run_epoch(model, optimizer, loader, target_device, mode="pseudo_only")
+                loss = _run_epoch(
+                    model, optimizer, loader, target_device, strict_loader=strict_loader,
+                    mode="pseudo_with_strict_anchor", strict_anchor_weight=strict_anchor_weight,
+                    freeze_encoder=finetune_mode == "frozen_encoder",
+                )
             else:
                 raise ValueError(f"unsupported staged phase mode: {mode}")
             validation = validate_v0(model, validation_dataset, d12_scale_uV, task_id, target_device)
@@ -425,7 +489,9 @@ def fit_b2_staged(
                 torch.save({
                     "model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch,
                     "parameter_count": model.parameter_count, "task_id": task_id, "route": route,
-                    "stage": phase,
+                    "stage": phase, "finetune_mode": finetune_mode if is_finetune else "full",
+                    "strict_anchor_weight": strict_anchor_weight if is_finetune else 0.0,
+                    "trainable_parameter_names": trainable_parameter_names,
                 }, checkpoint_path)
         return phase_history, best_epoch, best_value
 
@@ -460,6 +526,8 @@ def fit_b2_staged(
     }, indent=2, default=str), encoding="utf-8")
     (output / "history.json").write_text(json.dumps({
         "training_protocol": "strict_pretrain_then_finetune",
+        "finetune_mode": finetune_mode,
+        "strict_anchor_weight": strict_anchor_weight,
         "strict_best_epoch": strict_best_epoch,
         "strict_best_r1": strict_best_value,
         "strict_domain_best_epoch": _best_epoch_for_metric(strict_history, "strict_validation", "task1_r1"),
