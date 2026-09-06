@@ -55,7 +55,7 @@ def main() -> None:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--experiment-config", default=None)
     parser.add_argument("--weak-profile", choices=("A0", "A1"), default=None)
-    parser.add_argument("--init-checkpoint", default=None, help="Strict-pretraining M1 checkpoint; permitted only for route B mixed adaptation")
+    parser.add_argument("--init-checkpoint", default=None, help="Task1 strict-pretraining M1 checkpoint; permitted only for B/C mixed adaptation")
     args = parser.parse_args()
 
     if args.task_id == "task2" and args.route == "C":
@@ -64,8 +64,8 @@ def main() -> None:
         raise SystemExit("Route C requires --stage mixed")
     if args.route == "A" and args.stage != "strict":
         raise SystemExit("Route A is raw weak adaptation and requires --stage strict")
-    if args.init_checkpoint and (args.route != "B" or args.stage != "mixed"):
-        raise SystemExit("--init-checkpoint is permitted only for route B --stage mixed")
+    if args.init_checkpoint and (args.route not in {"B", "C"} or args.stage != "mixed"):
+        raise SystemExit("--init-checkpoint is permitted only for route B/C --stage mixed")
     seed_everything(42, deterministic=True)
 
     experiment_path = Path(args.experiment_config) if args.experiment_config else _default_experiment_path(
@@ -100,8 +100,12 @@ def main() -> None:
     if args.init_checkpoint:
         init_path = Path(args.init_checkpoint).resolve()
         init_checkpoint = torch.load(init_path, map_location="cpu", weights_only=False)
-        if init_checkpoint.get("task_id") != args.task_id or init_checkpoint.get("route") != "B":
-            raise SystemExit("--init-checkpoint must be an M1 route-B checkpoint for the selected task")
+        if (
+            init_checkpoint.get("task_id") != args.task_id
+            or init_checkpoint.get("route") != "B"
+            or init_checkpoint.get("stage") != "strict"
+        ):
+            raise SystemExit("--init-checkpoint must be an M1 task1 route-B strict-pretraining checkpoint")
         if init_checkpoint.get("parameter_count") != model.parameter_count:
             raise SystemExit("--init-checkpoint parameter count does not match M1-main")
         model.load_state_dict(init_checkpoint["model"])
