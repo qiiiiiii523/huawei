@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+import yaml
 from torch.utils.data import DataLoader
 
 from .b2_data import B2PreparedDataset, b2_collate
@@ -44,25 +46,57 @@ def _forward(model: M1MaskedCNNLeadTimeTransformer, batch: dict[str, Any]) -> to
     )
 
 
+@lru_cache(maxsize=1)
+def _loss_contract() -> dict[str, Any]:
+    """Read the shared, versioned loss weights instead of copying them into M1."""
+    path = Path(__file__).resolve().parents[1] / "configs" / "losses.yaml"
+    with path.open(encoding="utf-8") as handle:
+        values = yaml.safe_load(handle)
+    if not isinstance(values, dict):
+        raise ValueError("Shared losses.yaml must contain a mapping")
+    return values
+
+
+def _shared_loss_profile(name: str) -> dict[str, Any]:
+    profile = _loss_contract().get(name)
+    if not isinstance(profile, dict):
+        raise ValueError(f"Missing shared loss profile: {name}")
+    return profile
+
+
+def _require_b2_reconstruction_weights(profile: dict[str, Any], *, name: str) -> None:
+    """B2's reusable Huber/PCC helpers encode these two shared weights."""
+    if float(profile.get("huber_missing", 0.0)) != 1.0 or float(profile.get("pcc_missing", 0.0)) != 0.10:
+        raise ValueError(f"{name} no longer matches the reusable B2 Huber/PCC implementation")
+
+
 def strict_route_loss(prediction: torch.Tensor, batch: dict[str, Any]) -> torch.Tensor:
     """Strict same-window reconstruction using shared B2 primitives and weights."""
+    weights = _shared_loss_profile("strict_sync")
+    _require_b2_reconstruction_weights(weights, name="strict_sync")
     return (
         strict_missing_loss(prediction, batch["target_model"], batch["missing_mask"])
-        + 0.05 * physiology_constraint_loss(prediction)
-        + 0.02 * observed_consistency_loss(prediction, batch["observed_d12_model"], batch["lead_mask"])
+        + float(weights["physiology"]) * physiology_constraint_loss(prediction)
+        + float(weights["observed_consistency"]) * observed_consistency_loss(
+            prediction, batch["observed_d12_model"], batch["lead_mask"]
+        )
     )
 
 
 def pseudo_route_loss(prediction: torch.Tensor, batch: dict[str, Any], device: torch.device) -> torch.Tensor:
     """Accepted pseudo-pairs: quality-weighted missing-lead loss plus shared constraints."""
+    weights = _shared_loss_profile("rpeak_pseudo")
+    _require_b2_reconstruction_weights(weights, name="rpeak_pseudo")
     quality = torch.as_tensor(
         [float(meta.get("alignment_quality_score", 0.0)) for meta in batch["meta"]],
         dtype=torch.float32, device=device,
     )
     return (
         quality_weighted_pseudo_loss(prediction, batch["target_model"], batch["missing_mask"], quality)
-        + 0.05 * physiology_constraint_loss(prediction)
-        + 0.10 * observed_consistency_loss(prediction, batch["observed_d12_model"], batch["lead_mask"])
+        + float(weights["physiology"]) * physiology_constraint_loss(prediction)
+        + float(weights["observed_consistency"]) * observed_consistency_loss(
+            prediction, batch["observed_d12_model"], batch["lead_mask"]
+        )
     )
 
 
@@ -115,20 +149,32 @@ def _next_batch(iterator: Any, loader: DataLoader) -> tuple[dict[str, Any], Any]
         return next(iterator), iterator
 
 
+def _validate_pseudo_dataset(dataset: B2PreparedDataset) -> None:
+    """Make the C-route pointwise-supervision gate explicit at the M1 boundary."""
+    for sample in dataset.samples:
+        if (
+            sample.split != "train"
+            or sample.pair_status != "accepted"
+            or sample.supervision_mode != "rpeak_pseudo_adaptation"
+            or sample.alignment_mode != "pseudo_rpeak_monotonic_warp"
+            or sample.meta.get("accepted") is not True
+            or sample.meta.get("pointwise_loss_allowed") is not True
+        ):
+            raise ValueError("M1 pseudo route requires accepted train samples with pseudo pointwise loss permission")
+
+
 def _run_epoch(
     model: M1MaskedCNNLeadTimeTransformer,
     optimizer: torch.optim.Optimizer,
     loader: DataLoader,
     device: torch.device,
     mode: str,
-    strict_loader: DataLoader | None = None,
     adaptation_loader: DataLoader | None = None,
     strict_reference: torch.Tensor | None = None,
     weak_profile: str = "A0",
 ) -> float:
     model.train()
     total, steps = 0.0, 0
-    strict_iterator = iter(strict_loader) if strict_loader is not None else None
     adaptation_iterator = iter(adaptation_loader) if adaptation_loader is not None else None
     for batch in loader:
         optimizer.zero_grad(set_to_none=True)
@@ -141,11 +187,10 @@ def _run_epoch(
             moved = _move_batch(batch, device)
             loss = weak_route_loss(_forward(model, moved), moved, strict_reference, weak_profile)
         elif mode in {"mixed_weak", "mixed_pseudo"}:
-            if strict_iterator is None or adaptation_iterator is None:
-                raise ValueError(f"{mode} requires strict and adaptation data")
-            strict_batch, strict_iterator = _next_batch(strict_iterator, strict_loader)  # type: ignore[arg-type]
+            if adaptation_iterator is None or adaptation_loader is None:
+                raise ValueError(f"{mode} requires adaptation data")
             adaptation_batch, adaptation_iterator = _next_batch(adaptation_iterator, adaptation_loader)  # type: ignore[arg-type]
-            strict_batch, adaptation_batch = _move_batch(strict_batch, device), _move_batch(adaptation_batch, device)
+            strict_batch, adaptation_batch = _move_batch(batch, device), _move_batch(adaptation_batch, device)
             strict_loss = strict_route_loss(_forward(model, strict_batch), strict_batch)
             if mode == "mixed_weak":
                 if strict_reference is None:
@@ -191,10 +236,14 @@ def fit_m1(
         raise ValueError("Route C is task1-only")
     if route == "C" and stage != "mixed":
         raise ValueError("Route C requires stage=mixed")
+    if route == "A" and stage != "strict":
+        raise ValueError("Route A is a raw weak-adaptation stage and requires stage=strict")
     if route == "B" and stage == "mixed" and weak_dataset is None:
         raise ValueError("Route B mixed requires weak_dataset")
     if route == "C" and pseudo_dataset is None:
         raise ValueError("Route C requires pseudo_dataset")
+    if pseudo_dataset is not None:
+        _validate_pseudo_dataset(pseudo_dataset)
     if route in {"A", "B"}:
         check_weak_protocol_compatibility(
             Path(__file__).resolve().parents[1] / "configs" / "training_protocol_v1.yaml",
@@ -229,7 +278,6 @@ def fit_m1(
     for epoch in range(1, epochs + 1):
         loss = _run_epoch(
             model, optimizer, epoch_loader, target_device, mode,
-            strict_loader=strict_loader if mode.startswith("mixed") else None,
             adaptation_loader=weak_loader if mode == "mixed_weak" else pseudo_loader if mode == "mixed_pseudo" else None,
             strict_reference=strict_reference, weak_profile=weak_profile,
         )

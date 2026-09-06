@@ -59,6 +59,8 @@ def main() -> None:
         raise SystemExit("Route C is task1-only")
     if args.route == "C" and args.stage != "mixed":
         raise SystemExit("Route C requires --stage mixed")
+    if args.route == "A" and args.stage != "strict":
+        raise SystemExit("Route A is raw weak adaptation and requires --stage strict")
     seed_everything(42, deterministic=True)
 
     experiment_path = Path(args.experiment_config) if args.experiment_config else _default_experiment_path(

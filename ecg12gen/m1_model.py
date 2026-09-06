@@ -54,7 +54,7 @@ class SharedMultiScaleResidualBlock(nn.Module):
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         residual = self.skip(values)
         fused = self.fuse(torch.cat((self.short(values), self.long(values)), dim=1))
-        return self.activation(self.norm(fused) + residual)
+        return self.activation(self.norm(fused)) + residual
 
 
 class SharedLeadCNNEncoder(nn.Module):
