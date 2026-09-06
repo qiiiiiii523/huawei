@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import yaml
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -14,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from ecg12gen.b2_data import (
     build_pseudo_dataset,
     build_strict_dataset,
+    build_strict_validation_dataset,
     build_weak_dataset,
     fit_b2_preprocessor,
 )
@@ -53,6 +55,7 @@ def main() -> None:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--experiment-config", default=None)
     parser.add_argument("--weak-profile", choices=("A0", "A1"), default=None)
+    parser.add_argument("--init-checkpoint", default=None, help="Strict-pretraining M1 checkpoint; permitted only for route B mixed adaptation")
     args = parser.parse_args()
 
     if args.task_id == "task2" and args.route == "C":
@@ -61,6 +64,8 @@ def main() -> None:
         raise SystemExit("Route C requires --stage mixed")
     if args.route == "A" and args.stage != "strict":
         raise SystemExit("Route A is raw weak adaptation and requires --stage strict")
+    if args.init_checkpoint and (args.route != "B" or args.stage != "mixed"):
+        raise SystemExit("--init-checkpoint is permitted only for route B --stage mixed")
     seed_everything(42, deterministic=True)
 
     experiment_path = Path(args.experiment_config) if args.experiment_config else _default_experiment_path(
@@ -80,6 +85,7 @@ def main() -> None:
 
     preprocessor = fit_b2_preprocessor(args.config, args.task_id, args.task2_variant)
     strict = build_strict_dataset(args.config, args.task_id, preprocessor)
+    strict_validation = build_strict_validation_dataset(args.config, args.task_id, preprocessor) if args.route == "B" else None
     validation = build_weak_dataset(args.config, args.task_id, "validation", preprocessor, args.task2_variant)
     weak = None
     pseudo = None
@@ -91,6 +97,14 @@ def main() -> None:
     output_dir = Path(args.output_dir) if args.output_dir else ROOT / "results" / f"m1_{args.task_id}_{args.route}_{args.stage}"
     output_dir.mkdir(parents=True, exist_ok=True)
     model = M1MaskedCNNLeadTimeTransformer()
+    if args.init_checkpoint:
+        init_path = Path(args.init_checkpoint).resolve()
+        init_checkpoint = torch.load(init_path, map_location="cpu", weights_only=False)
+        if init_checkpoint.get("task_id") != args.task_id or init_checkpoint.get("route") != "B":
+            raise SystemExit("--init-checkpoint must be an M1 route-B checkpoint for the selected task")
+        if init_checkpoint.get("parameter_count") != model.parameter_count:
+            raise SystemExit("--init-checkpoint parameter count does not match M1-main")
+        model.load_state_dict(init_checkpoint["model"])
     (output_dir / "preprocessing_scales.json").write_text(
         json.dumps({key: value.tolist() for key, value in preprocessor.scale_uV_by_source.items()}, indent=2), encoding="utf-8"
     )
@@ -102,11 +116,13 @@ def main() -> None:
         "seed": 42, "deterministic": True, "adapter": False, "baseline_head": False,
         "random_lead_masking": False, "random_point_masking": False,
         "raw_baseline_policy": "fixed_zero_uV",
+        "init_checkpoint": str(Path(args.init_checkpoint).resolve()) if args.init_checkpoint else None,
     }, indent=2), encoding="utf-8")
     checkpoint = fit_m1(
         model, strict, validation, preprocessor.scale_uV_by_source["d12"], args.task_id, output_dir,
         device=args.device, epochs=args.epochs, route=args.route, stage=args.stage,
         weak_dataset=weak, pseudo_dataset=pseudo, strict_reference_dataset=strict,
+        strict_validation_dataset=strict_validation,
         weak_profile=weak_profile,
     )
     print(f"M1 complete: checkpoint={checkpoint}; parameters={model.parameter_count}")

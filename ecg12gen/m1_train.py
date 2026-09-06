@@ -141,6 +141,20 @@ def _reference_tensor(dataset: B2PreparedDataset | None, device: torch.device) -
     return torch.from_numpy(np.stack(values)).to(device)
 
 
+def _best_epoch_for_metric(history: list[dict[str, Any]], section: str, metric: str) -> int | None:
+    rows = [row for row in history if isinstance(row.get(section), dict) and row[section].get(metric) is not None]
+    if not rows:
+        return None
+    return int(max(rows, key=lambda row: float(row[section][metric]))["epoch"])
+
+
+def _best_value_for_metric(history: list[dict[str, Any]], section: str, metric: str) -> float | None:
+    rows = [row for row in history if isinstance(row.get(section), dict) and row[section].get(metric) is not None]
+    if not rows:
+        return None
+    return float(max(rows, key=lambda row: float(row[section][metric]))[section][metric])
+
+
 def _next_batch(iterator: Any, loader: DataLoader) -> tuple[dict[str, Any], Any]:
     try:
         return next(iterator), iterator
@@ -225,6 +239,7 @@ def fit_m1(
     weak_dataset: B2PreparedDataset | None = None,
     pseudo_dataset: B2PreparedDataset | None = None,
     strict_reference_dataset: B2PreparedDataset | None = None,
+    strict_validation_dataset: B2PreparedDataset | None = None,
     weak_profile: str = "A0",
 ) -> Path:
     """Train M1 without adapters, baseline heads, or stochastic lead masking."""
@@ -282,7 +297,21 @@ def fit_m1(
             strict_reference=strict_reference, weak_profile=weak_profile,
         )
         validation = validate_v0(model, validation_dataset, d12_scale_uV, task_id, target_device)
-        history.append({"epoch": epoch, "train_loss": loss, "validation": validation.overall})
+        strict_validation = (
+            validate_v0(model, strict_validation_dataset, d12_scale_uV, task_id, target_device)
+            if strict_validation_dataset is not None else None
+        )
+        history.append({
+            "epoch": epoch,
+            "train_loss": loss,
+            "validation": validation.overall,
+            "strict_validation": strict_validation.overall if strict_validation is not None else None,
+        })
+        diagnostic = (
+            f"; strict_domain_{strict_validation.metric_name}={strict_validation.metric_value:.6f}"
+            if strict_validation is not None else ""
+        )
+        print(f"epoch={epoch}; train_loss={loss:.6f}; {validation.metric_name}={validation.metric_value:.6f}{diagnostic}")
         if validation.metric_value > best_value:
             best_value, best_epoch = validation.metric_value, epoch
             torch.save(
@@ -291,8 +320,15 @@ def fit_m1(
                  "stage": stage, "adapter": False, "baseline_head": False},
                 best_path,
             )
+    metric_name = "task1_r1" if task_id == "task1" else "task2_r2"
     (output / "history.json").write_text(
-        json.dumps({"best_epoch": best_epoch, "best_metric": best_value, "history": history}, indent=2, default=str),
+        json.dumps({
+            "best_epoch": best_epoch,
+            "best_metric": best_value,
+            "strict_domain_best_epoch": _best_epoch_for_metric(history, "strict_validation", metric_name),
+            "strict_domain_best_metric": _best_value_for_metric(history, "strict_validation", metric_name),
+            "history": history,
+        }, indent=2, default=str),
         encoding="utf-8",
     )
     return best_path
