@@ -11,4 +11,4 @@ Each run uses the frozen main protocol: seed 42, deterministic execution, batch 
 
 The full run directory is intentionally outside Git at `results/b1/official_v1/`. The remote AutoDL working copy is `/root/autodl-tmp/huawei_B1_official/`. Run `python -m b1.summarize_official` there after all 14 runs finish, then copy only `delivery/` into this directory.
 
-The implementation commit is `6718bfd` on branch `baseline/B1`. The earlier preliminary result is retained separately under `reports/b1/preliminary/` and is not part of the official comparison.
+The implementation commit is `6718bfd` on branch `baseline/B1`. The branch exposes only the official-v1 handoff files; superseded prototype outputs are kept in Git history and are not part of the current tree.

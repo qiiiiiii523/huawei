@@ -1,7 +1,7 @@
 # B1 Lightweight 1D U-Net
 
 正式实现读取 main 的公共 Dataset、预处理、loss、固定划分与 V0，不修改公共代码和原始数据。
-旧的 2026-09-05 结果属于 preliminary，原因与汇总见 `reports/b1/preliminary/`。
+当前分支只发布 official-v1 实验代码与交付汇总；旧原型保留在 Git 历史中，不放入当前交付目录。
 
 ## 正式实验矩阵
 
