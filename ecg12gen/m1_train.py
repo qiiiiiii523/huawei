@@ -39,11 +39,8 @@ def _loader(dataset: B2PreparedDataset, batch_size: int, shuffle: bool, seed: in
 
 
 def _forward(model: M1MaskedCNNLeadTimeTransformer, batch: dict[str, Any]) -> torch.Tensor:
-    """The B2 prepared batch supplies the mandatory common d12 observed view."""
-    return model(
-        batch["input_model"], batch["lead_mask"], batch["missing_mask"],
-        observed_d12_model=batch["observed_d12_model"],
-    )
+    """Return M1's direct complete d12 prediction for training and E1 evaluation."""
+    return model(batch["input_model"], batch["lead_mask"], batch["missing_mask"])
 
 
 @lru_cache(maxsize=1)

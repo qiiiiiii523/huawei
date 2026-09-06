@@ -15,24 +15,19 @@ class M1ModelTest(unittest.TestCase):
         cls.model = M1MaskedCNNLeadTimeTransformer().eval()
 
     @torch.no_grad()
-    def test_task1_shape_parameter_budget_and_observed_retention(self) -> None:
-        observed = torch.randn(1, 12, 5000)
+    def test_task1_shape_parameter_budget_and_complete_generation(self) -> None:
         lead_mask = torch.tensor([[True] + [False] * 11])
-        output = self.model(torch.randn(1, 1, 5000), lead_mask, ~lead_mask, observed)
+        output = self.model(torch.randn(1, 1, 5000), lead_mask, ~lead_mask)
         self.assertEqual(output.shape, (1, 12, 5000))
         self.assertTrue(600_000 <= self.model.parameter_count <= 850_000)
-        self.assertTrue(torch.equal(output[:, :1], observed[:, :1]))
 
     @torch.no_grad()
     def test_task2_and_canonicalized_input_are_supported(self) -> None:
         lead_mask = torch.tensor([[True] * 6 + [False] * 6])
-        observed = torch.randn(1, 12, 5000)
-        task2_output = self.model(torch.randn(1, 6, 5000), lead_mask, ~lead_mask, observed)
-        canonical_output = self.model(torch.randn(1, 12, 5000), lead_mask, ~lead_mask, observed)
+        task2_output = self.model(torch.randn(1, 6, 5000), lead_mask, ~lead_mask)
+        canonical_output = self.model(torch.randn(1, 12, 5000), lead_mask, ~lead_mask)
         self.assertEqual(task2_output.shape, canonical_output.shape)
         self.assertEqual(task2_output.shape, (1, 12, 5000))
-        self.assertTrue(torch.equal(task2_output[:, :6], observed[:, :6]))
-        self.assertTrue(torch.equal(canonical_output[:, :6], observed[:, :6]))
 
     def test_mask_must_be_complementary(self) -> None:
         lead_mask = torch.tensor([[True] + [False] * 11])

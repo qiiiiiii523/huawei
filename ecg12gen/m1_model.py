@@ -149,7 +149,12 @@ class SharedRefinement(nn.Module):
 
 
 class M1MaskedCNNLeadTimeTransformer(nn.Module):
-    """M1-no-adapter/no-baseline-head shared backbone for task1 and task2."""
+    """M1-no-adapter/no-baseline-head shared backbone for task1 and task2.
+
+    The decoder always predicts all twelve leads.  Lead masks condition token
+    construction only; this module never copies an observed input lead into
+    its output.
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -179,13 +184,13 @@ class M1MaskedCNNLeadTimeTransformer(nn.Module):
         ecg: torch.Tensor,
         lead_mask: torch.Tensor,
         missing_mask: torch.Tensor | None = None,
-        observed_d12_model: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Generate missing leads and exactly retain observed d12-model-space leads.
+        """Predict a complete ``[B, 12, 5000]`` d12 model-space waveform.
 
-        ``observed_d12_model`` is required by the training entry point because
-        raw device input and canonical d12 can have different frozen scales.
-        Its fallback is only for already-canonicalized compatible callers.
+        ``lead_mask`` selects CNN features versus the learned missing token.
+        It is deliberately not an output gate: observed and missing leads are
+        all decoded by the same model and supervised by their route-specific
+        loss masks outside this module.
         """
         canonical_ecg, inferred_mask = _canonicalize_torch_input(ecg)
         expected_mask_shape = (canonical_ecg.shape[0], NUM_LEADS)
@@ -201,13 +206,6 @@ class M1MaskedCNNLeadTimeTransformer(nn.Module):
             if missing_mask.shape != lead_mask.shape or not torch.equal(missing_mask, ~lead_mask):
                 raise ContractError("missing_mask must be the complement of lead_mask")
 
-        if observed_d12_model is None:
-            observed = canonical_ecg
-        else:
-            observed = observed_d12_model.to(device=canonical_ecg.device, dtype=canonical_ecg.dtype)
-            if observed.shape != canonical_ecg.shape:
-                raise ContractError(f"observed_d12_model must have shape [B,{NUM_LEADS},{WINDOW_SAMPLES}]")
-
         cnn_tokens = self.cnn_encoder(canonical_ecg)
         missing_tokens = self.missing_token.expand(canonical_ecg.shape[0], NUM_LEADS, NUM_PATCHES, MODEL_DIM)
         values = torch.where(lead_mask[:, :, None, None], cnn_tokens, missing_tokens)
@@ -216,5 +214,4 @@ class M1MaskedCNNLeadTimeTransformer(nn.Module):
             values = block(values)
 
         generated = self.decoder(values).reshape(canonical_ecg.shape[0], NUM_LEADS, WINDOW_SAMPLES)
-        generated = self.refinement(generated)
-        return torch.where(lead_mask[:, :, None], observed, generated)
+        return self.refinement(generated)
