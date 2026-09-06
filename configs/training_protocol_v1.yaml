@@ -26,7 +26,10 @@ model_input_output:
 
 supervision_and_loss:
   missing_leads_are_primary: true
-  observed_lead_consistency: "permitted_against_observed_input_leads; never_against_weak_paired_d12_pointwise"
+  observed_lead_consistency:
+    synchronous_d12: permitted
+    cross_device_weak_pair: permitted_as_low_weight_input_only
+    paired_d12_pointwise_reconstruction: forbidden
   d12_sync_pretrain: "pointwise_or_correlation_loss_permitted_on_same_window"
   cross_device_weak_pair: "raw_window_pointwise_mse_forbidden_by_default"
   loss_selection: "must_be_recorded_per_experiment; validation_selection_uses_official_v0"

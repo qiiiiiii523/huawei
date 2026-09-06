@@ -28,6 +28,7 @@
 - 严格同步：missing leads 上的 Huber/PCC；完整 12 导联生理约束；低权重 observed consistency。
 - 原始弱配对：禁止与同一行配对 d12 计算逐点 Huber/MSE/PCC；只允许 observed consistency、独立 d12 reference bank 的统计约束与生理约束。
 - A0 is the original weak loss: observed consistency + independent strict-train d12 statistics + physiology.
+- For cross-device weak pairs, observed consistency is permitted only as a low-weight input-condition term; paired d12 pointwise reconstruction remains forbidden.
 - A1 adds `0.20 * pair_invariant_stat`; the paired d12 contributes only phase-invariant spectral/amplitude statistics, never pointwise Huber/MSE/PCC.
 - R 峰伪配对：`physical_sync=false`；只有 `accepted=true`、带 `alignment_quality_score` 的样本才允许 `pseudo_pointwise_loss_allowed=true`，且按质量加权。
 

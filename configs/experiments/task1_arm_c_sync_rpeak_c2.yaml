@@ -18,9 +18,7 @@ stages:
     alignment_mode: same_window
     pointwise_loss_allowed: true
     loss_profile: strict_sync
-  - name: mixed_rpeak_pseudo_adaptation
-    strict_branch_weight: 1.0
-    pseudo_branch_weight: 0.20
+  - name: rpeak_pseudo_finetune
     supervision_mode: rpeak_pseudo_adaptation
     alignment_mode: pseudo_rpeak_monotonic_warp
     physical_sync: false

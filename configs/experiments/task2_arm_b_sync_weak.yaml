@@ -9,9 +9,7 @@ stages:
     alignment_mode: same_window
     pointwise_loss_allowed: true
     loss_profile: strict_sync
-  - name: mixed_sync_weak_adaptation
-    strict_branch_weight: 1.0
-    weak_branch_weight: 0.20
+  - name: weak_adaptation_finetune
     weak_pointwise_loss_allowed: false
-    loss_profile: [strict_sync, raw_weak]
+    loss_profile: raw_weak
 report_groups: [ecg_machine_d6, body_scale_d6]
