@@ -1,37 +1,26 @@
-protocol: B1_full_matrix_v1
-network: LightweightUNet
-loss_variants: [L0, L1]
-evaluation_views: [raw_prediction_E1, copy_at_eval_E2]
+protocol: b1_official_v1
+shared_protocol:
+  common: configs/common.yaml
+  preprocessing: configs/preprocessing.yaml
+  training: configs/training_protocol_v1.yaml
+  losses: configs/losses.yaml
+model:
+  family: Lightweight 1D U-Net
+  adapter: disabled
+  baseline_head: disabled
+evaluation_views: [E1_raw_prediction, E2_copy_at_eval]
 experiments:
-  - id: B1_T1_A
-    task: task1
-    data: watch
-    route: A_raw_weak
-  - id: B1_T1_B
-    task: task1
-    data: watch
-    route: B_strict_d12_i_then_weak
-  - id: B1_T1_C1
-    task: task1
-    data: task1_rpeak_pseudo_output
-    route: C1_strict_d12_i_then_pseudo
-  - id: B1_T1_C2
-    task: task1
-    data: task1_rpeak_pseudo_output_c2
-    route: C2_strict_d12_i_then_pseudo
-  - id: B1_T2_A_A
-    task: task2
-    data: task2_output_A_machine_plus_body_scale_raw
-    route: A_raw_weak
-  - id: B1_T2_A_B
-    task: task2
-    data: task2_output_A_machine_plus_body_scale_raw
-    route: B_strict_d12_six_then_weak
-  - id: B1_T2_B_A
-    task: task2
-    data: task2_body_scale_ablation_B
-    route: A_raw_weak
-  - id: B1_T2_B_B
-    task: task2
-    data: task2_body_scale_ablation_B
-    route: B_strict_d12_six_then_weak
+  - {id: B1_T1_A_L0, task: task1, route: A, data_variant: A, loss_variant: L0}
+  - {id: B1_T1_A_L1, task: task1, route: A, data_variant: A, loss_variant: L1}
+  - {id: B1_T1_B_L0, task: task1, route: B, data_variant: A, loss_variant: L0}
+  - {id: B1_T1_B_L1, task: task1, route: B, data_variant: A, loss_variant: L1}
+  - {id: B1_T1_C1, task: task1, route: C1, data_variant: A, loss_variant: null}
+  - {id: B1_T1_C2, task: task1, route: C2, data_variant: A, loss_variant: null}
+  - {id: B1_T2_AA_L0, task: task2, route: A, data_variant: A, loss_variant: L0}
+  - {id: B1_T2_AA_L1, task: task2, route: A, data_variant: A, loss_variant: L1}
+  - {id: B1_T2_AB_L0, task: task2, route: B, data_variant: A, loss_variant: L0}
+  - {id: B1_T2_AB_L1, task: task2, route: B, data_variant: A, loss_variant: L1}
+  - {id: B1_T2_BA_L0, task: task2, route: A, data_variant: B, loss_variant: L0}
+  - {id: B1_T2_BA_L1, task: task2, route: A, data_variant: B, loss_variant: L1}
+  - {id: B1_T2_BB_L0, task: task2, route: B, data_variant: B, loss_variant: L0}
+  - {id: B1_T2_BB_L1, task: task2, route: B, data_variant: B, loss_variant: L1}

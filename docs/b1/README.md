@@ -1,9 +1,36 @@
-# B1 本地实现与计时
+# B1 Lightweight 1D U-Net
 
-当前完成：初版网络、非破坏性本地路径接入、数据与合成 CPU 批次检查。
-尚未完成：正式训练循环、八组实验调度、完整监督 loss 接线、checkpoint 与预测导出。
+正式实现读取 main 的公共 Dataset、预处理、loss、固定划分与 V0，不修改公共代码和原始数据。
+旧的 2026-09-05 结果属于 preliminary，原因与汇总见 `reports/b1/preliminary/`。
 
-## 运行
+## 正式实验矩阵
+
+共 14 个训练实验：task1 为 A0/A1、B0/B1、C1、C2；task2 为数据版本 A/B × 路线 A/B × L0/L1。
+C1/C2 使用固定、质量加权的 R 峰伪配对 loss，不重复构造 L0/L1。每个 checkpoint 同时评估 E1 和 E2。
+
+## 运行与续跑
+
+只读验收：`python -m b1.check_official_v1`。
+
+隔离的最小冒烟检查：
+
+`python -m b1.run_official_matrix --experiment B1_T1_C1 --smoke --max-batches 1 --device cuda`
+
+正式运行或从 checkpoint 自动续跑：
+
+`python -m b1.run_official_matrix --device cuda`
+
+全部完成后生成交付表：`python -m b1.summarize_official`。
+
+正式结果写到 Git 忽略的 `results/b1/official_v1/`。代码、配置和最终小型汇总文件提交到 B1 分支；checkpoint、预测 NPY 和原始数据不提交。
+
+## 固定协议
+
+seed 42、deterministic、batch 16、每阶段 100 epochs、AdamW、lr 0.001、weight decay 0.0001、无 scheduler、无梯度裁剪、无 early stopping。B/C 的 strict 预训练 checkpoint 按 task 复用；每个实验的适配阶段仍独立运行。B/C 适配保留 strict anchor：B 为 `L_sync + 0.20 × L_weak`，C 为 `L_sync + 0.20 × alignment_quality_score × L_pseudo`。
+
+官方 checkpoint 只按 validation raw-uV V0 选择；task1 使用 r1，task2 使用 r2。E2 copy-at-eval、centered diagnostic 和 task2 分设备 subject-macro 均另列。
+
+## 旧预检查
 
 在仓库根目录执行 `python -m b1.preflight`。
 结果写到 Git 忽略的 `results/b1/preflight/report.json`，没有 checkpoint。
@@ -33,11 +60,3 @@ CPU PyTorch 2.12.0+cpu，batch16，seed42，AdamW lr0.001、weight_decay0.0001�
 推理每批约0.023/0.022秒；采样进程驻留内存约0.6GiB（不是峰值）。
 只测量4个预热后批次，不包含完整 loss、数据准备、V0 和文件写入。
 不能据此承诺正式总耗时，也不能用作实验效果报告。
-
-## 待统一口径
-
-八个主组合：task1 A/B/C1/C2；task2 数据A×路线A/B，数据B×路线A/B。
-L0/L1 在普通弱配对分支有意义；C1/C2 当前公共配置的适配分支为伪配对，不能虚构两组差异。
-copy-at-eval 是另列的评估对照，不覆盖原始 V0。
-正式启动前需明确弱配对 observed consistency 合同、无 baseline head 的 raw 输出、
-一致性/生理约束使用的共同尺度，以及 C2 的执行条件。
