@@ -218,6 +218,12 @@ def _run_epoch(
                 pseudo_output, pseudo_batch["target_model"], pseudo_batch["missing_mask"], _quality_from_batch(pseudo_batch, device)
             )
             loss = strict_loss + 0.20 * pseudo_loss
+        elif mode == "pseudo_only":
+            moved = _move_batch(batch, device)
+            output = model(moved["input_model"], moved["lead_mask"], moved["missing_mask"])
+            loss = quality_weighted_pseudo_loss(
+                output, moved["target_model"], moved["missing_mask"], _quality_from_batch(moved, device)
+            )
         else:
             raise ValueError(f"unknown training mode: {mode}")
         loss.backward()
@@ -304,3 +310,165 @@ def fit_b2(
                         "parameter_count": model.parameter_count, "task_id": task_id, "route": route, "stage": stage}, best_path)
     (output / "history.json").write_text(json.dumps({"best_epoch": best_epoch, "history": history}, indent=2, default=str), encoding="utf-8")
     return best_path
+
+
+def _best_row_for_metric(
+    history: list[dict[str, Any]], section: str, metric: str,
+) -> dict[str, Any] | None:
+    rows = [row for row in history if isinstance(row.get(section), dict) and row[section].get(metric) is not None]
+    return max(rows, key=lambda row: float(row[section][metric])) if rows else None
+
+
+def _best_epoch_for_metric(
+    history: list[dict[str, Any]], section: str, metric: str,
+) -> int | None:
+    row = _best_row_for_metric(history, section, metric)
+    return int(row["epoch"]) if row is not None else None
+
+
+def _best_value_for_metric(
+    history: list[dict[str, Any]], section: str, metric: str,
+) -> float | None:
+    row = _best_row_for_metric(history, section, metric)
+    return float(row[section][metric]) if row is not None else None
+
+
+def fit_b2_staged(
+    model: B2MaskedPatchTransformer,
+    strict_dataset: B2PreparedDataset,
+    validation_dataset: B2PreparedDataset,
+    d12_scale_uV: np.ndarray,
+    task_id: str,
+    output_dir: str | Path,
+    device: str = "cpu",
+    strict_epochs: int = 100,
+    finetune_epochs: int = 100,
+    route: str = "B",
+    weak_dataset: B2PreparedDataset | None = None,
+    pseudo_dataset: B2PreparedDataset | None = None,
+    strict_reference_dataset: B2PreparedDataset | None = None,
+    strict_validation_dataset: B2PreparedDataset | None = None,
+    weak_profile: str = "A0",
+) -> Path:
+    """Run strict pretraining, then load its best checkpoint for fine-tuning.
+
+    The same task-level V0 validation set is evaluated after every epoch of
+    both phases.  Strict-phase V0 is a transfer diagnostic because the
+    validation input is the cross-device weak input; the strict train data
+    itself remains train-only.
+    """
+    if route not in {"B", "C"}:
+        raise ValueError("staged training is only supported for routes B and C")
+    if strict_epochs < 1 or strict_epochs > 100 or finetune_epochs < 1 or finetune_epochs > 100:
+        raise ValueError("strict and fine-tune epochs must each be between 1 and 100")
+    if route == "B" and weak_dataset is None:
+        raise ValueError("staged route B requires weak_dataset")
+    if route == "C" and pseudo_dataset is None:
+        raise ValueError("staged route C requires pseudo_dataset")
+    if route == "B":
+        check_weak_protocol_compatibility(
+            Path(__file__).resolve().parents[1] / "configs" / "training_protocol_v1.yaml",
+            Path(__file__).resolve().parents[1] / "configs" / "losses.yaml",
+        )
+
+    seed_everything(42, deterministic=True)
+    target_device = torch.device(device)
+    model.to(target_device)
+    strict_loader = _loader(strict_dataset, 16, True, 42)
+    weak_loader = _loader(weak_dataset, 16, True, 43) if weak_dataset is not None else None
+    pseudo_loader = _loader(pseudo_dataset, 16, True, 44) if pseudo_dataset is not None else None
+
+    reference_tensor: torch.Tensor | None = None
+    if strict_reference_dataset is not None:
+        references = [strict_reference_dataset[index].target_model.numpy() for index in range(len(strict_reference_dataset))]
+        reference_tensor = torch.from_numpy(np.stack(references)).to(target_device)
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+
+    def run_phase(
+        phase: str,
+        epochs: int,
+        loader: DataLoader,
+        mode: str,
+        checkpoint_path: Path,
+    ) -> tuple[list[dict[str, Any]], int | None, float]:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.0001)
+        phase_history: list[dict[str, Any]] = []
+        best_value = -float("inf")
+        best_epoch: int | None = None
+        for epoch in range(1, epochs + 1):
+            if mode == "strict":
+                loss = _run_epoch(model, optimizer, loader, target_device, mode="strict")
+            elif mode == "weak":
+                loss = _run_epoch(
+                    model, optimizer, loader, target_device,
+                    strict_reference=reference_tensor, mode="weak", weak_profile=weak_profile,
+                )
+            elif mode == "pseudo_only":
+                loss = _run_epoch(model, optimizer, loader, target_device, mode="pseudo_only")
+            else:
+                raise ValueError(f"unsupported staged phase mode: {mode}")
+            validation = validate_v0(model, validation_dataset, d12_scale_uV, task_id, target_device)
+            strict_validation = None
+            if strict_validation_dataset is not None:
+                strict_validation = validate_v0(model, strict_validation_dataset, d12_scale_uV, task_id, target_device)
+            row = {
+                "stage": phase, "epoch": epoch, "train_loss": loss,
+                "validation": validation.overall,
+                "strict_validation": strict_validation.overall if strict_validation is not None else None,
+            }
+            phase_history.append(row)
+            if validation.metric_value > best_value:
+                best_value = validation.metric_value
+                best_epoch = epoch
+                torch.save({
+                    "model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch,
+                    "parameter_count": model.parameter_count, "task_id": task_id, "route": route,
+                    "stage": phase,
+                }, checkpoint_path)
+        return phase_history, best_epoch, best_value
+
+    strict_history, strict_best_epoch, strict_best_value = run_phase(
+        "strict_pretrain", strict_epochs, strict_loader, "strict", output / "strict_best.pt"
+    )
+    strict_checkpoint = torch.load(output / "strict_best.pt", map_location=target_device, weights_only=False)
+    model.load_state_dict(strict_checkpoint["model"])
+
+    if route == "B":
+        assert weak_loader is not None
+        finetune_history, finetune_best_epoch, finetune_best_value = run_phase(
+            "weak_finetune", finetune_epochs, weak_loader, "weak", output / "b2_best.pt"
+        )
+    else:
+        assert pseudo_loader is not None
+        finetune_history, finetune_best_epoch, finetune_best_value = run_phase(
+            "pseudo_finetune", finetune_epochs, pseudo_loader, "pseudo_only", output / "b2_best.pt"
+        )
+
+    (output / "strict_history.json").write_text(json.dumps({
+        "best_epoch": strict_best_epoch, "best_r1": strict_best_value,
+        "best_strict_domain_epoch": _best_epoch_for_metric(strict_history, "strict_validation", "task1_r1"),
+        "best_strict_domain_r1": _best_value_for_metric(strict_history, "strict_validation", "task1_r1"),
+        "history": strict_history,
+    }, indent=2, default=str), encoding="utf-8")
+    (output / "finetune_history.json").write_text(json.dumps({
+        "best_epoch": finetune_best_epoch, "best_r1": finetune_best_value,
+        "best_strict_domain_epoch": _best_epoch_for_metric(finetune_history, "strict_validation", "task1_r1"),
+        "best_strict_domain_r1": _best_value_for_metric(finetune_history, "strict_validation", "task1_r1"),
+        "history": finetune_history,
+    }, indent=2, default=str), encoding="utf-8")
+    (output / "history.json").write_text(json.dumps({
+        "training_protocol": "strict_pretrain_then_finetune",
+        "strict_best_epoch": strict_best_epoch,
+        "strict_best_r1": strict_best_value,
+        "strict_domain_best_epoch": _best_epoch_for_metric(strict_history, "strict_validation", "task1_r1"),
+        "strict_domain_best_r1": _best_value_for_metric(strict_history, "strict_validation", "task1_r1"),
+        "finetune_best_epoch": finetune_best_epoch,
+        "finetune_best_r1": finetune_best_value,
+        "finetune_strict_domain_best_epoch": _best_epoch_for_metric(finetune_history, "strict_validation", "task1_r1"),
+        "finetune_strict_domain_best_r1": _best_value_for_metric(finetune_history, "strict_validation", "task1_r1"),
+        "best_epoch": finetune_best_epoch,
+        "history": strict_history + finetune_history,
+    }, indent=2, default=str), encoding="utf-8")
+    return output / "b2_best.pt"

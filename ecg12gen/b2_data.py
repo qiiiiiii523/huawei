@@ -96,8 +96,8 @@ class B2PreparedDataset(Dataset[B2Item]):
     """Prepare one supervision route without changing any source arrays."""
 
     def __init__(self, samples: Sequence[ECGSample], preprocessor: ECGPreprocessor, mode: str) -> None:
-        if mode not in {"strict", "weak", "pseudo"}:
-            raise ValueError("mode must be strict, weak, or pseudo")
+        if mode not in {"strict", "strict_eval", "weak", "pseudo"}:
+            raise ValueError("mode must be strict, strict_eval, weak, or pseudo")
         self.samples = list(samples)
         self.preprocessor = preprocessor
         self.mode = mode
@@ -122,7 +122,7 @@ class B2PreparedDataset(Dataset[B2Item]):
             raise ValueError("lead_mask and missing_mask are not complementary")
 
         target_model = self.preprocessor.transform_d12_target(sample.Y_12lead).model_signal
-        if self.mode == "strict":
+        if self.mode in {"strict", "strict_eval"}:
             channels = int(lead_mask.sum())
             input_model = target_model[:channels].copy()
             observed_model = np.zeros_like(target_model)
@@ -196,6 +196,49 @@ def build_strict_dataset(
     if any(sample.split != "train" for sample in samples):
         raise ValueError("strict index unexpectedly contains validation rows")
     return B2PreparedDataset(samples, preprocessor, "strict")
+
+
+def build_strict_validation_dataset(
+    config_path: str | Path,
+    task_id: str,
+    preprocessor: ECGPreprocessor,
+) -> B2PreparedDataset:
+    """Build a held-out d12-I/d12 or d12-six/d12 diagnostic dataset.
+
+    This dataset is never passed to an optimizer.  It uses the existing
+    subject-level validation target arrays and the same frozen train-fitted
+    preprocessor as the training run.
+    """
+    config = ECGDataConfig.from_yaml(config_path)
+    target_path = config.path(f"{task_id}_output") / f"{task_id}_validation_target.npy"
+    metadata_path = config.path(f"{task_id}_output") / f"{task_id}_window_metadata.csv"
+    targets = np.load(target_path, mmap_mode="r")
+    with metadata_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = sorted(
+            (row for row in csv.DictReader(handle) if row.get("split") == "validation"),
+            key=lambda row: int(row["array_index"]),
+        )
+    if len(rows) != len(targets):
+        raise ValueError(f"Strict validation metadata and target rows disagree for {task_id}")
+    if [int(row["array_index"]) for row in rows] != list(range(len(rows))):
+        raise ValueError(f"Strict validation array_index must be contiguous for {task_id}")
+
+    channels = 1 if task_id == "task1" else 6
+    supervision_mode = f"d12_{'i' if channels == 1 else 'six'}_validation"
+    samples: list[ECGSample] = []
+    for index, row in enumerate(rows):
+        target = np.asarray(targets[index], dtype=np.float32)
+        mask = canonical_lead_mask(channels)
+        samples.append(ECGSample(
+            X_ecg=target[:channels], lead_mask=mask, Y_12lead=target, missing_mask=~mask,
+            task_id=task_id, ppg=None, acc=None,
+            meta={"subject_id": row["subject_id"], "window_id": row["window_id"],
+                  "strict_validation": True, "pointwise_loss_allowed": True},
+            modality_mask={"ppg": False, "acc": False}, split="validation",
+            supervision_mode=supervision_mode, pairing_type="within_d12_sync",
+            alignment_mode="same_window", pair_confidence="not_applicable", pair_status="paired",
+        ))
+    return B2PreparedDataset(samples, preprocessor, "strict_eval")
 
 
 def build_pseudo_dataset(
