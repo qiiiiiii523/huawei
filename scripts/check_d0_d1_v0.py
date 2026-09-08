@@ -11,7 +11,8 @@ from ecg12gen.contracts import ContractError, SupervisionMode, prepare_joint_anc
 from ecg12gen.d12_pretrain import StrictD12PretrainDataset
 from ecg12gen.dataset import ECGDataConfig, JointAnchorDataset
 from ecg12gen.evaluate import evaluate_joint_anchor_predictions, evaluate_predictions
-from ecg12gen.losses import joint_anchor_sync_loss, replace_output_i_with_anchor, strict_anchor_pretrain_loss
+from ecg12gen.losses import (joint_anchor_sync_loss, physiology_constraint_loss,
+                              replace_output_i_with_anchor, strict_anchor_pretrain_loss)
 
 def main() -> None:
     cfg = ECGDataConfig.from_yaml(ROOT / "configs" / "common.yaml")
@@ -39,8 +40,23 @@ def main() -> None:
     summary, raw_details, submit_details, submit = evaluate_joint_anchor_predictions(raw, target, target[:, :1], "task2")
     assert summary["r_submit_12"] > summary["r_raw_12"] and summary["r_missing11"] == np.mean([row["pearson_r"] for row in raw_details[1:]])
     prediction_t, target_t, anchor_t = torch.randn(2,12,500), torch.randn(2,12,500), torch.randn(2,1,500)
-    assert torch.isfinite(strict_anchor_pretrain_loss(prediction_t, target_t, anchor_t))
-    assert torch.isfinite(joint_anchor_sync_loss(prediction_t, target_t, anchor_t))
+    scale_t = torch.linspace(200.0, 900.0, 12)
+    assert torch.isfinite(strict_anchor_pretrain_loss(prediction_t, target_t, anchor_t, d12_scale_uV=scale_t))
+    assert torch.isfinite(joint_anchor_sync_loss(prediction_t, target_t, anchor_t, d12_scale_uV=scale_t))
+    # Independent per-lead offsets are allowed after median baseline removal;
+    # the corrected constraint should still accept an exactly consistent limb
+    # morphology after unequal lead scaling.
+    raw_i = torch.linspace(-1.0, 1.0, 500)
+    raw_ii = torch.sin(torch.linspace(0.0, 8.0, 500))
+    raw = torch.zeros(1, 12, 500)
+    raw[0, 0], raw[0, 1] = raw_i, raw_ii
+    raw[0, 2] = raw_ii - raw_i
+    raw[0, 3] = -(raw_i + raw_ii) / 2
+    raw[0, 4] = raw_i - raw_ii / 2
+    raw[0, 5] = raw_ii - raw_i / 2
+    raw[:, :, :] += torch.arange(12, dtype=raw.dtype).view(1, 12, 1)
+    normalized = raw / scale_t.view(1, 12, 1)
+    assert float(physiology_constraint_loss(normalized, scale_t)) < 1e-8
     legacy = ["configs/rpeak_pseudopair.yaml", "ecg12gen/rpeak_pseudopair.py", "scripts/build_rpeak_pseudopairs.py", "configs/experiments/task1_arm_a_weak.yaml"]
     assert not any((ROOT / p).exists() for p in legacy)
     print(f"PASS: strict train-only index and joint-anchor contract ({len(strict)} strict rows)")
