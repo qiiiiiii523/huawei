@@ -77,6 +77,8 @@ class ECGPreprocessor:
         """
         if config.target_transform not in train_signals:
             raise PreprocessingError("Every task fit must include training d12 targets")
+        if "ecg_machine_i" in train_signals:
+            raise PreprocessingError("ecg_machine_i scale is derived from train d12 I; do not fit a separate source array")
         scales: dict[str, np.ndarray] = {}
         for source, values in train_signals.items():
             expected_leads = config.expected_leads.get(source)
@@ -90,6 +92,7 @@ class ECGPreprocessor:
             window_ranges = np.percentile(array, 95, axis=2) - np.percentile(array, 5, axis=2)
             scale = np.maximum(np.median(window_ranges, axis=0), config.minimum_scale_uV).astype(np.float32)
             scales[source] = scale
+        scales["ecg_machine_i"] = scales[config.target_transform][:1].copy()
         return cls(config=config, scale_uV_by_source=scales)
 
     def transform_window(self, raw_window: np.ndarray, source_type: str) -> ModelSignal:

@@ -1,55 +1,11 @@
-# main 分支 A/B/C 实验协议（修订版）
+# Joint-anchor 实验协议
 
-本协议只定义共享基础设施；不提交 checkpoint、训练结果、原始 ECG 或大体积派生 NPY。
+本协议定义 main 的共享流程，不定义任何具体网络、训练循环或 checkpoint。
 
-## 共同边界
+严格阶段是 `d12 I -> d12`，仅使用 train-only、按 `target_record_id + window range` 去重的 strict index。它初始化测试时的 anchor 主干。
 
-- A/B/C 是训练策略；B0/B1/B2/M1 是模型架构。兼容模型必须读取相同实验 YAML，不复制公共数据/评价逻辑。
-- 所有实验引用 `common.yaml`、`preprocessing.yaml`、`training_protocol_v1.yaml`、`losses.yaml`，不复制采样率、导联顺序等全局真值。
-- B0/B1/B2 使用无 adapter 的统一预处理；M1 先跑 no-adapter，只有 task2 分设备 Centered 诊断变差才验证 adapter。
-- 官方选择指标始终是 raw-μV V0：r1、r2、任务二 V1–V6 RMSE；Centered 指标仅定位形态、baseline 与设备域问题。
+适配阶段是 `context ECG + machine I anchor -> d12 target`。context 是跨时刻的个体、设备和形态条件；task1 为 watch ECG，task2 为 machine/body-scale d6。anchor 是 target 时刻的时序锚点，和 target 严格同记录、同窗口同步。
 
-## 严格 d12 预训练
+严格预训练和 joint-anchor 微调都输出、并对完整 d12 计算训练损失；训练时不得将输出 I 硬替换为 anchor。context-target 逐点 Huber/MSE/PCC、raw weak 频谱统计、pair-invariant loss、R 峰伪配对和时间 warp 都不属于该协议。逐点训练监督的合法性来自 anchor-target 严格同步。
 
-`metadata/d12_strict_pretrain_index.csv` 由 `scripts/build_d12_strict_pretrain_index.py` 生成。它只保留 train subject、usable 窗口，并以 `target_record_id + start/end_sample_500hz` 去重。d12-I、d12-six 预训练只能读取该索引，绝不读取 validation d12。
-
-## 实验矩阵
-
-| 臂 | task1 | task2 |
-|---|---|---|
-| A | 原始 watch→d12 弱配对适配 | machine/body d6→d12 弱配对适配 |
-| B | 严格 d12-I 预训练 + 弱配对混合适配 | 严格 d12-six 预训练 + 弱配对混合适配 |
-| C | 严格 d12-I 预训练 + R 峰伪配对混合适配 | 无 C 路线 |
-
-配置位于 `configs/experiments/`。A 的弱配对 loss 不得逐条比较其配对 d12；它使用可见导联一致性、完整导联生理约束和**独立 strict-train d12 reference bank**的批级频谱统计，避免把不同时刻的 d12 当作逐点标签。任何模型实现 A 前必须记录其防塌缩目标及 reference bank 采样规则。
-
-## 损失合同
-
-- 严格同步：missing leads 上的 Huber/PCC；完整 12 导联生理约束；低权重 observed consistency。
-- 原始弱配对：禁止与同一行配对 d12 计算逐点 Huber/MSE/PCC；只允许 observed consistency、独立 d12 reference bank 的统计约束与生理约束。
-- A0 is the original weak loss: observed consistency + independent strict-train d12 statistics + physiology.
-- A1 adds `0.20 * pair_invariant_stat`; the paired d12 contributes only phase-invariant spectral/amplitude statistics, never pointwise Huber/MSE/PCC.
-- R 峰伪配对：`physical_sync=false`；只有 `accepted=true`、带 `alignment_quality_score` 的样本才允许 `pseudo_pointwise_loss_allowed=true`，且按质量加权。
-
-`calibrate_loss_weights.py` 仅汇总 train dry-run 的最多 200 个 batch，不自动改写权重；权重确认后才人工更新 `losses.yaml`。
-
-## task1 R 峰伪配对 C1
-
-只读取 task1 train 窗口，且绝不覆盖 `task1_output`。检测信号为去 median baseline 的 watch 与 d12-I；检测器为 `wfdb_xqrs`。心搏以 `[R-200,R+300)` 截取 500 点，**截取阶段不重采样**。
-
-候选心搏采用顺序保持、一对一动态规划匹配，代价包含形态相关、RR 差异和 QRS 宽度差。通过质量门控后，以匹配 R 峰构造 watch-time → d12-time 的单调映射。生成 pseudo d12 时，才以线性插值将原始 d12 全部 12 导联映射到 watch 的 500 Hz、5000 点栅格；全导联共享同一映射。若映射越界或不单调则拒绝窗口。
-
-派生产物仅位于被忽略的 `task1_rpeak_pseudo_output/`：输入仍为 `[N,1,5000]`，伪 target 为 `[N,12,5000]`。manifest 记录每个候选心搏对及 `accepted`、`alignment_quality_score`、`loss_weight`、检测器版本；只有 accepted 窗口可进入 C1。
-The C2 derived set is stored separately in `task1_rpeak_pseudo_output_c2/`; it preserves the 18 C1 windows and adds 15 candidates passing morphology similarity >= 0.90 and alignment quality >= 0.85.
-
-## 架构接入
-
-- B0：严格同步 Ridge 映射后迁移到 task1/task2 validation，必须输出 V0 结果；不实现复杂弱配对/C1 训练。
-- B1/B2/M1：可读取 A/B/C1 配置；B2 的随机导联 mask 仅用于 strict d12 同步增强。
-- Route C has two variants: C1 uses `task1_arm_c_sync_rpeak.yaml`; C2 uses `task1_arm_c_sync_rpeak_c2.yaml` and keeps the strict d12-I branch as the anchor.
-- 所有架构必须保留 `lead_mask`、`missing_mask`、`supervision_mode`、`alignment_mode`、`alignment_quality_score`、`pointwise_loss_allowed`（伪配对为 `pseudo_pointwise_loss_allowed`）。
-
-## 必须检查
-
-形状、互补 mask、subject split、validation d12 未进入 strict/R 峰构造、严格索引去重、R 峰一对一/单调/不越界/12 导联同映射、仅 accepted 进入 C1，以及 V0 task1/task2 和 task2 分设备 subject-macro 报告。
-For C2, additionally verify 18 preserved C1 windows, 15 added windows, accepted status, mapping/warp validity, and quality-based sample weighting.
+P0 是 anchor-only 严格主干；P1 是 context-conditioned，必须加载 P0 权重。train、validation、test 输入同构。前两者以 target I 构造可见输入模拟 anchor；test 由主办方显式传入 machine-I anchor。validation 保留 r_raw_12、r_submit_12、r_missing11；仅 r_submit_12 在输出阶段覆盖 I，作为最接近正式测试的官方成绩。task2 报告需保留 machine/body 分层、subject-macro、V1–V6 RMSE 与 raw-V0 / centered diagnostic 的区别。

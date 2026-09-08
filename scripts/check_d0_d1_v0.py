@@ -1,66 +1,47 @@
-"""Small read-only integration check for D0, D1, and V0."""
+"""Read-only joint-anchor integration check."""
 from __future__ import annotations
-import argparse
 import csv
+import subprocess
 import sys
 from pathlib import Path
 import numpy as np
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ecg12gen.contracts import D12_LEADS, ContractError, SupervisionMode
-from ecg12gen.dataset import ECGDataConfig, UnifiedECGDataset
+import torch
+ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
+from ecg12gen.contracts import ContractError, SupervisionMode, prepare_joint_anchor_inference
 from ecg12gen.d12_pretrain import StrictD12PretrainDataset
-from ecg12gen.evaluate import evaluate_predictions, evaluate_task2_diagnostics, write_report, write_task2_diagnostics
-
-def _all_subjects_match_fixed_split(config: ECGDataConfig, task_id: str) -> None:
-    task_dir = config.path(f"{task_id}_output")
-    with (task_dir / f"{task_id}_window_metadata.csv").open(encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    with config.path("subject_split_csv").open(encoding="utf-8-sig", newline="") as handle:
-        fixed = {row["subject_id"]: row["split"] for row in csv.DictReader(handle)}
-    observed: dict[str, set[str]] = {}
-    for row in rows:
-        assert fixed.get(row["subject_id"]) == row["split"], f"split mismatch: {row['subject_id']}"
-        observed.setdefault(row["subject_id"], set()).add(row["split"])
-    assert all(len(splits) == 1 for splits in observed.values()), "subject leakage between train and validation"
+from ecg12gen.dataset import ECGDataConfig, JointAnchorDataset
+from ecg12gen.evaluate import evaluate_joint_anchor_predictions, evaluate_predictions
+from ecg12gen.losses import joint_anchor_sync_loss, replace_output_i_with_anchor, strict_anchor_pretrain_loss
 
 def main() -> None:
-    parser = argparse.ArgumentParser(); parser.add_argument("--config", default="configs/common.yaml")
-    parser.add_argument("--output-dir", default="check_results/v0_synthetic")
-    args = parser.parse_args(); config = ECGDataConfig.from_yaml(args.config)
-    task1_train, task1_val = UnifiedECGDataset(config, "task1", "train"), UnifiedECGDataset(config, "task1", "validation")
-    task2_train, task2_val = UnifiedECGDataset(config, "task2", "train"), UnifiedECGDataset(config, "task2", "validation")
-    s1, s2 = task1_train[0], task2_train[0]
-    assert s1.X_ecg.shape == (1, 5000) and s1.Y_12lead.shape == (12, 5000)
-    assert s2.X_ecg.shape == (6, 5000) and s2.Y_12lead.shape == (12, 5000)
-    assert tuple(config.signal["twelve_lead_order"]) == D12_LEADS
-    for mode in (SupervisionMode.D12_I_PRETRAIN.value, SupervisionMode.D12_SIX_PRETRAIN.value):
-        try:
-            UnifiedECGDataset(config, "task1", "train", mode)
-            raise AssertionError("Legacy UnifiedECGDataset d12 pretraining entry unexpectedly accepted")
-        except ContractError:
-            pass
-    assert StrictD12PretrainDataset(config, SupervisionMode.D12_I_PRETRAIN.value)[0].X_ecg.shape == (1, 5000)
-    assert StrictD12PretrainDataset(config, SupervisionMode.D12_SIX_PRETRAIN.value)[0].X_ecg.shape == (6, 5000)
-    for dataset in (task1_train, task1_val, task2_train, task2_val):
-        assert len(dataset) > 0 and all(sample.pair_status == "paired" for sample in dataset)
-        assert all(not sample.meta["pointwise_mse_allowed"] for sample in dataset)
-    _all_subjects_match_fixed_split(config, "task1"); _all_subjects_match_fixed_split(config, "task2")
-    # Synthetic data only: no competition validation target is used as prediction.
-    target = np.linspace(-1, 1, num=2 * 12 * 5000, dtype=np.float32).reshape(2, 12, 5000)
-    prediction = target + 0.1
-    overall, details = evaluate_predictions(prediction, target, "task2")
-    report_paths = write_report(args.output_dir, overall, details)
-    diagnostic_metadata = [
-        {"subject_id": "synthetic_machine", "input_type": "ecg_machine_d6"},
-        {"subject_id": "synthetic_scale", "input_type": "body_scale_d6"},
-    ]
-    subject_rows, device_rows = evaluate_task2_diagnostics(prediction, target, diagnostic_metadata)
-    diagnostic_paths = write_task2_diagnostics(args.output_dir, subject_rows, device_rows, report_paths[2])
-    assert len(subject_rows) == 2 and {row["input_type"] for row in device_rows} == {"all", "ecg_machine_d6", "body_scale_d6"}
-    assert all("generated_v1_v6_mean_pearson_r" in row for row in device_rows)
-    assert all(path.is_file() for path in diagnostic_paths)
-    print("PASS: D0 shapes/order, D1 gates/split protection, and V0 synthetic report")
-    print(f"Rows: task1 train={len(task1_train)}, validation={len(task1_val)}; task2 train={len(task2_train)}, validation={len(task2_val)}")
-
-if __name__ == "__main__":
-    main()
+    cfg = ECGDataConfig.from_yaml(ROOT / "configs" / "common.yaml")
+    # Public metadata must remain exactly as versioned; data readers use mmap="r".
+    assert subprocess.run(["git", "diff", "--quiet", "--", "metadata/subject_split.csv", "metadata/d12_strict_pretrain_index.csv"], cwd=ROOT).returncode == 0
+    strict = StrictD12PretrainDataset(cfg, SupervisionMode.D12_I_PRETRAIN.value)
+    with (ROOT / "metadata" / "d12_strict_pretrain_index.csv").open(encoding="utf-8-sig", newline="") as h: rows = list(csv.DictReader(h))
+    assert rows and len(rows) == len(strict) and all(r["source_split"] == "train" for r in rows) and len({r["dedup_key"] for r in rows}) == len(rows)
+    datasets = [JointAnchorDataset(cfg, task, split) for task in ("task1", "task2") for split in ("train", "validation")]
+    five = JointAnchorDataset(cfg, "task2", "train", context_channel_indices=(1,2,3,4,5))
+    for data in datasets + [five]:
+        sample = data[0]; assert len(data) > 0 and np.array_equal(sample.anchor_i_ecg, sample.Y_12lead[:1])
+        assert sample.anchor_target_sync and not sample.context_target_sync and sample.pointwise_loss_allowed
+        assert sample.anchor_lead_mask.tolist() == [True] + [False] * 11
+        assert sample.meta["anchor_construction"] == "simulated_from_target_i_for_test_available_input"
+    assert five[0].context_ecg.shape == (5, 5000)
+    assert torch.equal(replace_output_i_with_anchor(torch.zeros((1,12,5000)), torch.ones((1,1,5000)))[:, :1], torch.ones((1,1,5000)))
+    try: prepare_joint_anchor_inference(np.zeros((1,5000), np.float32), task_id="task1", context_source_type="watch_ecg", anchor_i_ecg=None); raise AssertionError("missing anchor accepted")
+    except ContractError: pass
+    try: prepare_joint_anchor_inference(np.zeros((1,5000), np.float32), task_id="task1", context_source_type="watch_ecg", anchor_i_ecg=np.zeros((1,5000)), target=np.zeros((12,5000))); raise AssertionError("target accepted")
+    except TypeError: pass
+    target = np.linspace(-1, 1, 2 * 12 * 5000, dtype=np.float32).reshape(2,12,5000); overall, details = evaluate_predictions(target, target, "task2")
+    assert overall["evaluation_input_contract"] == "joint_anchor_test_like" and all(not row["input_present"] for row in details[1:])
+    raw = target.copy(); raw[:, :1] *= -1
+    summary, raw_details, submit_details, submit = evaluate_joint_anchor_predictions(raw, target, target[:, :1], "task2")
+    assert summary["r_submit_12"] > summary["r_raw_12"] and summary["r_missing11"] == np.mean([row["pearson_r"] for row in raw_details[1:]])
+    prediction_t, target_t, anchor_t = torch.randn(2,12,500), torch.randn(2,12,500), torch.randn(2,1,500)
+    assert torch.isfinite(strict_anchor_pretrain_loss(prediction_t, target_t, anchor_t))
+    assert torch.isfinite(joint_anchor_sync_loss(prediction_t, target_t, anchor_t))
+    legacy = ["configs/rpeak_pseudopair.yaml", "ecg12gen/rpeak_pseudopair.py", "scripts/build_rpeak_pseudopairs.py", "configs/experiments/task1_arm_a_weak.yaml"]
+    assert not any((ROOT / p).exists() for p in legacy)
+    print(f"PASS: strict train-only index and joint-anchor contract ({len(strict)} strict rows)")
+if __name__ == "__main__": main()
