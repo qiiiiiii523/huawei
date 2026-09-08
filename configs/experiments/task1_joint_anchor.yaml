@@ -1,0 +1,62 @@
+experiment: task1_joint_anchor
+context_fusion_protocol: configs/context_fusion_protocol.yaml
+strict_stage:
+  supervision_mode: d12_i_pretrain
+  train_only: true
+  anchor_target_relation: same_record_same_window
+  pointwise_loss_allowed: true
+  loss_profile: strict_anchor_pretrain
+experiments:
+  P0_anchor_only:
+    input: machine_i_anchor
+    initialization: strict_anchor_pretrain
+    context_enabled: false
+    output: full_d12_prediction
+    training_output_i_replacement: forbidden
+    validation_metrics: [r_raw_12, r_submit_12, r_missing11]
+  P1-C1:
+    protocol_stage: P1-C1
+    input: [watch_ecg_context, machine_i_anchor]
+    context_source: watch_ecg
+    fusion_mode: film
+    initialization: compatible_same_architecture_P0_checkpoint_required
+    context_target_relation: same_subject_cross_time
+    anchor_target_relation: same_record_same_window
+    output: full_d12_prediction
+    training_output_i_replacement: forbidden
+    validation_metrics: [r_raw_12, r_submit_12, r_missing11]
+  P1-C2:
+    protocol_stage: P1-C2
+    input: [watch_ecg_context, machine_i_anchor]
+    context_source: watch_ecg
+    fusion_mode: gated_residual
+    initialization: compatible_same_architecture_P0_checkpoint_required
+    context_target_relation: same_subject_cross_time
+    anchor_target_relation: same_record_same_window
+    output: full_d12_prediction
+    training_output_i_replacement: forbidden
+    validation_metrics: [r_raw_12, r_submit_12, r_missing11]
+  P1-C3:
+    protocol_stage: P1-C3
+    input: [watch_ecg_context, machine_i_anchor]
+    context_source: watch_ecg
+    fusion_mode: film_gated_residual
+    initialization: compatible_same_architecture_P0_checkpoint_required
+    context_target_relation: same_subject_cross_time
+    anchor_target_relation: same_record_same_window
+    output: full_d12_prediction
+    training_output_i_replacement: forbidden
+    validation_metrics: [r_raw_12, r_submit_12, r_missing11]
+joint_stage:
+  supervision_mode: joint_anchor_adaptation
+  context_source: watch_ecg
+  context_fusion_stages: [P1-C1, P1-C2, P1-C3]
+  anchor_source: ecg_machine_i
+  context_target_relation: same_subject_cross_time
+  anchor_target_relation: same_record_same_window
+  pointwise_loss_allowed: true
+  observed_target_time_leads: [I]
+  generated_leads: [II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6]
+  loss_profile: joint_anchor_sync
+  training_output_i_replacement: forbidden
+  validation_submit_output_i_replacement: required

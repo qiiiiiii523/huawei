@@ -16,8 +16,8 @@ class StrictD12PretrainDataset:
 
     def __init__(self, config: ECGDataConfig | str | Path, mode: str) -> None:
         self.config = ECGDataConfig.from_yaml(config) if not isinstance(config, ECGDataConfig) else config
-        if mode not in {SupervisionMode.D12_I_PRETRAIN.value, SupervisionMode.D12_SIX_PRETRAIN.value}:
-            raise ContractError("Strict d12 dataset mode must be d12_i_pretrain or d12_six_pretrain")
+        if mode != SupervisionMode.D12_I_PRETRAIN.value:
+            raise ContractError("Strict d12 dataset mode must be d12_i_pretrain")
         self.mode = SupervisionMode(mode)
         index_path = self.config.repository_root / "metadata" / "d12_strict_pretrain_index.csv"
         with index_path.open(encoding="utf-8-sig", newline="") as handle:
@@ -35,10 +35,10 @@ class StrictD12PretrainDataset:
     def __getitem__(self, index: int) -> ECGSample:
         row = self.rows[index]
         target = np.asarray(self.targets[row["source_task_id"]][int(row["source_array_index"])], dtype=np.float32)
-        channels = 1 if self.mode == SupervisionMode.D12_I_PRETRAIN else 6
+        channels = 1
         sample = ECGSample(
             X_ecg=target[:channels], lead_mask=canonical_lead_mask(channels), Y_12lead=target,
-            missing_mask=~canonical_lead_mask(channels), task_id="task1" if channels == 1 else "task2",
+            missing_mask=~canonical_lead_mask(channels), task_id="task1",
             ppg=None, acc=None, meta={"subject_id": row["subject_id"], "window_id": row["window_id"], "strict_id": row["strict_id"], "target_record_id": row["target_record_id"], "alignment_quality_score": 1.0, "pointwise_loss_allowed": True},
             modality_mask={"ppg": False, "acc": False}, split="train", supervision_mode=self.mode.value,
             pairing_type="within_d12_sync", alignment_mode="same_window", pair_confidence="not_applicable", pair_status="paired",

@@ -1,0 +1,158 @@
+protocol_version: "context-fusion-standard-v1"
+protocol_status: frozen_public_experiment_standard
+scope:
+  applies_to: [B0, B1, B2, B3, M1]
+  network_implementation: baseline_owned
+  main_does_not_implement_fusion_modules: true
+  architecture_comparison_requires_same_network_architecture: true
+
+experiment_stages:
+  P0_anchor_only:
+    name: P0_anchor_only
+    supervision_mode: d12_i_pretrain
+    input: "machine I(C)"
+    target: "machine d12(C)"
+    context_enabled: false
+    fusion_mode: none
+    initialization: from_scratch_strict_pretraining
+    strict_index: metadata/d12_strict_pretrain_index.csv
+    loss: strict_anchor_pretrain
+    training_output_i_replacement: forbidden
+  P1-C1:
+    name: P1-C1
+    supervision_mode: joint_anchor_adaptation
+    input: "context + machine I(C)"
+    target: "machine d12(C)"
+    context_enabled: true
+    fusion_mode: film
+    definition: "z_context -> gamma,beta; modulate anchor backbone feature"
+    initialization: compatible_same_architecture_P0_checkpoint_required
+    p0_checkpoint_compatibility:
+      required: true
+      same_network_architecture: true
+      structure_configuration_compatible: true
+      required_metadata: [architecture_id, architecture_config_hash]
+      incompatible_checkpoint_action: fail_with_architecture_mismatch
+    training_output_i_replacement: forbidden
+  P1-C2:
+    name: P1-C2
+    supervision_mode: joint_anchor_adaptation
+    input: "context + machine I(C)"
+    target: "machine d12(C)"
+    context_enabled: true
+    fusion_mode: gated_residual
+    definition: "pred = base_pred + gate(z_context) * delta(anchor_feature,z_context)"
+    initialization: compatible_same_architecture_P0_checkpoint_required
+    p0_checkpoint_compatibility:
+      required: true
+      same_network_architecture: true
+      structure_configuration_compatible: true
+      required_metadata: [architecture_id, architecture_config_hash]
+      incompatible_checkpoint_action: fail_with_architecture_mismatch
+    training_output_i_replacement: forbidden
+  P1-C3:
+    name: P1-C3
+    supervision_mode: joint_anchor_adaptation
+    input: "context + machine I(C)"
+    target: "machine d12(C)"
+    context_enabled: true
+    fusion_mode: film_gated_residual
+    definition: "first FiLM, then gated residual"
+    initialization: compatible_same_architecture_P0_checkpoint_required
+    p0_checkpoint_compatibility:
+      required: true
+      same_network_architecture: true
+      structure_configuration_compatible: true
+      required_metadata: [architecture_id, architecture_config_hash]
+      incompatible_checkpoint_action: fail_with_architecture_mismatch
+    training_output_i_replacement: forbidden
+
+fusion_definitions:
+  C1:
+    stage: P1-C1
+    fusion_mode: film
+    operation: "z_context -> gamma,beta; broadcast to and modulate anchor feature"
+    gate_enabled: false
+    residual_enabled: false
+  C2:
+    stage: P1-C2
+    fusion_mode: gated_residual
+    operation: "pred = base_pred + gate(z_context) * delta(anchor_feature,z_context)"
+    gate_enabled: true
+    residual_enabled: true
+  C3:
+    stage: P1-C3
+    fusion_mode: film_gated_residual
+    operation_order: [film, gated_residual]
+    gate_enabled: true
+    residual_enabled: true
+  initialization:
+    gate_initial_value: 0.05
+    gate_logit_bias: -2.944439
+    gate_mlp_final_weight_zero_init: true
+    residual_last_layer_weight_zero_init: true
+    residual_last_layer_bias_zero_init: true
+
+task_inputs:
+  task1:
+    name: task1_watch
+    context: "watch I(A)"
+    anchor: "machine I(C)"
+    target: "machine d12(C)"
+    context_source_variant: watch_ecg
+  task2:
+    mutually_exclusive_context_source_variants: true
+    combined_context_variant_declared: false
+    machine:
+      name: task2_machine
+      context: "machine/holter d6(B)"
+      context_source_variant: ecg_machine_d6
+      anchor: "machine I(C)"
+      target: "machine d12(C)"
+    body:
+      name: task2_body
+      context: "body-scale d6(A)"
+      context_source_variant: body_scale_d6
+      anchor: "machine I(C)"
+      target: "machine d12(C)"
+
+shared_p1_rules:
+  loss: joint_anchor_sync_loss
+  subject_split: fixed_subject_level
+  preprocessing: frozen_train_fitted_preprocessing
+  context_target_relation: same_subject_cross_time
+  anchor_target_relation: same_record_same_window
+  context_target_pointwise_loss: forbidden
+  cross_time_waveform_hard_alignment: forbidden
+  r_peak_pseudo_pairing: forbidden
+  training_stage_i_replacement: forbidden
+  output: full_d12_prediction
+  same_task_same_architecture_same_budget: required
+  checkpoint_selection: best_validation_official_raw_uV_v0
+  validation_test_submit_i_replacement: required
+  context_is_conditioning_only: true
+
+fair_comparison:
+  required_for: [B0, B1, B2, B3, M1]
+  minimum_runs: [P0_anchor_only, P1-C3]
+  complete_ablation_required_for: [B2, M1]
+  same_task: true
+  same_subject_split: true
+  same_preprocessing: true
+  same_loss: true
+  same_training_budget: true
+  same_checkpoint_rule: true
+  shuffled_context_diagnostic:
+    required_for: [P1-C1, P1-C2, P1-C3]
+reporting:
+  required_metrics: [r_raw_12, r_submit_12, r_missing11, RMSE]
+  task2_extra_metrics: [machine_body_stratified, subject_macro, V1-V6_diagnostics, shuffled_context]
+  checkpoint_metric_view: raw_uV_v0
+  architecture_fields: [architecture_id, architecture_config_hash]
+
+forbidden:
+  context_target_pointwise_loss: true
+  cross_time_waveform_hard_alignment: true
+  r_peak_pseudo_pairing: true
+  training_stage_i_replacement: true
+  task2_both_context_variant: true

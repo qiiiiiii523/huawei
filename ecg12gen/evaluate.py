@@ -8,6 +8,7 @@ import numpy as np
 from .contracts import D12_LEADS, ContractError, canonical_lead_mask
 
 TASK2_GENERATED_LEAD_INDICES = np.arange(6, 12)
+MISSING_11_LEAD_INDICES = np.arange(1, 12)
 def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     x, y = x.astype(np.float64, copy=False), y.astype(np.float64, copy=False)
     x, y = x - x.mean(), y - y.mean()
@@ -30,7 +31,8 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
     if not np.isfinite(prediction).all() or not np.isfinite(target).all():
         raise ContractError("V0 evaluation requires finite prediction and target values")
     if lead_mask is None:
-        mask = np.broadcast_to(canonical_lead_mask(1 if task_id == "task1" else 6), (prediction.shape[0], 12))
+        # At target time both tasks receive only the same-window machine-I anchor.
+        mask = np.broadcast_to(canonical_lead_mask(1), (prediction.shape[0], 12))
     else:
         mask = np.asarray(lead_mask, dtype=bool)
         if mask.shape == (12,):
@@ -49,6 +51,10 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
     mean_r = float(np.nanmean(correlations))
     overall: dict[str, float | str] = {
         "split": "validation", "task_id": task_id, "n_windows": int(prediction.shape[0]),
+        "evaluation_input_contract": "joint_anchor_test_like",
+        "context_target_relation": "same_subject_cross_time",
+        "anchor_target_relation": "same_record_same_window",
+        "anchor_available_at_test": True,
         "twelve_lead_mean_pearson_r": mean_r, "twelve_lead_mean_rmse_uV": float(np.mean(rmses)),
         "task1_r1": mean_r if task_id == "task1" else float("nan"),
         "task2_r2": mean_r if task_id == "task2" else float("nan"),
@@ -75,6 +81,37 @@ def evaluate_centered_diagnostic(prediction_uV: np.ndarray, target_uV: np.ndarra
     overall, details = evaluate_predictions(centered_prediction, centered_target, task_id, lead_mask)
     overall = {**overall, "evaluation_view": "centered_diagnostic_not_official"}
     return overall, details
+
+
+def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray,
+                                      anchor_i_ecg: np.ndarray, task_id: str) -> tuple[dict[str, float | str], list[dict[str, float | str]], list[dict[str, float | str]], np.ndarray]:
+    """Evaluate P0/P1 validation with raw, submit-like, and missing-11 views.
+
+    Training must use ``prediction_raw`` unchanged.  Only this validation/test
+    helper constructs ``prediction_submit`` by copying the openly supplied
+    target-time machine-I anchor into output lead I.
+    """
+    raw = np.asarray(prediction_raw)
+    anchor = np.asarray(anchor_i_ecg)
+    if raw.ndim != 3 or raw.shape[1:] != (12, 5000):
+        raise ContractError("prediction_raw must have shape [N,12,5000]")
+    if anchor.shape != (raw.shape[0], 1, 5000):
+        raise ContractError("anchor_i_ecg must have shape [N,1,5000]")
+    observed_mask = np.broadcast_to(canonical_lead_mask(1), (raw.shape[0], 12))
+    raw_overall, raw_details = evaluate_predictions(raw, target, task_id, observed_mask)
+    submit = raw.copy()
+    submit[:, :1] = anchor
+    submit_overall, submit_details = evaluate_predictions(submit, target, task_id, observed_mask)
+    missing_r = float(np.nanmean([float(row["pearson_r"]) for row in raw_details[1:]]))
+    summary: dict[str, float | str] = {
+        **submit_overall,
+        "prediction_view": "submit_anchor_i_replaced",
+        "r_raw_12": float(raw_overall["twelve_lead_mean_pearson_r"]),
+        "r_submit_12": float(submit_overall["twelve_lead_mean_pearson_r"]),
+        "r_missing11": missing_r,
+        "r_missing11_leads": ",".join(D12_LEADS[index] for index in MISSING_11_LEAD_INDICES),
+    }
+    return summary, raw_details, submit_details, submit
 
 def _summary_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, float]:
     """Summarize a task-2 subset without changing the official V0 metric."""
@@ -248,21 +285,26 @@ def _validation_metadata_rows(path: Path, expected_n: int) -> list[dict[str, str
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the fixed V0 validation protocol.")
     parser.add_argument("--prediction", required=True, help="[N,12,5000] NPY model prediction")
+    parser.add_argument("--anchor", required=True, help="[N,1,5000] explicit machine-I anchor NPY")
     parser.add_argument("--target", required=True, help="[N,12,5000] validation target NPY")
     parser.add_argument("--metadata", required=True, help="Window metadata CSV; validation rows are required")
     parser.add_argument("--task-id", required=True, choices=("task1", "task2"))
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--write-centered-diagnostic", action="store_true", help="Also write a non-official per-window-centered morphology report.")
     args = parser.parse_args()
-    prediction, target = np.load(args.prediction, mmap_mode="r"), np.load(args.target, mmap_mode="r")
+    prediction, target, anchor = (np.load(args.prediction, mmap_mode="r"), np.load(args.target, mmap_mode="r"),
+                                  np.load(args.anchor, mmap_mode="r"))
     metadata_rows = _validation_metadata_rows(Path(args.metadata), len(prediction))
-    overall, details = evaluate_predictions(prediction, target, args.task_id)
-    paths = list(write_report(args.output_dir, overall, details))
+    overall, raw_details, submit_details, prediction_submit = evaluate_joint_anchor_predictions(prediction, target, anchor, args.task_id)
+    paths = list(write_report(args.output_dir, overall, submit_details, title="Joint-anchor submit-like V0 validation report"))
+    primary_report = paths[-1]
+    raw_overall, _ = evaluate_predictions(prediction, target, args.task_id)
+    paths.extend(write_report(Path(args.output_dir) / "raw_prediction", raw_overall, raw_details, title="Raw model prediction diagnostic"))
     if args.task_id == "task2":
-        subject_rows, device_rows = evaluate_task2_diagnostics(prediction, target, metadata_rows)
-        paths.extend(write_task2_diagnostics(args.output_dir, subject_rows, device_rows, paths[-1]))
+        subject_rows, device_rows = evaluate_task2_diagnostics(prediction_submit, target, metadata_rows)
+        paths.extend(write_task2_diagnostics(args.output_dir, subject_rows, device_rows, primary_report))
     if args.write_centered_diagnostic:
-        centered_prediction = _center_per_window_uV(prediction)
+        centered_prediction = _center_per_window_uV(prediction_submit)
         centered_target = _center_per_window_uV(target)
         centered_overall, centered_details = evaluate_centered_diagnostic(centered_prediction, centered_target, args.task_id)
         centered_dir = Path(args.output_dir) / "centered_diagnostic"
