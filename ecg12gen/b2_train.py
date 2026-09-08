@@ -13,12 +13,13 @@ from torch.utils.data import DataLoader
 
 from .b2_data import B2PreparedDataset, b2_collate
 from .b2_model import B2JointAnchorPatchTransformer
-from .evaluate import evaluate_joint_anchor_predictions, evaluate_task2_diagnostics
+from .evaluate import evaluate_centered_diagnostic, evaluate_joint_anchor_predictions, evaluate_task2_diagnostics
 from .losses import joint_anchor_sync_loss, strict_anchor_pretrain_loss
 from .training import seed_everything
 
 P0_STAGE, P1_STAGE = "P0_anchor_only", "P1_joint_anchor"
 MAX_EPOCHS = 200
+GRAD_CLIP_NORM = 1.0
 
 
 def _loader(dataset: B2PreparedDataset, shuffle: bool, seed: int) -> DataLoader:
@@ -58,6 +59,10 @@ def validate_v0(model: B2JointAnchorPatchTransformer, dataset: B2PreparedDataset
         target.append(batch["raw_target_uV"].numpy()); anchor.append(batch["raw_anchor_i_uV"].numpy()); metadata.extend(batch["meta"])
     prediction, target_array, anchor_array = np.concatenate(raw), np.concatenate(target), np.concatenate(anchor)
     overall, _, _, submit = evaluate_joint_anchor_predictions(prediction, target_array, anchor_array, task_id)
+    centered, centered_details = evaluate_centered_diagnostic(submit, target_array, task_id)
+    overall["centered_r_12"] = float(centered["twelve_lead_mean_pearson_r"])
+    overall["centered_rmse_uV"] = float(centered["twelve_lead_mean_rmse_uV"])
+    overall["centered_r_missing11"] = float(np.nanmean([float(row["pearson_r"]) for row in centered_details[1:]]))
     if task_id == "task2":
         subjects, devices = evaluate_task2_diagnostics(
             submit, target_array,
@@ -124,17 +129,24 @@ def fit_b2(model: B2JointAnchorPatchTransformer, train_dataset: B2PreparedDatase
         for batch in _loader(train_dataset, True, 42):
             moved = _move(batch, device_t); optimizer.zero_grad(set_to_none=True)
             prediction = _forward(model, moved, task_id)
-            loss = (strict_anchor_pretrain_loss(prediction, moved["target_model"], moved["anchor_model"]) if stage == P0_STAGE
-                    else joint_anchor_sync_loss(prediction, moved["target_model"], moved["anchor_model"]))
-            loss.backward(); optimizer.step(); total += float(loss.detach().cpu())
+            loss = (strict_anchor_pretrain_loss(prediction, moved["target_model"], moved["anchor_model"],
+                                                d12_scale_uV=d12_scale_uV) if stage == P0_STAGE
+                    else joint_anchor_sync_loss(prediction, moved["target_model"], moved["anchor_model"],
+                                                d12_scale_uV=d12_scale_uV))
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
+            optimizer.step(); total += float(loss.detach().cpu())
         validation = validate_v0(model, validation_dataset, np.asarray(d12_scale_uV, np.float32), task_id, device_t)
         history.append({"epoch": epoch, "train_loss": total / max(len(_loader(train_dataset, False, 42)), 1), "validation": validation.overall})
         if validation.metric_value > best:
             best = validation.metric_value; _save_validation(output, validation)
             torch.save({"schema": model.checkpoint_schema, "model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch,
                         "stage": stage, "task_id": task_id, "model_config": asdict(model.config), "p0_checkpoint": str(p0_checkpoint) if p0_checkpoint else None,
+                        "d12_scale_uV": np.asarray(d12_scale_uV, dtype=np.float32).tolist(),
                         "checkpoint_selection": "best_validation_raw_uV_submit_anchor_i_replaced_v0"}, best_path)
     history_payload: dict[str, Any] = {"stage": stage, "epochs_requested": epochs,
+        "optimizer": {"name": "AdamW", "learning_rate": 0.001, "weight_decay": 0.0001,
+                       "gradient_clip_norm": GRAD_CLIP_NORM},
         "checkpoint_selection": "raw_uV_submit_anchor_i_replaced_v0", "history": history}
     best_payload = None
     if stage == P0_STAGE or validation_views:

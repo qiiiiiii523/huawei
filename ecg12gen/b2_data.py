@@ -68,19 +68,33 @@ def _stack(values: list[np.ndarray], name: str) -> np.ndarray:
 
 
 def fit_b2_preprocessor(config_path: str | Path, task_id: str, body_scale_variant: str = "A_raw_window",
-                        context_channel_indices: tuple[int, ...] | None = None) -> ECGPreprocessor:
-    """Fit all required source scales from train-only main Dataset views."""
+                        context_channel_indices: tuple[int, ...] | None = None,
+                        d12_scale_uV: np.ndarray | None = None) -> ECGPreprocessor:
+    """Fit train-only source scales, with one canonical strict-train d12 scale.
+
+    The d12 target coordinate system is fitted from the de-duplicated strict
+    train index.  P1 may pass the P0 scale explicitly so loading a P0
+    checkpoint never changes the target coordinate system.
+    """
     root = ECGDataConfig.from_yaml(config_path).repository_root
     config = PreprocessingConfig.from_yaml(root / "configs" / "preprocessing.yaml")
+    strict = StrictD12PretrainDataset(config_path, SupervisionMode.D12_I_PRETRAIN.value)
     samples = _joint_samples(config_path, task_id, "train", body_scale_variant, context_channel_indices)
-    signals: dict[str, list[np.ndarray]] = {"d12": []}
+    signals: dict[str, list[np.ndarray]] = {"d12": [sample.Y_12lead for sample in strict]}
     for sample in samples:
         signals["d12"].append(sample.Y_12lead)
         context = sample.context_ecg
         if sample.task_id == "task2" and context.shape[0] < 6:
             full = np.zeros((6, 5000), dtype=np.float32); full[np.flatnonzero(sample.context_lead_mask)] = context; context = full
         signals.setdefault(sample.context_source_type, []).append(context)
-    return ECGPreprocessor.fit(config, {name: _stack(values, name) for name, values in signals.items()})
+    preprocessor = ECGPreprocessor.fit(config, {name: _stack(values, name) for name, values in signals.items()})
+    if d12_scale_uV is not None:
+        scale = np.asarray(d12_scale_uV, dtype=np.float32)
+        if scale.shape != (12,) or not np.isfinite(scale).all() or np.any(scale <= 0):
+            raise ValueError("d12_scale_uV must be finite, positive, and have shape [12]")
+        preprocessor.scale_uV_by_source["d12"] = scale.copy()
+        preprocessor.scale_uV_by_source["ecg_machine_i"] = scale[:1].copy()
+    return preprocessor
 
 
 def _canonical_d6(raw: np.ndarray, lead_mask: np.ndarray, source: str, preprocessor: ECGPreprocessor) -> np.ndarray:

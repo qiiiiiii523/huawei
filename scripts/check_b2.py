@@ -32,9 +32,10 @@ def main() -> None:
     assert raw_p0.shape == (2,12,5000) and torch.allclose(raw_p0, raw_c2, atol=1e-6)
     assert abs(float(torch.sigmoid(c2.gate.bias).mean().detach()) - .03) < .002
     assert _forward(c2,batch,"task2").shape == (2,12,5000)
-    assert torch.isfinite(strict_anchor_pretrain_loss(raw_p0,batch["target_model"],batch["anchor_model"]))
-    assert torch.isfinite(joint_anchor_sync_loss(raw_c2,batch["target_model"],batch["anchor_model"]))
-    changed=batch["target_model"].clone(); changed[:,:1]+=100; assert not torch.allclose(joint_anchor_sync_loss(raw_c2,changed,batch["anchor_model"]), joint_anchor_sync_loss(raw_c2,batch["target_model"],batch["anchor_model"]))
+    scale = torch.linspace(200.0, 900.0, 12)
+    assert torch.isfinite(strict_anchor_pretrain_loss(raw_p0,batch["target_model"],batch["anchor_model"],d12_scale_uV=scale))
+    assert torch.isfinite(joint_anchor_sync_loss(raw_c2,batch["target_model"],batch["anchor_model"],d12_scale_uV=scale))
+    changed=batch["target_model"].clone(); changed[:,:1]+=100; assert not torch.allclose(joint_anchor_sync_loss(raw_c2,changed,batch["anchor_model"],d12_scale_uV=scale), joint_anchor_sync_loss(raw_c2,batch["target_model"],batch["anchor_model"],d12_scale_uV=scale))
     pre1=fit_b2_preprocessor(ROOT/"configs"/"common.yaml","task1"); strict=build_strict_dataset(ROOT/"configs"/"common.yaml",pre1); t1=build_joint_dataset(ROOT/"configs"/"common.yaml","task1","validation",pre1,context_view="shuffle_watch")
     assert strict[0].anchor_model.shape==(1,5000) and not strict[0].watch_available and t1[0].meta["context_shuffled"] and t1[0].meta["context_subject_id"] != t1[0].meta["subject_id"]
     pre2=fit_b2_preprocessor(ROOT/"configs"/"common.yaml","task2"); machine=build_joint_dataset(ROOT/"configs"/"common.yaml","task2","validation",pre2,context_view="machine"); body=build_joint_dataset(ROOT/"configs"/"common.yaml","task2","validation",pre2,context_view="body")

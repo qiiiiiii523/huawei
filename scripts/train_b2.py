@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+import torch
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
@@ -13,6 +15,23 @@ from ecg12gen.b2_data import (build_joint_dataset, build_strict_dataset, dataset
                                fit_b2_preprocessor, task2_dual_intersection)
 from ecg12gen.b2_model import B2JointAnchorPatchTransformer, B2ModelConfig
 from ecg12gen.b2_train import MAX_EPOCHS, P0_STAGE, P1_STAGE, fit_b2
+
+
+def _p0_d12_scale(checkpoint_path: str | Path) -> np.ndarray:
+    """Read the target scale used by the P0 checkpoint for P1 reuse."""
+    checkpoint = Path(checkpoint_path)
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if payload.get("d12_scale_uV") is not None:
+        scale = np.asarray(payload["d12_scale_uV"], dtype=np.float32)
+    else:
+        scale_path = checkpoint.with_name("preprocessing_scales.json")
+        if not scale_path.exists():
+            raise SystemExit("P0 checkpoint has no d12 scale; expected d12_scale_uV in checkpoint or preprocessing_scales.json beside it")
+        with scale_path.open(encoding="utf-8") as handle:
+            scale = np.asarray(json.load(handle)["d12"], dtype=np.float32)
+    if scale.shape != (12,) or not np.isfinite(scale).all() or np.any(scale <= 0):
+        raise SystemExit("P0 d12 scale must be finite, positive, and have shape [12]")
+    return scale
 
 
 def _spec(name: str) -> tuple[dict[str, object], dict[str, object]]:
@@ -48,7 +67,9 @@ def main() -> None:
         (output / "task2_common_intersection.json").write_text(json.dumps(intersection, indent=2), encoding="utf-8")
         if view == "both" and (not intersection["train"]["both_rows"] or not intersection["validation"]["both_rows"]):
             raise SystemExit(f"T2-both is disabled: exact machine/body intersection is empty; {intersection}")
-    preprocessor = fit_b2_preprocessor(args.config, args.task_id, args.body_scale_variant, indices)
+    p0_d12_scale = _p0_d12_scale(args.p0_checkpoint) if stage == P1_STAGE else None
+    preprocessor = fit_b2_preprocessor(args.config, args.task_id, args.body_scale_variant, indices,
+                                        d12_scale_uV=p0_d12_scale)
     train = build_strict_dataset(args.config, preprocessor) if stage == P0_STAGE else build_joint_dataset(args.config, args.task_id, "train", preprocessor, args.body_scale_variant, indices, view, common_intersection=args.common_intersection)
     validation_view = "auto" if stage == P0_STAGE else view
     validation = build_joint_dataset(args.config, args.task_id, "validation", preprocessor, args.body_scale_variant, indices, validation_view, common_intersection=args.common_intersection)
@@ -68,6 +89,9 @@ def main() -> None:
         "context_view": view, "common_intersection": args.common_intersection, "diagnostic_only": bool(exp.get("diagnostic_only", False)), "p0_checkpoint": args.p0_checkpoint,
         "model_config": model_config.__dict__, "epochs": args.epochs, "train": dataset_summary(train), "validation": dataset_summary(validation),
         "validation_views": {name: dataset_summary(dataset) for name, dataset in (validation_views or {}).items()},
+        "preprocessing": {"d12_scale_source": "p0_checkpoint" if p0_d12_scale is not None else "strict_train_index",
+                          "p0_d12_scale_reused": p0_d12_scale is not None},
+        "optimizer": {"name": "AdamW", "learning_rate": 0.001, "weight_decay": 0.0001, "gradient_clip_norm": 1.0},
         "task2_common_intersection": intersection, "training_output_i_replacement": "forbidden",
         "validation_input_contract": "joint_anchor_test_like"}, indent=2), encoding="utf-8")
     checkpoint = fit_b2(B2JointAnchorPatchTransformer(model_config), train, validation, preprocessor.scale_uV_by_source["d12"],

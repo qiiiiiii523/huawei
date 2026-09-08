@@ -75,7 +75,7 @@ python scripts/predict_b2.py --checkpoint results/t1_c2_watch/b2_best.pt --task-
 python scripts/predict_b2.py --checkpoint results/t2_machine/b2_best.pt --task-id task2 --anchor-npy organizer_anchor_i.npy --machine-d6-context-npy organizer_machine_d6.npy --output-dir results/t2_test
 ```
 
-提交前运行 `python scripts/check_b2.py`。B2 使用 main 的 frozen preprocessing、`strict_anchor_pretrain_loss`、`joint_anchor_sync_loss` 和 raw-uV V0；训练时不替换模型预测 I，只有 validation/test submit 组装时替换。
+提交前运行 `python scripts/check_b2.py`。B2 保持纯 Patch Transformer，不加载 B0 线性权重；使用 main 的 scale-aware `strict_anchor_pretrain_loss`、`joint_anchor_sync_loss` 和 raw-uV V0。P0 的 d12 scale 从 strict train index 拟合，P1 复用 P0 checkpoint 的 d12 scale；训练时不替换模型预测 I，只有 validation/test submit 组装时替换。训练使用 AdamW 和 1.0 梯度裁剪，并同时记录 centered morphology 诊断，不替代 official raw V0。
 
 `main` 是供组员创建 baseline 分支的公共底座。它提供数据、预处理、loss、评估和检查；**不提供网络、训练循环、checkpoint 或预测结果**。
 
