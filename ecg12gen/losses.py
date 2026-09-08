@@ -48,19 +48,22 @@ def strict_anchor_pretrain_loss(prediction: torch.Tensor, target: torch.Tensor,
                                 pcc_weight: float = 0.1, physiology_weight: float = 0.05,
                                 observed_weight: float = 0.02,
                                 d12_scale_uV: torch.Tensor | None = None) -> torch.Tensor:
-    """Strict same-window machine-I -> d12 loss; all twelve leads are trained."""
+    """B2-only legacy strict loss for same-window machine-I -> d12 pretraining.
+
+    This intentionally matches the previous B2 strict-pretraining objective:
+    supervise only the eleven leads missing from the I anchor with Huber + PCC.
+    The physiology and observed-consistency terms belong to the current joint
+    loss and are not used in this P0 ablation.  The extra keyword arguments are
+    retained for compatibility with the shared B2 training call.
+    """
     if prediction.shape != target.shape or prediction.ndim != 3 or prediction.shape[1] != 12:
         raise ValueError("prediction and target must be matching [batch,12,time]")
     if anchor_i.shape != prediction[:, :1].shape:
         raise ValueError("anchor_i must be [batch,1,time]")
-    all_leads = torch.ones(prediction.shape[:2], dtype=torch.bool, device=prediction.device)
-    anchor_mask = torch.zeros_like(all_leads); anchor_mask[:, 0] = True
-    physiology = (physiology_constraint_loss(prediction, d12_scale_uV)
-                  if physiology_weight else prediction.new_zeros(()))
-    return (huber_weight * masked_huber_loss(prediction, target, all_leads) +
-            pcc_weight * masked_pcc_loss(prediction, target, all_leads) +
-            physiology_weight * physiology +
-            observed_weight * observed_consistency_loss(prediction, anchor_i.expand_as(prediction), anchor_mask))
+    missing_leads = torch.ones(prediction.shape[:2], dtype=torch.bool, device=prediction.device)
+    missing_leads[:, 0] = False
+    return (huber_weight * masked_huber_loss(prediction, target, missing_leads) +
+            pcc_weight * masked_pcc_loss(prediction, target, missing_leads))
 
 
 def joint_anchor_sync_loss(prediction: torch.Tensor, target: torch.Tensor,

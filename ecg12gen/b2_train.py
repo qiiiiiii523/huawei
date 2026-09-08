@@ -1,4 +1,4 @@
-"""B2 P0/P1-C1/P1-C2/P1-C3 training using main's losses."""
+"""B2 P0/P1-C1/P1-C2/P1-C3 training with B2-local objectives."""
 from __future__ import annotations
 
 import csv
