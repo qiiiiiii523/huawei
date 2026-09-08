@@ -1,7 +1,7 @@
 protocol_version: "context-fusion-standard-v1"
 protocol_status: frozen_public_experiment_standard
 scope:
-  applies_to: [B1, B2, B3, M1]
+  applies_to: [B0, B1, B2, B3, M1]
   network_implementation: baseline_owned
   main_does_not_implement_fusion_modules: true
   architecture_comparison_requires_same_network_architecture: true
@@ -133,7 +133,7 @@ shared_p1_rules:
   context_is_conditioning_only: true
 
 fair_comparison:
-  required_for: [B1, B2, B3, M1]
+  required_for: [B0, B1, B2, B3, M1]
   minimum_runs: [P0_anchor_only, P1-C3]
   complete_ablation_required_for: [B2, M1]
   same_task: true
@@ -144,10 +144,6 @@ fair_comparison:
   same_checkpoint_rule: true
   shuffled_context_diagnostic:
     required_for: [P1-C1, P1-C2, P1-C3]
-  B0:
-    c1_c2_c3_required: false
-    allowed: [P0_anchor_only, linear_context_diagnostic]
-
 reporting:
   required_metrics: [r_raw_12, r_submit_12, r_missing11, RMSE]
   task2_extra_metrics: [machine_body_stratified, subject_macro, V1-V6_diagnostics, shuffled_context]
