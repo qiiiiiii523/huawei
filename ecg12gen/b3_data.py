@@ -124,7 +124,7 @@ class B3JointDataset(Dataset[dict[str, Any]]):
         target = self.preprocessor.transform_d12_target(sample.Y_12lead)
         return {
             "anchor_i": torch.from_numpy(anchor.model_signal.copy()),
-            "context": torch.from_numpy(context.model_signal.copy()),
+            "context": torch.from_numpy(context.copy()),
             "context_source_type": context_source,
             "context_lead_mask": torch.from_numpy(sample.context_lead_mask.copy()),
             "target": torch.from_numpy(target.model_signal.copy()),

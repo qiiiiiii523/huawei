@@ -97,10 +97,15 @@ class ECGPreprocessor:
 
     def transform_window(self, raw_window: np.ndarray, source_type: str) -> ModelSignal:
         """Return a centered, scaled, clipped model view without mutating input."""
-        if source_type not in self.config.expected_leads:
+        # machine-I is a derived one-lead view whose frozen scale comes from
+        # d12 I; it is intentionally not fitted as an independent source.
+        if source_type == "ecg_machine_i":
+            expected = 1
+        elif source_type in self.config.expected_leads:
+            expected = self.config.expected_leads[source_type]
+        else:
             raise PreprocessingError(f"Unknown source type: {source_type}")
         raw = np.asarray(raw_window)
-        expected = self.config.expected_leads[source_type]
         if raw.ndim != 2 or raw.shape[0] != expected:
             raise PreprocessingError(f"{source_type} window must have shape [{expected}, T]")
         if not np.isfinite(raw).all():

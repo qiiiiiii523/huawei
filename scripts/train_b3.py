@@ -28,7 +28,8 @@ def main() -> None:
     parser.add_argument("--fusion-mode", choices=("none", "film_gated_residual"), default="none")
     parser.add_argument("--p0-checkpoint", default=None, help="Required for every P1 run")
     parser.add_argument("--context-source-type", choices=("watch_ecg", "ecg_machine_d6", "body_scale_d6"), default=None)
-    parser.add_argument("--context-lead-indices", type=_indices, default=None, help="Canonical d6 indices, e.g. 0,1,2,3,4,5")
+    parser.add_argument("--context-lead-indices", dest="context_channel_indices", type=_indices,
+                        default=None, help="Canonical d6 indices, e.g. 0,1,2,3,4,5")
     parser.add_argument("--body-scale-variant", choices=("A_raw_window", "B_detrend_0p2Hz_then_window"), default="A_raw_window")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--device", default="cpu")
