@@ -1,4 +1,4 @@
-"""M1-P0/P1 training, validation and checkpoint rules."""
+"""B3-P0/P1 training, validation and checkpoint rules."""
 from __future__ import annotations
 
 import json
@@ -12,8 +12,8 @@ from torch.utils.data import DataLoader
 from .contracts import ContractError
 from .evaluate import evaluate_joint_anchor_predictions, evaluate_task2_diagnostics
 from .losses import joint_anchor_sync_loss, strict_anchor_pretrain_loss
-from .m1_data import M1JointDataset, M1StrictDataset, collate_m1, fit_m1_preprocessor
-from .m1_model import FUSION_MODES, M1Model
+from .b3_data import B3JointDataset, B3StrictDataset, collate_b3, fit_b3_preprocessor
+from .b3_model import B3Model
 from .training import seed_everything
 
 
@@ -21,7 +21,7 @@ def _move(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
 
 
-def _forward(model: M1Model, batch: dict[str, Any]) -> torch.Tensor:
+def _forward(model: B3Model, batch: dict[str, Any]) -> torch.Tensor:
     if model.fusion_mode == "none":
         # This branch intentionally does not read context, source type, or masks.
         return model(batch["anchor_i"])
@@ -33,7 +33,7 @@ def _forward(model: M1Model, batch: dict[str, Any]) -> torch.Tensor:
 def _loader(dataset: Any, batch_size: int, shuffle: bool, seed: int) -> DataLoader:
     generator = torch.Generator().manual_seed(seed)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0,
-                      pin_memory=False, collate_fn=collate_m1, generator=generator)
+                      pin_memory=False, collate_fn=collate_b3, generator=generator)
 
 
 def _raw_prediction(model_output: np.ndarray, baseline: np.ndarray, d12_scale: np.ndarray) -> np.ndarray:
@@ -41,7 +41,7 @@ def _raw_prediction(model_output: np.ndarray, baseline: np.ndarray, d12_scale: n
 
 
 @torch.no_grad()
-def validate_v0(model: M1Model, dataset: M1JointDataset, d12_scale: np.ndarray,
+def validate_v0(model: B3Model, dataset: B3JointDataset, d12_scale: np.ndarray,
                 task_id: str, device: torch.device, *, batch_size: int = 4,
                 shuffled_context: bool = False) -> dict[str, Any]:
     """Run test-like validation; target is never passed to the model."""
@@ -85,14 +85,14 @@ def validate_v0(model: M1Model, dataset: M1JointDataset, d12_scale: np.ndarray,
             "task2_subject_rows": subject_rows, "task2_device_rows": device_rows}
 
 
-def _set_anchor_frozen(model: M1Model, frozen: bool) -> None:
+def _set_anchor_frozen(model: B3Model, frozen: bool) -> None:
     anchor_names = set(model.anchor_parameter_names)
     for name, parameter in model.named_parameters():
         if name in anchor_names:
             parameter.requires_grad = not frozen
 
 
-def _optimizer(model: M1Model, base_lr: float, context_lr: float, weight_decay: float) -> torch.optim.Optimizer:
+def _optimizer(model: B3Model, base_lr: float, context_lr: float, weight_decay: float) -> torch.optim.Optimizer:
     context_prefixes = ("watch_context_encoder.", "machine_d6_context_encoder.", "body_d6_context_encoder.",
                         "film.", "gate.", "residual_adapter.")
     context_params = [p for name, p in model.named_parameters() if name.startswith(context_prefixes)]
@@ -101,53 +101,65 @@ def _optimizer(model: M1Model, base_lr: float, context_lr: float, weight_decay: 
     return torch.optim.AdamW(groups, weight_decay=weight_decay)
 
 
-def _save_run_metadata(output_dir: Path, args: Any, preprocessor: Any, model: M1Model) -> None:
+def _save_run_metadata(output_dir: Path, args: Any, preprocessor: Any, model: B3Model) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "preprocessing_scales.json").write_text(
         json.dumps({key: value.tolist() for key, value in preprocessor.scale_uV_by_source.items()}, indent=2),
         encoding="utf-8",
     )
-    (output_dir / "m1_run.json").write_text(json.dumps({
+    (output_dir / "b3_run.json").write_text(json.dumps({
         "task_id": args.task_id, "stage": args.stage, "fusion_mode": args.fusion_mode,
         "parameter_count": model.parameter_count, "seed": args.seed, "deterministic": True,
+        "architecture_id": model.architecture_id,
+        "architecture_config_hash": model.architecture_config_hash,
         "context_dropout": args.context_dropout, "source_dropout": args.source_dropout,
         "freeze_anchor_epochs": args.freeze_anchor_epochs, "anchor_lr": args.anchor_lr,
         "context_lr": args.context_lr, "loss": "main.strict_anchor_pretrain_loss" if args.stage == "P0_anchor_only" else "main.joint_anchor_sync_loss",
     }, indent=2), encoding="utf-8")
 
 
-def train_m1(args: Any) -> Path:
-    if args.stage not in {"P0_anchor_only", "P1_joint_anchor"}:
-        raise ContractError("stage must be P0_anchor_only or P1_joint_anchor")
-    if args.fusion_mode not in FUSION_MODES:
-        raise ContractError(f"fusion_mode must be one of {FUSION_MODES}")
+def train_b3(args: Any) -> Path:
+    if args.stage not in {"P0_anchor_only", "P1-C3"}:
+        raise ContractError("B3 supports only P0_anchor_only or P1-C3")
     if args.stage == "P0_anchor_only" and args.fusion_mode != "none":
         raise ContractError("P0_anchor_only must use fusion_mode=none")
-    if args.stage == "P1_joint_anchor" and not args.p0_checkpoint:
-        raise ContractError("P1_joint_anchor requires --p0-checkpoint")
+    if args.stage == "P1-C3" and args.fusion_mode != "film_gated_residual":
+        raise ContractError("B3 P1-C3 must use fusion_mode=film_gated_residual")
+    if args.stage == "P1-C3" and not args.p0_checkpoint:
+        raise ContractError("P1-C3 requires --p0-checkpoint")
     seed_everything(args.seed, deterministic=True)
     config_path = Path(args.config)
-    if args.task_id == "task2" and args.stage == "P1_joint_anchor" and not args.context_source_type:
-        raise ContractError("Task 2 M1 runs require one --context-source-type")
-    preprocessor = fit_m1_preprocessor(config_path, args.task_id, args.body_scale_variant,
+    if args.task_id == "task2" and args.stage == "P1-C3" and not args.context_source_type:
+        raise ContractError("Task 2 B3 runs require one --context-source-type")
+    preprocessor = fit_b3_preprocessor(config_path, args.task_id, args.body_scale_variant,
                                         args.context_channel_indices,
-                                        args.context_source_type if args.stage == "P1_joint_anchor" else None)
+                                        args.context_source_type if args.stage == "P1-C3" else None)
     output_dir = Path(args.output_dir)
-    model = M1Model(fusion_mode=args.fusion_mode, transformer_layers=args.transformer_layers,
+    model = B3Model(fusion_mode=args.fusion_mode, transformer_layers=args.transformer_layers,
                     dropout=args.dropout, context_dropout=args.context_dropout,
                     source_dropout=args.source_dropout).to(args.device)
 
     if args.stage == "P0_anchor_only":
-        train_dataset: Any = M1StrictDataset(config_path, preprocessor)
+        train_dataset: Any = B3StrictDataset(config_path, preprocessor)
     else:
         checkpoint = torch.load(Path(args.p0_checkpoint), map_location="cpu", weights_only=False)
         if checkpoint.get("stage") != "P0_anchor_only" or checkpoint.get("task_id") != args.task_id:
-            raise ContractError("--p0-checkpoint must be an M1 P0 checkpoint for the same task")
+            raise ContractError("--p0-checkpoint must be a B3 P0 checkpoint for the same task")
+        if checkpoint.get("architecture_id") != model.architecture_id:
+            raise ContractError(
+                "architecture mismatch: P0 checkpoint has a different architecture_id; "
+                f"expected {model.architecture_id!r}"
+            )
+        if checkpoint.get("architecture_config_hash") != model.architecture_config_hash:
+            raise ContractError(
+                "architecture mismatch: P0 checkpoint architecture_config_hash is incompatible "
+                f"with {model.architecture_config_hash}"
+            )
         model.load_state_dict(checkpoint["model"], strict=True)
-        train_dataset = M1JointDataset(config_path, args.task_id, "train", preprocessor,
+        train_dataset = B3JointDataset(config_path, args.task_id, "train", preprocessor,
                                        args.body_scale_variant, args.context_channel_indices,
                                        args.context_source_type)
-    validation_dataset = M1JointDataset(config_path, args.task_id, "validation", preprocessor,
+    validation_dataset = B3JointDataset(config_path, args.task_id, "validation", preprocessor,
                                         args.body_scale_variant, args.context_channel_indices,
                                         args.context_source_type)
     _save_run_metadata(output_dir, args, preprocessor, model)
@@ -155,9 +167,9 @@ def train_m1(args: Any) -> Path:
     train_loader = _loader(train_dataset, args.batch_size, True, args.seed)
     history: list[dict[str, Any]] = []
     best_value = -float("inf")
-    best_checkpoint = output_dir / "m1_best.pt"
+    best_checkpoint = output_dir / "b3_best.pt"
     for epoch in range(args.epochs):
-        if args.stage == "P1_joint_anchor":
+        if args.stage == "P1-C3":
             _set_anchor_frozen(model, epoch < args.freeze_anchor_epochs)
         model.train()
         losses: list[float] = []
@@ -177,7 +189,7 @@ def train_m1(args: Any) -> Path:
         metric_name = "task1_r1" if args.task_id == "task1" else "task2_r2"
         metric = float(validation["summary"]["r_submit_12"])
         row = {"epoch": epoch + 1, "train_loss": float(np.mean(losses)), "validation": validation["summary"]}
-        if args.stage == "P1_joint_anchor":
+        if args.stage == "P1-C3":
             shuffled = validate_v0(model, validation_dataset, preprocessor.scale_uV_by_source["d12"],
                                    args.task_id, args.device, batch_size=args.batch_size, shuffled_context=True)
             row["shuffled_context"] = {"r_submit_12": float(shuffled["summary"]["r_submit_12"]),
@@ -187,6 +199,8 @@ def train_m1(args: Any) -> Path:
             best_value = metric
             torch.save({"model": model.state_dict(), "task_id": args.task_id, "stage": args.stage,
                         "fusion_mode": args.fusion_mode, "parameter_count": model.parameter_count,
+                        "architecture_id": model.architecture_id,
+                        "architecture_config_hash": model.architecture_config_hash,
                         "transformer_layers": args.transformer_layers,
                         "best_metric": metric, "epoch": epoch + 1}, best_checkpoint)
             np.save(output_dir / "prediction_raw.npy", validation["prediction_raw"])

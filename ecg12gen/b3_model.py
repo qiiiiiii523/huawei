@@ -1,4 +1,4 @@
-"""M1 final backbone and context adapters.
+"""B3 final backbone and context adapters.
 
 The model has one public prediction path: machine-I at the target time is the
 only waveform input to the anchor backbone. Context is encoded to a global
@@ -8,6 +8,8 @@ modes.
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 from collections.abc import Sequence
 
 import torch
@@ -25,6 +27,7 @@ F2_TOKENS = 250
 MODEL_DIM = 64
 FUSION_MODES = ("none", "film", "gated_residual", "film_gated_residual")
 CONTEXT_SOURCES = ("watch_ecg", "ecg_machine_d6", "body_scale_d6")
+ARCHITECTURE_ID = "B3_multiscale_cnn_time_transformer_fpn_v1"
 
 
 def _check_anchor(anchor_i: torch.Tensor) -> None:
@@ -74,7 +77,7 @@ class AnchorCNNEncoder(nn.Module):
         f1 = self.f1_block(self.down1(f0))
         f2 = self.f2_block(self.down2(f1))
         if (f0.shape[-1], f1.shape[-1], f2.shape[-1]) != (5000, 1250, F2_TOKENS):
-            raise ContractError(f"M1 CNN pyramid has unexpected shapes: {f0.shape}, {f1.shape}, {f2.shape}")
+            raise ContractError(f"B3 CNN pyramid has unexpected shapes: {f0.shape}, {f1.shape}, {f2.shape}")
         return f0, f1, f2
 
 
@@ -167,8 +170,8 @@ class LeadTimeDecoder(nn.Module):
         return prediction, high_res.reshape(batch, NUM_LEADS, F0_CHANNELS, WINDOW_SAMPLES)
 
 
-class M1Model(nn.Module):
-    """M1-P0/P1 model with a strict, configurable context interface."""
+class B3Model(nn.Module):
+    """B3-P0/P1 model with a strict, configurable context interface."""
 
     def __init__(self, *, fusion_mode: str = "none", transformer_layers: int = 4,
                  dropout: float = 0.1, context_dropout: float = 0.0, source_dropout: float = 0.0) -> None:
@@ -212,13 +215,37 @@ class M1Model(nn.Module):
 
     def _initialize_context_adapters(self) -> None:
         nn.init.zeros_(self.film.weight); nn.init.zeros_(self.film.bias)
-        nn.init.zeros_(self.gate.weight); nn.init.constant_(self.gate.bias, math.log(0.035 / 0.965))
+        nn.init.zeros_(self.gate.weight); nn.init.constant_(self.gate.bias, -2.944439)
         nn.init.zeros_(self.residual_adapter[-1].weight); nn.init.zeros_(self.residual_adapter[-1].bias)
         nn.init.zeros_(self.baseline_head[-1].weight); nn.init.zeros_(self.baseline_head[-1].bias)
 
     @property
     def parameter_count(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())
+
+    @property
+    def architecture_id(self) -> str:
+        return ARCHITECTURE_ID
+
+    @property
+    def architecture_config(self) -> dict[str, object]:
+        """Structural metadata shared by P0 and its compatible P1 adapters."""
+        return {
+            "architecture_id": ARCHITECTURE_ID,
+            "f0_channels": F0_CHANNELS,
+            "f1_channels": F1_CHANNELS,
+            "f2_channels": F2_CHANNELS,
+            "f2_tokens": F2_TOKENS,
+            "model_dim": MODEL_DIM,
+            "transformer_layers": len(self.time_transformer.layers),
+            "transformer_heads": 4,
+            "decoder": "lead_time_fpn_high_resolution_v1",
+        }
+
+    @property
+    def architecture_config_hash(self) -> str:
+        encoded = json.dumps(self.architecture_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     @property
     def anchor_parameter_names(self) -> tuple[str, ...]:
@@ -295,4 +322,4 @@ class M1Model(nn.Module):
         return self.baseline_head(f2.mean(dim=-1))
 
 
-M1MaskedCNNLeadTimeTransformer = M1Model
+B3MaskedCNNLeadTimeTransformer = B3Model

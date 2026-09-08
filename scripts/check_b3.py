@@ -1,4 +1,4 @@
-"""Synthetic M1 contract, shape and forward/backward check."""
+"""Synthetic B3 contract, shape and forward/backward check."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -13,11 +13,11 @@ sys.path.insert(0, str(ROOT))
 from ecg12gen.contracts import ContractError
 from ecg12gen.evaluate import evaluate_joint_anchor_predictions
 from ecg12gen.losses import joint_anchor_sync_loss, strict_anchor_pretrain_loss
-from ecg12gen.m1_model import FUSION_MODES, M1Model
-from ecg12gen.m1_train import train_m1
+from ecg12gen.b3_model import B3Model
+from ecg12gen.b3_train import train_b3
 
 
-def _assert_grad(model: M1Model, prediction: torch.Tensor, target: torch.Tensor, anchor: torch.Tensor) -> None:
+def _assert_grad(model: B3Model, prediction: torch.Tensor, target: torch.Tensor, anchor: torch.Tensor) -> None:
     loss = joint_anchor_sync_loss(prediction, target, anchor)
     assert torch.isfinite(loss)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
@@ -30,10 +30,10 @@ def main() -> None:
     torch.manual_seed(42)
     anchor = torch.randn(1, 1, 5000)
     target = torch.randn(1, 12, 5000)
-    f0, f1, f2 = M1Model(fusion_mode="none").cnn_encoder(anchor)
+    f0, f1, f2 = B3Model(fusion_mode="none").cnn_encoder(anchor)
     assert f0.shape == (1, 64, 5000) and f1.shape == (1, 128, 1250) and f2.shape == (1, 256, 250)
 
-    p0 = M1Model(fusion_mode="none")
+    p0 = B3Model(fusion_mode="none")
     output = p0(anchor)
     assert output.shape == (1, 12, 5000)
     strict = strict_anchor_pretrain_loss(output, target, anchor)
@@ -41,10 +41,15 @@ def main() -> None:
     strict.backward()
     assert any(parameter.grad is not None for parameter in p0.parameters())
 
+    c3_init = B3Model(fusion_mode="film_gated_residual")
+    assert abs(float(torch.sigmoid(c3_init.gate.bias[0]).detach()) - 0.05) < 1e-5
+    assert torch.count_nonzero(c3_init.residual_adapter[-1].weight) == 0
+    assert torch.count_nonzero(c3_init.residual_adapter[-1].bias) == 0
+
     # P1 is initialized from the exact P0 state; the strict loader is tested
     # with the same state dictionary used by the training checkpoint.
-    for mode in FUSION_MODES:
-        model = M1Model(fusion_mode=mode)
+    for mode in ("none", "film_gated_residual"):
+        model = B3Model(fusion_mode=mode)
         if mode != "none":
             model.load_state_dict(p0.state_dict(), strict=True)
         context = torch.randn(1, 1, 5000)
@@ -58,12 +63,12 @@ def main() -> None:
 
     task2_mask = torch.tensor([[True, True, True, True, True, True]])
     for source in ("ecg_machine_d6", "body_scale_d6"):
-        model = M1Model(fusion_mode="film")
+        model = B3Model(fusion_mode="film_gated_residual")
         context = torch.randn(1, 6, 5000)
         prediction = model(anchor, context_ecg=context, context_source_type=source, context_lead_mask=task2_mask)
         assert prediction.shape == (1, 12, 5000)
     try:
-        M1Model(fusion_mode="film")(anchor, context_ecg=torch.randn(1, 6, 5000),
+        B3Model(fusion_mode="film_gated_residual")(anchor, context_ecg=torch.randn(1, 6, 5000),
                                      context_source_type="ecg_machine_d6",
                                      context_lead_mask=torch.tensor([[True, False, False, False, False, False]]))
         raise AssertionError("invalid d6 mask accepted")
@@ -75,14 +80,14 @@ def main() -> None:
         torch.randn(1, 12, 5000).numpy(), target.numpy(), anchor.numpy(), "task1")
     assert torch.equal(torch.from_numpy(submit[:, :1]), anchor)
     assert summary["prediction_view"] == "submit_anchor_i_replaced"
-    assert "--target" not in (ROOT / "scripts" / "predict_m1.py").read_text(encoding="utf-8")
+    assert "--target" not in (ROOT / "scripts" / "predict_b3.py").read_text(encoding="utf-8")
 
     try:
-        train_m1(SimpleNamespace(stage="P1_joint_anchor", fusion_mode="film", p0_checkpoint=None))
-        raise AssertionError("P1 without P0 checkpoint did not fail")
+        train_b3(SimpleNamespace(stage="P1-C3", fusion_mode="film_gated_residual", p0_checkpoint=None))
+        raise AssertionError("P1-C3 without P0 checkpoint did not fail")
     except ContractError:
         pass
-    print("PASS: M1 P0/P1 shapes, strict/joint backward, all fusion modes, source/mask selection, submit identity, and forced P0 checkpoint")
+    print("PASS: B3 P0/P1-C3 shapes, strict/joint backward, source/mask selection, submit identity, and forced P0 checkpoint")
 
 
 if __name__ == "__main__":

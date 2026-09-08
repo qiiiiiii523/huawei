@@ -1,3 +1,7 @@
+architecture_id: B3_multiscale_cnn_time_transformer_fpn_v1
+implemented_stages: [P0_anchor_only, P1-C3]
+implemented_fusion_modes: [none, film_gated_residual]
+
 model:
   transformer_layers: 4
   dropout: 0.10

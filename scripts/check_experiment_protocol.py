@@ -24,6 +24,34 @@ def main() -> None:
     with (ROOT / "configs" / "preprocessing.yaml").open(encoding="utf-8") as handle:
         preprocessing = yaml.safe_load(handle)
     protocol = load_training_protocol(ROOT / "configs" / "training_protocol_v1.yaml")
+    context_protocol_path = ROOT / protocol["context_fusion_protocol"]["config"]
+    with context_protocol_path.open(encoding="utf-8") as handle:
+        context_protocol = yaml.safe_load(handle)
+    assert protocol["context_fusion_protocol"]["standard"] == "context-fusion-standard-v1"
+    assert protocol["context_fusion_protocol"]["implemented_stages"] == ["P0_anchor_only", "P1-C3"]
+    assert protocol["context_fusion_protocol"]["implemented_fusion_modes"] == ["none", "film_gated_residual"]
+    assert context_protocol["experiment_stages"]["P0_anchor_only"]["fusion_mode"] == "none"
+    assert context_protocol["experiment_stages"]["P1-C3"]["fusion_mode"] == "film_gated_residual"
+    assert context_protocol["experiment_stages"]["P1-C3"]["initialization"] == "compatible_same_architecture_P0_checkpoint_required"
+    assert context_protocol["fusion_definitions"]["initialization"] == {
+        "gate_initial_value": 0.05,
+        "gate_logit_bias": -2.944439,
+        "gate_mlp_final_weight_zero_init": True,
+        "residual_last_layer_weight_zero_init": True,
+        "residual_last_layer_bias_zero_init": True,
+    }
+    assert context_protocol["task_inputs"]["task2"]["mutually_exclusive_context_source_variants"] is True
+    assert context_protocol["task_inputs"]["task2"]["combined_context_variant_declared"] is False
+    assert context_protocol["forbidden"]["task2_both_context_variant"] is True
+    for task_name in ("task1_joint_anchor", "task2_joint_anchor"):
+        task_path = ROOT / "configs" / "experiments" / f"{task_name}.yaml"
+        task_text = task_path.read_text(encoding="utf-8")
+        task_config = yaml.safe_load(task_text)
+        assert task_config["implemented_stages"] == ["P0_anchor_only", "P1-C3"]
+        assert set(task_config["experiments"]) == {"P0_anchor_only", "P1-C3"}
+        assert task_config["experiments"]["P1-C3"]["fusion_mode"] == "film_gated_residual"
+        assert task_config["experiments"]["P1-C3"]["initialization"] == "compatible_same_architecture_P0_checkpoint_required"
+        assert "P1-both" not in task_text and "both_context" not in task_text
     assert protocol["supervision_and_loss"]["observed_lead_consistency"] == {
         "synchronous_d12": "permitted",
         "cross_device_weak_pair": "permitted_as_low_weight_input_only",

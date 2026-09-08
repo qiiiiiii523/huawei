@@ -1,4 +1,4 @@
-"""M1-only adapters over the frozen main Dataset and Preprocessor contracts."""
+"""B3-only adapters over the frozen main Dataset and Preprocessor contracts."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,7 +42,7 @@ def transform_context_window(preprocessor: ECGPreprocessor, raw_context: np.ndar
     return np.clip(model, -preprocessor.config.clip_model_signal, preprocessor.config.clip_model_signal)
 
 
-def fit_m1_preprocessor(config: ECGDataConfig | str | Path, task_id: str,
+def fit_b3_preprocessor(config: ECGDataConfig | str | Path, task_id: str,
                         body_scale_variant: str = "A_raw_window",
                         context_channel_indices: tuple[int, ...] | None = None,
                         context_source_type: str | None = None) -> ECGPreprocessor:
@@ -73,7 +73,7 @@ def fit_m1_preprocessor(config: ECGDataConfig | str | Path, task_id: str,
     return ECGPreprocessor.fit(preprocessing, arrays)
 
 
-class M1StrictDataset(Dataset[dict[str, Any]]):
+class B3StrictDataset(Dataset[dict[str, Any]]):
     """Train-only strict d12-I -> d12 samples in frozen model space."""
 
     def __init__(self, config: ECGDataConfig | str | Path, preprocessor: ECGPreprocessor) -> None:
@@ -98,7 +98,7 @@ class M1StrictDataset(Dataset[dict[str, Any]]):
         }
 
 
-class M1JointDataset(Dataset[dict[str, Any]]):
+class B3JointDataset(Dataset[dict[str, Any]]):
     """Cross-time context plus same-window machine-I anchor for P1."""
 
     def __init__(self, config: ECGDataConfig | str | Path, task_id: str, split: str,
@@ -135,9 +135,9 @@ class M1JointDataset(Dataset[dict[str, Any]]):
         }
 
 
-def collate_m1(batch: list[dict[str, Any]]) -> dict[str, Any]:
+def collate_b3(batch: list[dict[str, Any]]) -> dict[str, Any]:
     if not batch:
-        raise ValueError("cannot collate an empty M1 batch")
+        raise ValueError("cannot collate an empty B3 batch")
     tensor_keys = ("anchor_i", "target", "anchor_raw", "target_raw")
     output: dict[str, Any] = {key: torch.stack([item[key] for item in batch]) for key in tensor_keys}
     if "context" in batch[0]:

@@ -1,4 +1,4 @@
-"""Formal M1 inference: explicit context plus explicit machine-I anchor only."""
+"""Formal B3 inference: explicit context plus explicit machine-I anchor only."""
 from __future__ import annotations
 
 import argparse
@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecg12gen.contracts import ContractError, prepare_joint_anchor_inference
-from ecg12gen.m1_data import transform_context_window
-from ecg12gen.m1_model import M1Model
+from ecg12gen.b3_data import transform_context_window
+from ecg12gen.b3_model import B3Model
 from ecg12gen.preprocessing import ECGPreprocessor, PreprocessingConfig
 
 
@@ -62,8 +62,15 @@ def main() -> None:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if checkpoint.get("task_id") != args.task_id:
         raise ContractError("checkpoint task_id does not match inference task")
-    model = M1Model(fusion_mode=str(checkpoint.get("fusion_mode", "none")),
+    model = B3Model(fusion_mode=str(checkpoint.get("fusion_mode", "none")),
                     transformer_layers=int(checkpoint.get("transformer_layers", 4))).to(args.device)
+    if checkpoint.get("architecture_id") != model.architecture_id:
+        raise ContractError(
+            "architecture mismatch: checkpoint is not a B3 checkpoint with the current architecture_id "
+            f"{model.architecture_id!r}"
+        )
+    if checkpoint.get("architecture_config_hash") != model.architecture_config_hash:
+        raise ContractError("architecture mismatch: checkpoint architecture_config_hash is incompatible")
     model.load_state_dict(checkpoint["model"], strict=True)
     model.eval()
 
@@ -108,7 +115,7 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     np.save(output / "prediction_raw.npy", prediction_raw.astype(np.float32))
     np.save(output / "prediction_submit.npy", prediction_submit.astype(np.float32))
-    print(f"Wrote M1 raw and submit predictions to {output}")
+    print(f"Wrote B3 raw and submit predictions to {output}")
 
 
 if __name__ == "__main__":
