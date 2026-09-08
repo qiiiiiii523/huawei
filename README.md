@@ -218,4 +218,23 @@ python scripts/check_body_scale_variants.py
 - `configs/training_protocol_v1.yaml`
 - `configs/losses.yaml`
 
+## 9. 统一 context 融合实验标准
+
+`configs/context_fusion_protocol.yaml` 是 B1、B2、B3、M1 共用的实验命名和公平比较标准；main 只定义协议，不实现任何 FiLM、gate 或 residual 网络模块。
+
+统一实验阶段为：
+
+| 阶段 | 输入/输出 | fusion_mode | 初始化 |
+|---|---|---|---|
+| `P0_anchor_only` | machine I(C) → machine d12(C) | `none` | train-only strict pretraining，从头开始 |
+| `P1-C1` | context + machine I(C) → machine d12(C) | `film` | 同一网络架构且结构配置兼容的 P0 checkpoint |
+| `P1-C2` | context + machine I(C) → machine d12(C) | `gated_residual` | 同上 |
+| `P1-C3` | context + machine I(C) → machine d12(C) | `film_gated_residual` | 同上 |
+
+C1、C2、C3 的定义、gate/residual 初始化常量和 checkpoint 兼容字段固定见该 YAML。所有 P1 使用 `joint_anchor_sync_loss`、固定 subject split、frozen preprocessing、同任务同架构同训练预算和 validation raw-uV V0 checkpoint 规则。训练始终输出完整 d12，不回填 I；只有 validation/test submit 输出才回填真实 anchor I。
+
+Task 1 固定为 `watch I(A) + machine I(C) -> machine d12(C)`。Task 2 分别运行互斥的 machine/holter d6(B) 与 body-scale d6(A) source variant；不实现、不声明、不比较 `P1-both`。context 仅为条件信息，禁止 context-target 逐点损失、跨时刻波形硬对齐、R 峰伪配对和训练阶段 I 回填。
+
+B0 不要求 C1/C2/C3，可保留 P0 或单独记录 linear-context diagnostic。B1/B2/B3/M1 至少比较 P0 与 P1-C3；B2 和 M1 完成 C1/C2/C3 模块消融。实验记录必须填写 architecture_id、architecture_config_hash、P0 checkpoint、task/context source、fusion_mode、训练预算、r_raw_12、r_submit_12、r_missing11、RMSE 及 shuffled-context 结果；Task 2 还需记录 machine/body 分层、subject-macro 和 V1–V6 诊断。
+
 不要向 main 提交原始 ECG、窗口 NPY、checkpoint、预测、患者级结果或训练日志。实验详情记录到 `docs/experiment-record-template.md`。

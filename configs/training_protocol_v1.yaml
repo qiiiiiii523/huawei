@@ -11,6 +11,13 @@ data:
   raw_data_mutation: false
   default_training_quality: paired_and_usable_only
   under_30_sec_policy: exclude_from_training
+context_fusion_protocol:
+  config: configs/context_fusion_protocol.yaml
+  standard: context-fusion-standard-v1
+  stages: [P0_anchor_only, P1-C1, P1-C2, P1-C3]
+  applies_to: [B1, B2, B3, M1]
+  network_modules_implemented_by: baseline_branch
+  main_does_not_implement_fusion_modules: true
 two_stage_protocol:
   strict_anchor_pretrain:
     supervision_mode: d12_i_pretrain
@@ -30,7 +37,7 @@ two_stage_protocol:
     output: full_d12_prediction
     training_output_i_replacement: forbidden
     initialization: required_P0_strict_pretrained_weights
-    experiment: P1_context_conditioned
+    experiments: [P1-C1, P1-C2, P1-C3]
     comparison_baseline: P0_anchor_only
     test_anchor_requirement: organizer_explicit_machine_i_anchor
 model_input_output:
