@@ -1,8 +1,9 @@
-"""B2 P0/C1/C2 training using main's strict and joint-anchor losses."""
+"""B2 P0/P1-C1/P1-C2/P1-C3 training using main's losses."""
 from __future__ import annotations
 
 import csv
 import json
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -12,7 +13,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .b2_data import B2PreparedDataset, b2_collate
-from .b2_model import B2JointAnchorPatchTransformer
+from .b2_model import B2JointAnchorPatchTransformer, architecture_metadata
 from .evaluate import evaluate_centered_diagnostic, evaluate_joint_anchor_predictions, evaluate_task2_diagnostics
 from .losses import joint_anchor_sync_loss, strict_anchor_pretrain_loss
 from .training import seed_everything
@@ -73,11 +74,26 @@ def validate_v0(model: B2JointAnchorPatchTransformer, dataset: B2PreparedDataset
     return ValidationResult(metric, overall, prediction.astype(np.float32), submit.astype(np.float32), anchor_array.astype(np.float32), target_array.astype(np.float32), metadata)
 
 
-def _load_p0(model: B2JointAnchorPatchTransformer, checkpoint: str | Path, device: torch.device) -> None:
+def _load_p0(model: B2JointAnchorPatchTransformer, checkpoint: str | Path, device: torch.device) -> dict[str, Any]:
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
     if payload.get("schema") != model.checkpoint_schema or payload.get("stage") != P0_STAGE:
         raise ValueError("P1 requires a compatible B2 P0_anchor_only checkpoint")
+    expected = architecture_metadata(model.config)
+    legacy_metadata = False
+    actual = {key: payload.get(key) for key in ("architecture_id", "architecture_config_hash")}
+    if not all(actual.values()):
+        model_config = payload.get("model_config")
+        if not isinstance(model_config, dict):
+            raise ValueError("P0 checkpoint is missing architecture metadata and model_config")
+        actual = architecture_metadata(model_config)
+        legacy_metadata = True
+    if actual != expected:
+        raise ValueError(f"P0 architecture mismatch: expected {expected}, got {actual}")
     model.load_state_dict(payload["model"], strict=True)
+    if model.config.fusion_mode in {"gated_residual", "film_gated_residual"}:
+        with torch.no_grad():
+            model.gate.bias.fill_(math.log(model.config.initial_gate / (1.0 - model.config.initial_gate)))
+    return {**actual, "legacy_metadata_derived": legacy_metadata}
 
 
 def _save_validation(output: Path, validation: ValidationResult) -> None:
@@ -119,7 +135,8 @@ def fit_b2(model: B2JointAnchorPatchTransformer, train_dataset: B2PreparedDatase
     if stage == P0_STAGE and train_dataset.mode != "strict_anchor_pretrain": raise ValueError("P0 must use strict_anchor_pretrain data")
     if stage == P1_STAGE and (train_dataset.mode != "joint_anchor" or p0_checkpoint is None): raise ValueError("P1 must use joint-anchor data and an explicit P0 checkpoint")
     seed_everything(42, deterministic=True); device_t = torch.device(device); model.to(device_t)
-    if stage == P1_STAGE: _load_p0(model, p0_checkpoint, device_t)
+    p0_architecture: dict[str, Any] | None = None
+    if stage == P1_STAGE: p0_architecture = _load_p0(model, p0_checkpoint, device_t)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.0001)
     output = Path(output_dir); output.mkdir(parents=True, exist_ok=True)
     best, history = -float("inf"), []
@@ -140,8 +157,11 @@ def fit_b2(model: B2JointAnchorPatchTransformer, train_dataset: B2PreparedDatase
         history.append({"epoch": epoch, "train_loss": total / max(len(_loader(train_dataset, False, 42)), 1), "validation": validation.overall})
         if validation.metric_value > best:
             best = validation.metric_value; _save_validation(output, validation)
+            architecture = architecture_metadata(model.config)
             torch.save({"schema": model.checkpoint_schema, "model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch,
                         "stage": stage, "task_id": task_id, "model_config": asdict(model.config), "p0_checkpoint": str(p0_checkpoint) if p0_checkpoint else None,
+                        "architecture_id": architecture["architecture_id"], "architecture_config_hash": architecture["architecture_config_hash"],
+                        "p0_architecture": p0_architecture,
                         "d12_scale_uV": np.asarray(d12_scale_uV, dtype=np.float32).tolist(),
                         "checkpoint_selection": "best_validation_raw_uV_submit_anchor_i_replaced_v0"}, best_path)
     history_payload: dict[str, Any] = {"stage": stage, "epochs_requested": epochs,

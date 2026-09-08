@@ -1,4 +1,4 @@
-"""Run reproducible B2-P0/C1/C2 joint-anchor experiments."""
+"""Run reproducible B2-P0/P1-C1/P1-C2/P1-C3 joint-anchor experiments."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
 from ecg12gen.b2_data import (build_joint_dataset, build_strict_dataset, dataset_summary,
                                fit_b2_preprocessor, task2_dual_intersection)
-from ecg12gen.b2_model import B2JointAnchorPatchTransformer, B2ModelConfig
+from ecg12gen.b2_model import B2JointAnchorPatchTransformer, B2ModelConfig, architecture_metadata
 from ecg12gen.b2_train import MAX_EPOCHS, P0_STAGE, P1_STAGE, fit_b2
 
 
@@ -42,7 +42,7 @@ def _spec(name: str) -> tuple[dict[str, object], dict[str, object]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--experiment", required=True, help="B2-P0, B2-C1, B2-C2, T1-P0, T1-C2-watch, T1-shuffle-watch, T2-P0, T2-machine, T2-body, T2-both, or T2-shuffle")
+    parser.add_argument("--experiment", required=True, help="B2-P0/B2-C1/B2-C2/B2-C3, T1-P0/T1-C1-watch/T1-C2-watch/T1-C3-watch, or T2-P0/T2-C{1,2,3}-{machine,body}")
     parser.add_argument("--task-id", choices=("task1", "task2"), required=True)
     parser.add_argument("--p0-checkpoint")
     parser.add_argument("--config", default=str(ROOT / "configs" / "common.yaml"))
@@ -82,12 +82,14 @@ def main() -> None:
             for view_name in ("machine", "body")
         }
     model_values = dict(model_raw); model_values["time_transformer_layers"] = model_values.pop("anchor_time_transformer_layers")
-    model_values.update({"fusion_mode": exp["fusion_mode"], "context_dropout": 0.10, "initial_gate": 0.03})
+    model_values.update({"fusion_mode": exp["fusion_mode"], "context_dropout": 0.10, "initial_gate": 0.05})
     model_config = B2ModelConfig(**model_values)
+    architecture = architecture_metadata(model_config)
     (output / "preprocessing_scales.json").write_text(json.dumps({k: v.tolist() for k, v in preprocessor.scale_uV_by_source.items()}, indent=2), encoding="utf-8")
     (output / "b2_run.json").write_text(json.dumps({"experiment": args.experiment, "task_id": args.task_id, "stage": stage,
         "context_view": view, "common_intersection": args.common_intersection, "diagnostic_only": bool(exp.get("diagnostic_only", False)), "p0_checkpoint": args.p0_checkpoint,
-        "model_config": model_config.__dict__, "epochs": args.epochs, "train": dataset_summary(train), "validation": dataset_summary(validation),
+        "model_config": model_config.__dict__, "architecture_id": architecture["architecture_id"], "architecture_config_hash": architecture["architecture_config_hash"],
+        "epochs": args.epochs, "train": dataset_summary(train), "validation": dataset_summary(validation),
         "validation_views": {name: dataset_summary(dataset) for name, dataset in (validation_views or {}).items()},
         "preprocessing": {"d12_scale_source": "p0_checkpoint" if p0_d12_scale is not None else "strict_train_index",
                           "p0_d12_scale_reused": p0_d12_scale is not None},

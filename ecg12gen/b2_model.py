@@ -7,7 +7,10 @@ were synchronous.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import asdict, dataclass
+from typing import Any, Mapping
 
 import torch
 from torch import nn
@@ -16,6 +19,8 @@ from .contracts import ContractError, WINDOW_SAMPLES
 
 
 NUM_LEADS, NUM_D6_LEADS = 12, 6
+ARCHITECTURE_ID = "B2JointAnchorPatchTransformer"
+ARCHITECTURE_HASH_VERSION = "b2-architecture-v1"
 
 
 @dataclass(frozen=True)
@@ -28,15 +33,44 @@ class B2ModelConfig:
     dropout: float = 0.10
     fusion_mode: str = "none"
     context_dropout: float = 0.10
-    initial_gate: float = 0.03
+    initial_gate: float = 0.05
 
     def validate(self) -> None:
         if WINDOW_SAMPLES % self.patch_size or self.d_model % self.attention_heads:
             raise ValueError("patch_size must divide 5000 and d_model must divide attention_heads")
-        if self.fusion_mode not in {"none", "film", "film_gated_residual"}:
-            raise ValueError("fusion_mode must be none, film, or film_gated_residual")
+        if self.fusion_mode not in {"none", "film", "gated_residual", "film_gated_residual"}:
+            raise ValueError("fusion_mode must be none, film, gated_residual, or film_gated_residual")
         if not 0.0 <= self.context_dropout < 1.0 or not 0.0 < self.initial_gate < 1.0:
             raise ValueError("invalid context_dropout or initial_gate")
+
+
+def architecture_metadata(config: B2ModelConfig | Mapping[str, Any]) -> dict[str, str]:
+    """Return stable architecture metadata compatible across P0 and P1-C3.
+
+    ``fusion_mode`` and ``initial_gate`` are intentionally excluded: P0 and
+    P1-C3 use the same parameterized network, while P1 selects the fusion
+    operation and its mandated gate initialization.
+    """
+    values = asdict(config) if isinstance(config, B2ModelConfig) else dict(config)
+    structural = {
+        "hash_version": ARCHITECTURE_HASH_VERSION,
+        "window_samples": WINDOW_SAMPLES,
+        "num_input_leads": 1,
+        "num_output_leads": NUM_LEADS,
+        "num_context_d6_leads": NUM_D6_LEADS,
+        "patch_size": int(values["patch_size"]),
+        "d_model": int(values["d_model"]),
+        "time_transformer_layers": int(values.get("time_transformer_layers", values.get("anchor_time_transformer_layers", 4))),
+        "context_transformer_layers": int(values["context_transformer_layers"]),
+        "attention_heads": int(values["attention_heads"]),
+        "dropout": float(values["dropout"]),
+        "context_dropout": float(values.get("context_dropout", 0.10)),
+    }
+    encoded = json.dumps(structural, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "architecture_id": ARCHITECTURE_ID,
+        "architecture_config_hash": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _position_encoding(tokens: int, d_model: int) -> torch.Tensor:
@@ -97,7 +131,7 @@ class D6ContextEncoder(nn.Module):
 
 
 class B2JointAnchorPatchTransformer(nn.Module):
-    """P0 anchor backbone plus C1/C2 global-latent context conditioning."""
+    """P0 anchor backbone plus C1/C2/C3 global-latent context conditioning."""
     checkpoint_schema = "b2_joint_anchor_patch_v2"
 
     def __init__(self, config: B2ModelConfig | None = None) -> None:
@@ -168,10 +202,12 @@ class B2JointAnchorPatchTransformer(nn.Module):
                 z = z * (torch.rand((z.shape[0], 1), device=z.device) >= self.config.context_dropout).to(z.dtype)
             gamma, beta = self.film(z).chunk(2, dim=1)
             h_film = h_anchor * (1 + gamma.unsqueeze(1)) + beta.unsqueeze(1)
-            if self.config.fusion_mode == "film": h_joint = h_film
+            if self.config.fusion_mode == "film":
+                h_joint = h_film
             else:
                 expanded = z.unsqueeze(1).expand(-1, h_film.shape[1], -1)
-                h_joint = h_film + torch.sigmoid(self.gate(z)).unsqueeze(1) * self.residual(torch.cat((h_film, expanded), dim=-1))
+                base = h_anchor if self.config.fusion_mode == "gated_residual" else h_film
+                h_joint = base + torch.sigmoid(self.gate(z)).unsqueeze(1) * self.residual(torch.cat((base, expanded), dim=-1))
         lead_ids = torch.arange(NUM_LEADS, device=anchor_i_ecg.device)
         decoded = self.lead_decoder(self.decoder_norm(h_joint).unsqueeze(1) + self.lead_embedding(lead_ids).view(1, NUM_LEADS, 1, -1))
         # ``decoded`` is [B, leads, tokens, patch_size].  The token dimension

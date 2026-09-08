@@ -13,19 +13,26 @@ model:
   context_transformer_layers: 2
   dropout: 0.10
 fusion:
-  modes: [none, film, film_gated_residual]
+  modes: [none, film, gated_residual, film_gated_residual]
   context_dropout: 0.10
-  initial_gate: 0.03
+  initial_gate: 0.05
   residual_last_layer: zero_initialized
 experiments:
   B2-P0: {stage: P0_anchor_only, fusion_mode: none, context_view: none}
   B2-C1: {stage: P1_joint_anchor, fusion_mode: film, context_view: auto}
-  B2-C2: {stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: auto}
+  B2-C2: {stage: P1_joint_anchor, fusion_mode: gated_residual, context_view: auto}
+  B2-C3: {stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: auto}
   T1-P0: {task_id: task1, stage: P0_anchor_only, fusion_mode: none, context_view: none}
-  T1-C2-watch: {task_id: task1, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: watch}
-  T1-shuffle-watch: {task_id: task1, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: shuffle_watch, diagnostic_only: true}
+  T1-C1-watch: {task_id: task1, stage: P1_joint_anchor, fusion_mode: film, context_view: watch}
+  T1-C2-watch: {task_id: task1, stage: P1_joint_anchor, fusion_mode: gated_residual, context_view: watch}
+  T1-C3-watch: {task_id: task1, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: watch}
+  T1-shuffle-C3-watch: {task_id: task1, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: shuffle_watch, diagnostic_only: true}
   T2-P0: {task_id: task2, stage: P0_anchor_only, fusion_mode: none, context_view: none}
-  T2-machine: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: machine}
-  T2-body: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: body}
-  T2-both: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: both}
-  T2-shuffle: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: shuffle, diagnostic_only: true}
+  T2-C1-machine: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film, context_view: machine}
+  T2-C2-machine: {task_id: task2, stage: P1_joint_anchor, fusion_mode: gated_residual, context_view: machine}
+  T2-C3-machine: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: machine}
+  T2-C1-body: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film, context_view: body}
+  T2-C2-body: {task_id: task2, stage: P1_joint_anchor, fusion_mode: gated_residual, context_view: body}
+  T2-C3-body: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: body}
+  T2-C3-both: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: both}
+  T2-shuffle-C3: {task_id: task2, stage: P1_joint_anchor, fusion_mode: film_gated_residual, context_view: shuffle, diagnostic_only: true}

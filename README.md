@@ -18,15 +18,15 @@
 先训练 P0。它只读取 `metadata/d12_strict_pretrain_index.csv` 的 train-only d12 I，并在 task 的 validation joint-anchor 数据上报告 anchor-only 下限：
 
 ```powershell
-python scripts/train_b2.py --task-id task1 --stage P0_anchor_only --output-dir results/b2_task1_p0
-python scripts/train_b2.py --task-id task2 --stage P0_anchor_only --output-dir results/b2_task2_p0
+python scripts/train_b2.py --experiment T1-P0 --task-id task1 --output-dir results/b2_task1_p0
+python scripts/train_b2.py --experiment T2-P0 --task-id task2 --output-dir results/b2_task2_p0
 ```
 
 再训练 P1。`--p0-checkpoint` 必填；P1 才会启用跨时刻 context encoder 和 fusion。task2 可选 body-scale B 或五导联 context 消融：
 
 ```powershell
-python scripts/train_b2.py --task-id task1 --stage P1_joint_anchor --p0-checkpoint results/b2_task1_p0/b2_best.pt --output-dir results/b2_task1_p1
-python scripts/train_b2.py --task-id task2 --stage P1_joint_anchor --p0-checkpoint results/b2_task2_p0/b2_best.pt --context-channel-indices 1 2 3 4 5 --output-dir results/b2_task2_p1_d6_without_i
+python scripts/train_b2.py --experiment T1-C3-watch --task-id task1 --p0-checkpoint results/b2_task1_p0/b2_best.pt --output-dir results/b2_task1_p1
+python scripts/train_b2.py --experiment T2-C3-machine --task-id task2 --p0-checkpoint results/b2_task2_p0/b2_best.pt --context-channel-indices 1 2 3 4 5 --output-dir results/b2_task2_p1_d6_without_i
 ```
 
 validation 用 public Dataset 从 validation target 的 I 模拟开放的测试 anchor；模型不会收到 target。该命令会保存 `prediction_raw.npy`、`prediction_submit.npy` 和三套 r 的 raw-uV V0 报告：
@@ -43,13 +43,14 @@ python scripts/predict_b2.py --checkpoint results/b2_task1_p1/b2_best.pt --task-
 
 提交前运行：`python scripts/check_b2.py`，以及下文列出的共享检查。B2 的原始输出使用固定零 baseline 作为当前合法 raw-uV 合成策略；若以后加入 baseline head，必须只使用模型预测的 baseline，不能读取真实 target baseline。
 
-## B2 v2：P0 / C1 / C2 baseline
+## B2 v2：P0 / P1-C1 / P1-C2 / P1-C3 baseline
 
 本分支的当前 B2 目标是测量：严格同步的 machine-I anchor 主干之外，保守地引入跨时刻 context 是否提高 `joint_anchor_test_like` raw-V0。它不是 M1，也不包含 weak pairing、R 峰伪配对、硬时间对齐或 context-only 重建。
 
 - `B2-P0` / `T1-P0` / `T2-P0`：Patch Transformer anchor 主干，严格 `machine-I anchor -> d12`；只读 train-only strict index。
 - `B2-C1`：P0 权重初始化后，global context latent 通过 FiLM 调制 anchor token。
-- `B2-C2`：C1 加 gated residual adapter。FiLM 和 residual 输出零初始化，gate 初始约 `0.03`，因此 P1 起点近似 P0。
+- `B2-C2`：gated residual adapter。
+- `B2-C3`：先 FiLM，再 gated residual；FiLM 和 residual 输出零初始化，gate 初始值为 `0.05`，因此 P1 起点近似 P0。
 - task1：独立 `WatchContextEncoder` 编码 watch context；仅形成全局条件。
 - task2：独立 machine-d6 / body-scale-d6 encoder，各自有 canonical d6 lead embedding 和 source embedding；仅在 latent 层合并，并带 availability mask。
 
@@ -58,21 +59,21 @@ python scripts/predict_b2.py --checkpoint results/b2_task1_p1/b2_best.pt --task-
 python scripts/train_b2.py --experiment T1-P0 --task-id task1 --output-dir results/t1_p0
 python scripts/train_b2.py --experiment T2-P0 --task-id task2 --output-dir results/t2_p0
 
-# C2：必须加载对应 P0
-python scripts/train_b2.py --experiment T1-C2-watch --task-id task1 --p0-checkpoint results/t1_p0/b2_best.pt --output-dir results/t1_c2_watch
-python scripts/train_b2.py --experiment T2-machine --task-id task2 --p0-checkpoint results/t2_p0/b2_best.pt --output-dir results/t2_machine
-python scripts/train_b2.py --experiment T2-body --task-id task2 --p0-checkpoint results/t2_p0/b2_best.pt --output-dir results/t2_body
+# P1-C3：必须加载对应 P0
+python scripts/train_b2.py --experiment T1-C3-watch --task-id task1 --p0-checkpoint results/t1_p0/b2_best.pt --output-dir results/t1_c3_watch
+python scripts/train_b2.py --experiment T2-C3-machine --task-id task2 --p0-checkpoint results/t2_p0/b2_best.pt --output-dir results/t2_c3_machine
+python scripts/train_b2.py --experiment T2-C3-body --task-id task2 --p0-checkpoint results/t2_p0/b2_best.pt --output-dir results/t2_c3_body
 ```
 
-`T1-shuffle-watch` 和 `T2-shuffle` 仅是诊断：anchor/target 不动，只以固定 seed 将 context 换为同 split 的另一受试者。`T2-both` 只有在 body/machine 同时满足相同 `subject_id`、`split`、`target_record_id`、`window_id` 的真实交集时可运行；当前适配器会写出交集计数，交集为空时 fail fast，绝不会伪造三元组。
+`T1-shuffle-C3-watch` 和 `T2-shuffle-C3` 仅是诊断：anchor/target 不动，只以固定 seed 将 context 换为同 split 的另一受试者。`T2-C3-both` 只有在 body/machine 同时满足相同 `subject_id`、`split`、`target_record_id`、`window_id` 的真实交集时可运行；当前适配器会写出交集计数，交集为空时 fail fast，绝不会伪造三元组。
 
-若交集存在，machine/body/both 的公平比较使用同一交集：在 `T2-machine` 或 `T2-body` 后加 `--common-intersection`；`T2-both` 天然只读取该交集。当前数据交集为空，因此这些共同交集实验会明确阻断。
+若交集存在，machine/body/both 的公平比较使用同一交集：在 `T2-C3-machine` 或 `T2-C3-body` 后加 `--common-intersection`；`T2-C3-both` 天然只读取该交集。当前数据交集为空，因此这些共同交集实验会明确阻断。
 
 validation 会写入 `prediction_raw.npy`、`prediction_submit.npy`、anchor、target 和 metadata；只有 submit 视图复制公开的 I anchor。正式推理不接受 target：
 
 ```powershell
-python scripts/predict_b2.py --checkpoint results/t1_c2_watch/b2_best.pt --task-id task1 --anchor-npy organizer_anchor_i.npy --watch-context-npy organizer_watch.npy --output-dir results/t1_test
-python scripts/predict_b2.py --checkpoint results/t2_machine/b2_best.pt --task-id task2 --anchor-npy organizer_anchor_i.npy --machine-d6-context-npy organizer_machine_d6.npy --output-dir results/t2_test
+python scripts/predict_b2.py --checkpoint results/t1_c3_watch/b2_best.pt --task-id task1 --anchor-npy organizer_anchor_i.npy --watch-context-npy organizer_watch.npy --output-dir results/t1_test
+python scripts/predict_b2.py --checkpoint results/t2_c3_machine/b2_best.pt --task-id task2 --anchor-npy organizer_anchor_i.npy --machine-d6-context-npy organizer_machine_d6.npy --output-dir results/t2_test
 ```
 
 提交前运行 `python scripts/check_b2.py`。B2 保持纯 Patch Transformer，不加载 B0 线性权重；使用 main 的 scale-aware `strict_anchor_pretrain_loss`、`joint_anchor_sync_loss` 和 raw-uV V0。P0 的 d12 scale 从 strict train index 拟合，P1 复用 P0 checkpoint 的 d12 scale；训练时不替换模型预测 I，只有 validation/test submit 组装时替换。训练使用 AdamW 和 1.0 梯度裁剪，并同时记录 centered morphology 诊断，不替代 official raw V0。
