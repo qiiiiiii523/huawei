@@ -30,7 +30,8 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
     if not np.isfinite(prediction).all() or not np.isfinite(target).all():
         raise ContractError("V0 evaluation requires finite prediction and target values")
     if lead_mask is None:
-        mask = np.broadcast_to(canonical_lead_mask(1 if task_id == "task1" else 6), (prediction.shape[0], 12))
+        # Both tasks expose only target-time machine-I; d6 is cross-time context.
+        mask = np.broadcast_to(canonical_lead_mask(1), (prediction.shape[0], 12))
     else:
         mask = np.asarray(lead_mask, dtype=bool)
         if mask.shape == (12,):
@@ -75,6 +76,27 @@ def evaluate_centered_diagnostic(prediction_uV: np.ndarray, target_uV: np.ndarra
     overall, details = evaluate_predictions(centered_prediction, centered_target, task_id, lead_mask)
     overall = {**overall, "evaluation_view": "centered_diagnostic_not_official"}
     return overall, details
+
+
+def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray,
+                                      anchor_i_ecg: np.ndarray, task_id: str):
+    """Return raw, submit-like and missing-11 V0 views for validation/test-like input."""
+    raw = np.asarray(prediction_raw)
+    target = np.asarray(target)
+    anchor = np.asarray(anchor_i_ecg)
+    if raw.ndim != 3 or raw.shape[1:] != (12, 5000) or target.shape != raw.shape or anchor.shape != (raw.shape[0], 1, 5000):
+        raise ContractError("prediction_raw, target and anchor shapes violate joint-anchor V0")
+    observed = np.broadcast_to(canonical_lead_mask(1), (raw.shape[0], 12))
+    raw_overall, raw_details = evaluate_predictions(raw, target, task_id, observed)
+    submit = raw.copy(); submit[:, :1] = anchor
+    submit_overall, submit_details = evaluate_predictions(submit, target, task_id, observed)
+    summary = {**submit_overall, "evaluation_input_contract": "joint_anchor_test_like",
+               "prediction_view": "submit_anchor_i_replaced",
+               "r_raw_12": float(raw_overall["twelve_lead_mean_pearson_r"]),
+               "r_submit_12": float(submit_overall["twelve_lead_mean_pearson_r"]),
+               "r_missing11": float(np.nanmean([row["pearson_r"] for row in raw_details[1:]])),
+               "r_missing11_leads": ",".join(D12_LEADS[1:])}
+    return summary, raw_details, submit_details, submit
 
 def _summary_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, float]:
     """Summarize a task-2 subset without changing the official V0 metric."""

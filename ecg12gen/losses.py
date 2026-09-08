@@ -83,3 +83,45 @@ def physiology_constraint_loss(prediction: torch.Tensor) -> torch.Tensor:
     i, ii, iii, avr, avl, avf = (prediction[:, index] for index in range(6))
     residuals = torch.stack((iii - (ii - i), avr + (i + ii) / 2, avl - (i - ii / 2), avf - (ii - i / 2)), dim=1)
     return residuals.square().mean()
+
+
+def replace_output_i_with_anchor(prediction: torch.Tensor, anchor_i: torch.Tensor) -> torch.Tensor:
+    """Validation/test-only submit helper; never call during training."""
+    if prediction.ndim != 3 or prediction.shape[1] != 12 or anchor_i.shape != prediction[:, :1].shape:
+        raise ValueError("prediction must be [batch,12,time] and anchor_i [batch,1,time]")
+    output = prediction.clone()
+    output[:, :1] = anchor_i
+    return output
+
+
+def _main_joint_loss(prediction: torch.Tensor, target: torch.Tensor, anchor_i: torch.Tensor,
+                     *, huber_weight: float = 1.0, pcc_weight: float = 0.1,
+                     physiology_weight: float = 0.05, observed_weight: float = 0.02) -> torch.Tensor:
+    if prediction.shape != target.shape or prediction.ndim != 3 or prediction.shape[1] != 12:
+        raise ValueError("prediction and target must be matching [batch,12,time]")
+    if anchor_i.shape != prediction[:, :1].shape:
+        raise ValueError("anchor_i must be [batch,1,time]")
+    all_leads = torch.ones(prediction.shape[:2], dtype=torch.bool, device=prediction.device)
+    anchor_mask = torch.zeros_like(all_leads); anchor_mask[:, 0] = True
+    return (huber_weight * masked_huber_loss(prediction, target, all_leads)
+            + pcc_weight * masked_pcc_loss(prediction, target, all_leads)
+            + physiology_weight * physiology_constraint_loss(prediction)
+            + observed_weight * observed_consistency_loss(prediction, anchor_i.expand_as(prediction), anchor_mask))
+
+
+def strict_anchor_pretrain_loss(prediction: torch.Tensor, target: torch.Tensor, anchor_i: torch.Tensor,
+                                *, huber_weight: float = 1.0, pcc_weight: float = 0.1,
+                                physiology_weight: float = 0.05, observed_weight: float = 0.02) -> torch.Tensor:
+    """Strict same-window machine-I -> d12 loss from the main contract."""
+    return _main_joint_loss(prediction, target, anchor_i, huber_weight=huber_weight,
+                            pcc_weight=pcc_weight, physiology_weight=physiology_weight,
+                            observed_weight=observed_weight)
+
+
+def joint_anchor_sync_loss(prediction: torch.Tensor, target: torch.Tensor, anchor_i: torch.Tensor,
+                           *, huber_weight: float = 1.0, pcc_weight: float = 0.1,
+                           physiology_weight: float = 0.05, observed_weight: float = 0.02) -> torch.Tensor:
+    """Joint-anchor loss; context is conditioning only and is never compared pointwise."""
+    return _main_joint_loss(prediction, target, anchor_i, huber_weight=huber_weight,
+                            pcc_weight=pcc_weight, physiology_weight=physiology_weight,
+                            observed_weight=observed_weight)
