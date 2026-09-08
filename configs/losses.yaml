@@ -3,12 +3,16 @@ strict_anchor_pretrain:
   huber_full_d12: 1.00
   pcc_full_d12: 0.10
   physiology: 0.05
+  physiology_space: centered_morphology_uV_with_frozen_d12_scale
+  physiology_requires_d12_scale_uV: true
   observed_anchor_consistency: 0.02
   pointwise_target_loss_basis: anchor_target_same_record_same_window_only
 joint_anchor_sync:
   huber_full_d12: 1.00
   pcc_full_d12: 0.10
   physiology: 0.05
+  physiology_space: centered_morphology_uV_with_frozen_d12_scale
+  physiology_requires_d12_scale_uV: true
   observed_anchor_consistency: 0.02
   observed_anchor_leads: [I]
   pointwise_target_loss_basis: "anchor_target_same_record_same_window_only"

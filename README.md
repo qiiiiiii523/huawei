@@ -129,7 +129,7 @@ prediction = replace_output_i_with_anchor(prediction, anchor_i)  # 可选
 loss 包含：
 
 - 完整 12 导联的 Huber + PCC；训练不覆盖模型预测 I；
-- 完整 d12 的导联代数约束；
+- 使用冻结 d12 scale 恢复到 μV 形态、并对约束残差去除窗口常数偏移后的 d12 导联代数约束；
 - I 的 observed consistency。
 
 逐点损失的合法性来自 `anchor_i_ecg <-> Y_12lead` 严格同步，**不是**来自 context。
