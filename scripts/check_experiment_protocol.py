@@ -24,12 +24,6 @@ def main() -> None:
     with (ROOT / "configs" / "preprocessing.yaml").open(encoding="utf-8") as handle:
         preprocessing = yaml.safe_load(handle)
     protocol = load_training_protocol(ROOT / "configs" / "training_protocol_v1.yaml")
-    assert protocol["supervision_and_loss"]["observed_lead_consistency"] == {
-        "synchronous_d12": "permitted",
-        "cross_device_weak_pair": "permitted_as_low_weight_input_only",
-        "paired_d12_pointwise_reconstruction": "forbidden",
-    }
-
     assert spec["ecg"]["model_internal_unit"] == "μV" and common["signal"]["ecg_unit"] == "μV"
     assert spec["ecg"]["model_internal_sampling_rate_hz"] == 500 and common["signal"]["ecg_sampling_rate_hz"] == 500
     assert spec["windowing"] == {"length_sec": 10, "step_sec": 10}
@@ -40,13 +34,20 @@ def main() -> None:
     assert quality["training_eligibility"]["under_30_sec"] == "exclude_from_training"
     assert common["paths"]["training_protocol_config"] == "configs/training_protocol_v1.yaml"
 
-    assert preprocessing["protocol_status"] == "frozen_for_b0_b1_b2_m1"
+    assert preprocessing["protocol_status"] == "frozen_joint_anchor"
     assert preprocessing["raw_data_mutation"] is False
     assert preprocessing["target_baseline_policy"] == "train_label_only_predict_at_inference"
     assert preprocessing["output_contract"]["prohibited_at_inference"] == "using_true_target_baseline_uV"
-    assert protocol["data"]["preprocessing"] == "unified_runtime_preprocessing_v1"
-    assert protocol["model_family_policy"]["b0_b1_b2_adapter"] == "forbidden"
+    assert protocol["two_stage_protocol"]["joint_anchor_adaptation"]["context_target_relation"] == "same_subject_cross_time"
+    assert protocol["two_stage_protocol"]["joint_anchor_adaptation"]["anchor_target_relation"] == "same_record_same_window"
     assert protocol["validation"]["official_view"] == "raw_uV"
+    assert protocol["two_stage_protocol"]["joint_anchor_adaptation"]["initialization"] == "required_P0_strict_pretrained_weights"
+    assert protocol["validation"]["required_metrics"] == ["r_raw_12", "r_submit_12", "r_missing11"]
+    for task in ("task1", "task2"):
+        with (ROOT / "configs" / "experiments" / f"{task}_joint_anchor.yaml").open(encoding="utf-8") as handle:
+            experiment = yaml.safe_load(handle)
+        assert experiment["experiments"]["P1_context_conditioned"]["initialization"] == "required_P0_strict_pretrained_weights"
+        assert experiment["experiments"]["P0_anchor_only"]["training_output_i_replacement"] == "forbidden"
 
     with (ROOT / "metadata" / "subject_split.csv").open(encoding="utf-8-sig", newline="") as handle:
         splits = [row["split"] for row in csv.DictReader(handle)]
@@ -55,7 +56,7 @@ def main() -> None:
     score = competition_score(0.8, 0.6, 140.0)
     assert score["main_score"] == 0.7 and score["task2_rmse_bonus_score"] == 5.0 and score["competition_total_score"] == 5.7
     state = seed_everything(42, deterministic=True)
-    print("PASS: v1.0 protocol; frozen unified preprocessing; 88/22 subject split; seed=42;", state)
+    print("PASS: v2 joint-anchor protocol; frozen preprocessing; 88/22 subject split; seed=42;", state)
 
 
 if __name__ == "__main__":

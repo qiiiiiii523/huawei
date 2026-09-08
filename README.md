@@ -1,184 +1,298 @@
-# 12 导联 ECG 信号生成项目
+# ECG-12 joint-anchor 公共主干
 
-本仓库的 main 分支只维护公共数据契约、实验协议、预处理、评价和检查工具，不包含 B0/B1/B2/M1 的具体网络，也不在此分支启动正式训练。
+## B2 v1 历史说明（已被下方 B2 v2 替代）
 
-## 一、仓库目录
+本分支已在 `main` 公共契约之上实现 B2 的两阶段 baseline；它不再支持旧的 weak、A/B/C 或 R 峰伪配对路线。
 
-```text
-huawei_upload_tmp/
-├── configs/                 # 公共配置和 A/B/C 实验配置
-├── metadata/                # subject split、配对清单、严格 d12 索引
-├── ecg12gen/                # 数据集、预处理、loss、评价等公共代码
-├── scripts/                 # 构建和只读检查脚本
-├── docs/                    # 数据治理和实验记录模板
-├── reports/                 # 已有 QC/配对/划分报告
-├── README.md
-└── .gitignore
-```
-
-关键文件：
-
-- configs/common.yaml：路径、采样率、窗口、导联顺序、seed 和数据变体。
-- configs/preprocessing.yaml：统一预处理 v1。
-- configs/training_protocol_v1.yaml：固定 train/validation、loss 使用边界和验证规则。
-- configs/experiments/：A/B/C 三条训练路线的配置。
-- metadata/subject_split.csv：唯一允许使用的 subject-level 划分。
-- metadata/d12_strict_pretrain_index.csv：去重后的 train-only d12 预训练索引。
-- ecg12gen/dataset.py：task1/task2 跨设备弱配对读取器。
-- ecg12gen/d12_pretrain.py：严格 d12-I/d12-six 预训练读取器。
-- ecg12gen/body_scale.py：体脂秤 A/B 输入读取器。
-- ecg12gen/preprocessing.py：非破坏性的 train-fitted 预处理。
-- ecg12gen/evaluate.py：官方 V0 和 centered 形态诊断。
-
-切好的数组不放进 Git 仓库，目录与仓库同级：
-
-```text
-HW/
-├── huawei_upload_tmp/
-├── task1_output/                  # task1 input [N,1,5000]、target [N,12,5000]
-├── task2_output/                  # task2 input [N,6,5000]、target [N,12,5000]
-├── task2_body_scale_ablation/     # 体脂秤 B 版本输入
-└── task1_rpeak_pseudo_output/     # task1 C 路线派生数据，可选
-```
-+-- task1_rpeak_pseudo_output_c2/    # task1 C2 Route C derived data, optional
-
-## 二、已固定的 v0.1 实验协议
-
-- ECG 单位：μV；采样率：500 Hz。
-- 每个窗口 10 秒、5000 点；步长 10 秒，不重叠。
-- d12 顺序：I、II、III、aVR、aVL、aVF、V1、V2、V3、V4、V5、V6。
-- d6 顺序：I、II、III、aVR、aVL、aVF。
-- train/validation 按 subject 划分，固定为 88/22（约 80%/20%），seed=42。
-- 同一 subject 的所有设备、记录和窗口必须在同一 split。
-- 短于 30 秒的记录保留审计，但不进入默认训练。
-- 默认训练只允许 pair_status=paired 且输入、target 为 usable 的样本。
-- review、unmatched、reject 不自动进入训练。
-- PPG 和 acceleration 保持 100 Hz，第一版不作为主输入。
-- 原始数据和切窗后的 NPY 不修改、不重切。
-
-## 三、三条训练路线
-
-| 路线 | task1 | task2 |
+| B2 模块 | 文件 | 作用 |
 |---|---|---|
-| A | watch 单导联 → d12 弱配对适配 | 心电机/体脂秤 d6 → d12 弱配对适配 |
-| B | d12-I 严格预训练 → 弱配对微调 | d12-six 严格预训练 → 弱配对微调 |
-| C | d12-I 严格预训练 → R 峰伪配对微调 | 无 C 路线 |
+| Anchor encoder + d12 decoder | `ecg12gen/b2_model.py` | P0 只从 machine-I anchor 预测完整 d12 |
+| Context encoder | `ecg12gen/b2_model.py` | 分别编码 watch / d6 跨时刻条件 |
+| Gated fusion | `ecg12gen/b2_model.py` | `anchor_tokens + gate × context_tokens`；不把 context 当同步通道 |
+| 数据适配 | `ecg12gen/b2_data.py` | 只读 strict index 与 `JointAnchorDataset`，并调用共享 frozen preprocessor |
+| P0/P1 训练 | `ecg12gen/b2_train.py`、`scripts/train_b2.py` | P1 强制加载 P0 权重；训练完整 d12，不覆盖模型预测 I |
+| 预测 / 验证 | `scripts/predict_b2.py` | 外部推理必须传入显式 machine-I anchor；validation 使用 test-like 模拟输入 |
 
-严格 d12 预训练只读取 d12_strict_pretrain_index.csv：
+### B2 的运行顺序
 
-- d12-I：Y_12lead[0:1] → Y_12lead[0:12]；
-- d12-six：Y_12lead[0:6] → Y_12lead[0:12]；
-- 只使用 train，索引按 target_record_id 和窗口采样范围去重。
+先训练 P0。它只读取 `metadata/d12_strict_pretrain_index.csv` 的 train-only d12 I，并在 task 的 validation joint-anchor 数据上报告 anchor-only 下限：
 
-C1 uses the strict 18-window set. 
-C2 preserves those 18 windows and adds the quality-gated candidates from `task1_rpeak_pseudo_output_c2/`.
-R 峰伪配对只用于 task1 C 路线。当前已生成 task1_rpeak_pseudo_output/；task2 不生成 R 峰伪配对数据，也不设置 C 路线。
+```powershell
+python scripts/train_b2.py --task-id task1 --stage P0_anchor_only --output-dir results/b2_task1_p0
+python scripts/train_b2.py --task-id task2 --stage P0_anchor_only --output-dir results/b2_task2_p0
+```
 
-## 四、窗口对齐和体脂秤 A/B
+再训练 P1。`--p0-checkpoint` 必填；P1 才会启用跨时刻 context encoder 和 fusion。task2 可选 body-scale B 或五导联 context 消融：
 
-- d12 内部预训练：输入和 target 是同一 d12 记录、同一窗口，允许逐点 loss。
-- 普通跨设备配对：只依据可靠 subject_id 配对，不假设逐点同步；默认禁止逐点 target MSE。
-- 体脂秤 A：原始连续记录直接切 10 秒窗口。
-- 体脂秤 B：连续记录先做 0.2 Hz 去趋势，再切 10 秒窗口。
-- A/B 使用相同 subject split 和相同 task2 target；B 输入通过 canonical_array_index 对齐 target。
-- A/B 必须作为独立实验版本比较，不要无记录混合。
+```powershell
+python scripts/train_b2.py --task-id task1 --stage P1_joint_anchor --p0-checkpoint results/b2_task1_p0/b2_best.pt --output-dir results/b2_task1_p1
+python scripts/train_b2.py --task-id task2 --stage P1_joint_anchor --p0-checkpoint results/b2_task2_p0/b2_best.pt --context-channel-indices 1 2 3 4 5 --output-dir results/b2_task2_p1_d6_without_i
+```
 
-体脂秤读取示例：
+validation 用 public Dataset 从 validation target 的 I 模拟开放的测试 anchor；模型不会收到 target。该命令会保存 `prediction_raw.npy`、`prediction_submit.npy` 和三套 r 的 raw-uV V0 报告：
+
+```powershell
+python scripts/predict_b2.py --checkpoint results/b2_task1_p1/b2_best.pt --task-id task1 --validation --output-dir results/b2_task1_p1_validation --centered-diagnostic
+```
+
+正式推理没有 `--target` 参数，必须传主办方提供的 anchor；输出的 I 为 anchor 原样复制，其余 11 导联来自模型：
+
+```powershell
+python scripts/predict_b2.py --checkpoint results/b2_task1_p1/b2_best.pt --task-id task1 --context-npy organizer_context.npy --context-source-type watch_ecg --anchor-npy organizer_machine_i_anchor.npy --output-dir results/b2_task1_test
+```
+
+提交前运行：`python scripts/check_b2.py`，以及下文列出的共享检查。B2 的原始输出使用固定零 baseline 作为当前合法 raw-uV 合成策略；若以后加入 baseline head，必须只使用模型预测的 baseline，不能读取真实 target baseline。
+
+## B2 v2：P0 / C1 / C2 baseline
+
+本分支的当前 B2 目标是测量：严格同步的 machine-I anchor 主干之外，保守地引入跨时刻 context 是否提高 `joint_anchor_test_like` raw-V0。它不是 M1，也不包含 weak pairing、R 峰伪配对、硬时间对齐或 context-only 重建。
+
+- `B2-P0` / `T1-P0` / `T2-P0`：Patch Transformer anchor 主干，严格 `machine-I anchor -> d12`；只读 train-only strict index。
+- `B2-C1`：P0 权重初始化后，global context latent 通过 FiLM 调制 anchor token。
+- `B2-C2`：C1 加 gated residual adapter。FiLM 和 residual 输出零初始化，gate 初始约 `0.03`，因此 P1 起点近似 P0。
+- task1：独立 `WatchContextEncoder` 编码 watch context；仅形成全局条件。
+- task2：独立 machine-d6 / body-scale-d6 encoder，各自有 canonical d6 lead embedding 和 source embedding；仅在 latent 层合并，并带 availability mask。
+
+```powershell
+# P0：严格同步 anchor 主干
+python scripts/train_b2.py --experiment T1-P0 --task-id task1 --output-dir results/t1_p0
+python scripts/train_b2.py --experiment T2-P0 --task-id task2 --output-dir results/t2_p0
+
+# C2：必须加载对应 P0
+python scripts/train_b2.py --experiment T1-C2-watch --task-id task1 --p0-checkpoint results/t1_p0/b2_best.pt --output-dir results/t1_c2_watch
+python scripts/train_b2.py --experiment T2-machine --task-id task2 --p0-checkpoint results/t2_p0/b2_best.pt --output-dir results/t2_machine
+python scripts/train_b2.py --experiment T2-body --task-id task2 --p0-checkpoint results/t2_p0/b2_best.pt --output-dir results/t2_body
+```
+
+`T1-shuffle-watch` 和 `T2-shuffle` 仅是诊断：anchor/target 不动，只以固定 seed 将 context 换为同 split 的另一受试者。`T2-both` 只有在 body/machine 同时满足相同 `subject_id`、`split`、`target_record_id`、`window_id` 的真实交集时可运行；当前适配器会写出交集计数，交集为空时 fail fast，绝不会伪造三元组。
+
+若交集存在，machine/body/both 的公平比较使用同一交集：在 `T2-machine` 或 `T2-body` 后加 `--common-intersection`；`T2-both` 天然只读取该交集。当前数据交集为空，因此这些共同交集实验会明确阻断。
+
+validation 会写入 `prediction_raw.npy`、`prediction_submit.npy`、anchor、target 和 metadata；只有 submit 视图复制公开的 I anchor。正式推理不接受 target：
+
+```powershell
+python scripts/predict_b2.py --checkpoint results/t1_c2_watch/b2_best.pt --task-id task1 --anchor-npy organizer_anchor_i.npy --watch-context-npy organizer_watch.npy --output-dir results/t1_test
+python scripts/predict_b2.py --checkpoint results/t2_machine/b2_best.pt --task-id task2 --anchor-npy organizer_anchor_i.npy --machine-d6-context-npy organizer_machine_d6.npy --output-dir results/t2_test
+```
+
+提交前运行 `python scripts/check_b2.py`。B2 使用 main 的 frozen preprocessing、`strict_anchor_pretrain_loss`、`joint_anchor_sync_loss` 和 raw-uV V0；训练时不替换模型预测 I，只有 validation/test submit 组装时替换。
+
+`main` 是供组员创建 baseline 分支的公共底座。它提供数据、预处理、loss、评估和检查；**不提供网络、训练循环、checkpoint 或预测结果**。
+
+## 1. 固定任务：模型到底要做什么
+
+```text
+task1: watch context + machine-I anchor -> d12 target
+task2: d6 context    + machine-I anchor -> d12 target
+```
+
+- **anchor**：目标时刻机器 I 导联，与 d12 target 同记录、同窗口、严格同步。
+- **context**：同一受试者的跨时刻辅助 ECG。task1 是 watch；task2 是 machine d6 或 body-scale d6。
+- **target**：目标时刻的 d12 ECG。
+
+只有 anchor 与 target 同步。context 不是 target 时刻同步波形，不能按采样点与 target 比较或拼成同步多通道 ECG。
+
+## 2. main 已提供什么
+
+| 内容 | 位置 | 组员如何使用 |
+|---|---|---|
+| 严格预训练数据 | `ecg12gen/d12_pretrain.py` | `d12 I -> d12`，只读 train-only strict index |
+| joint 数据 | `ecg12gen/dataset.py` | 读取 `context_ecg`、`anchor_i_ecg`、`Y_12lead` 和独立 masks |
+| task2 A/B | `ecg12gen/body_scale.py` | body-scale A/B、五导联 context 消融 |
+| 推理输入检查 | `prepare_joint_anchor_inference()` | 测试必须显式传入 machine-I anchor；没有 target 参数 |
+| 预处理 | `ecg12gen/preprocessing.py` | train-only frozen scale、per-window median baseline |
+| loss | `ecg12gen/losses.py` | `joint_anchor_sync_loss()`、`replace_output_i_with_anchor()` |
+| V0 评估 | `ecg12gen/evaluate.py` | raw-uV official V0、task2 分设备/subject/V1–V6 诊断 |
+| 配置与检查 | `configs/`、`scripts/` | 统一实验契约与提交前 smoke check |
+
+## 3. baseline 分支必须实现的网络模块
+
+每个 B0/B1/B2/M1 分支都应实现下列模块；模块内部结构可以不同，但输入语义不能改变。
+
+| 模块 | 必须做什么 | 不允许做什么 |
+|---|---|---|
+| **Anchor encoder + d12 decoder** | 输入 machine-I anchor，输出完整 d12；先完成 strict `d12 I -> d12` 预训练 | 用 validation d12 预训练 |
+| **Context encoder** | 编码 watch/d6 的跨时刻个体、设备、形态信息 | 将 context 当作 target-time 同步导联 |
+| **Fusion module** | 融合 anchor representation 与 context representation；可用 concat、gate、cross-attention 等 | 按相同采样点把 context 与 anchor 拼成同步 ECG |
+| **d12 output head** | 训练时输出完整 `[batch,12,5000]`，包括模型预测的 I | 从真实 target 读取 I 或其他导联 |
+| **可选 baseline head** | 预测 raw-uV 合成所需 d12 baseline | 推理时读取真实 target baseline |
+
+建议统一模型接口：
 
 ```python
-from ecg12gen.body_scale import BodyScaleVariantDataset
-from ecg12gen.dataset import ECGDataConfig
-config = ECGDataConfig.from_yaml("configs/common.yaml")
-train_a = BodyScaleVariantDataset(config, "train", "A_raw_window")
-train_b = BodyScaleVariantDataset(config, "train", "B_detrend_0p2Hz_then_window")
+d12_prediction = model(
+    context_ecg,          # task1 [B,1,5000]；task2 [B,6/5,5000]
+    anchor_i_ecg,         # [B,1,5000]
+    context_lead_mask,
+    anchor_lead_mask,     # target-time 仅 I=true
+)
 ```
 
-## 五、统一数据预处理
+## 4. 必须保留的 baseline 对比
 
-所有 ECG 输入和 d12 target 都要调用 main 的 ECGPreprocessor：
+核心问题是：跨时刻 context 是否在同步 I anchor 之外带来增益。因此所有模型分支至少保留以下两个可比较实验：
 
-1. 只用 train 拟合每个设备类型和 d12 的 scale；
-2. 每窗口、每导联减去 median；
-3. 使用 train 拟合并冻结的 scale；
-4. train、validation、推理使用同一冻结实例；
-5. 不改写原始 NPY。
+| 实验 | 输入 | 目的 | 是否正式合法 |
+|---|---|---|---|
+| **Anchor-only** | `machine-I anchor -> d12` | 严格预训练主干 / 无 context 基线 | 是 |
+| **Joint-anchor** | `context + machine-I anchor -> d12` | 检验 context 融合带来的增益 | 是 |
 
-体脂秤 B 的 0.2 Hz 去趋势只是输入变体，之后仍然执行上述共享预处理。预处理后的模型视图是 centered/scaled ECG；不得用真实 validation target 的 baseline 恢复预测。
+两者必须使用相同 subject split、strict 初始化、预处理、训练预算、loss 和 raw-V0 checkpoint 规则。报告中必须同时给出 anchor-only 与 joint-anchor 的 task1 r1 / task2 r2、RMSE、task2 V1–V6 和 machine/body 分层结果。
 
-## 六、loss 和评价
+可选但推荐的 task2 消融：
 
-- 同步 d12：缺失导联 Huber/PCC + observed consistency + 生理约束。
-- Route C variants: C1 uses 18 strict windows; C2 uses 33 windows total (18 C1 + 15 additions), with `alignment_quality_score` sample weighting for the added pseudo-paired windows.
-- 普通弱配对：observed consistency + 独立 strict-train d12 分布约束 + 生理约束，默认不做逐点 target MSE。
-- A0 uses the original weak loss: observed consistency + independent strict-train d12 spectral statistics + physiology.
-- A1 adds `0.20 * pair_invariant_stat` using the current paired d12 window's phase-invariant spectral/amplitude statistics; it still forbids pointwise target MSE/Huber/PCC.
-- R 峰伪配对：只使用 accepted 样本，并按 alignment_quality_score 加权。
-- 初始权重在 configs/losses.yaml，权重校准只能使用 train。
+- context 全 d6 `[I, II, III, aVR, aVL, aVF]` 对比五导联 `[II, III, aVR, aVL, aVF]`；
+- body-scale A 对比 B；
+- 不同 fusion 模块对比。
 
-官方 V0 由 task1/task2 共用：
+**不要做 context-only 的逐点 d12 重建训练**：没有同步 anchor 时，context-target 逐点监督不合法。
 
-- task1：12 导联平均 Pearson r，得到 r1；
-- task2：12 导联平均 Pearson r，得到 r2；
-- task2：缺失 V1–V6 平均 RMSE；
-- 主分数：0.5 × r1 + 0.5 × r2；
-- centered diagnostic 只用于形态诊断，不替代官方 raw V0。
+## 5. 训练流程
 
-评价命令：
-
-```powershell
-python -m ecg12gen.evaluate --prediction results/task1_validation_prediction.npy --target ../task1_output/task1_validation_target.npy --metadata ../task1_output/task1_window_metadata.csv --task-id task1 --output-dir results/task1
-```
-
-每次实验保存 overall_metrics.csv、lead_metrics.csv、report.md，并记录配置、输入变体、loss、baseline head/adapter 和 validation 结果。
-
-## 七、B0/B1/B2 公平比较规则
-
-B0、B1、B2 首轮横向比较必须使用相同的 task、输入版本、subject split、预处理、seed 和训练设置：seed=42、deterministic=true、batch size=16、每个阶段最多 100 epochs、AdamW、learning rate=0.001、weight decay=0.0001、无 scheduler、无 gradient clipping、关闭 early stopping。checkpoint 统一选择 validation 官方 V0 最佳结果；指标相同时取较早 epoch。
-
-模型结构可以不同，但不能同时改变数据路线、输入变体或上述训练预算，否则结果不能直接归因于网络结构。M1 及后续消融可以覆盖这些默认设置，但必须在实验记录中写明。
-
-## 八、模型分工与 adapter 规则
-
-建议的 Git 分支：
+### 阶段 1：严格 anchor 预训练
 
 ```text
-main
-├── baseline/B0
-├── baseline/B1
-├── baseline/B2
-└── candidate/M1
+输入：train-only d12 的 I
+标签：同窗口 d12
+目标：训练 Anchor encoder + d12 decoder
 ```
 
-- B0/B1/B2：只实现各自网络，第一轮不使用 adapter 和 baseline head。
-- M1：先做 M1-no-adapter；只有设备分层 centered 指标明显变差时，才加入 device adapter。
-- 如果 centered 指标好但 raw 指标差，再单独验证 baseline head。
-- baseline head 不是 B0 模型，而是预测 d12 每导联窗口 baseline 的可选输出头。
-- main 只提供 raw 合成接口，不实现具体 baseline head。
+```python
+from ecg12gen.d12_pretrain import StrictD12PretrainDataset
+from ecg12gen.contracts import SupervisionMode
 
-## 九、组员使用 main 的固定流程
-
-1. 从已确认的 main 创建分支：
-
-```powershell
-git switch main
-git pull --ff-only
-git switch -c baseline/B0
+strict_train = StrictD12PretrainDataset(
+    "configs/common.yaml", SupervisionMode.D12_I_PRETRAIN.value
+)
 ```
 
-2. 按本文目录准备受控数据，运行检查：
+严格 Dataset 只使用 `metadata/d12_strict_pretrain_index.csv`，不得读取 validation d12。
+
+### 阶段 2：joint-anchor adaptation
+
+```text
+输入：cross-time context + target-time I anchor
+标签：同一 target-time d12
+目标：保留 anchor 主干，同时训练 Context encoder + Fusion module
+```
+
+```python
+from ecg12gen.dataset import JointAnchorDataset
+
+train = JointAnchorDataset("configs/common.yaml", "task1", "train")
+sample = train[0]
+# sample.context_ecg
+# sample.anchor_i_ecg
+# sample.Y_12lead
+# sample.context_lead_mask
+# sample.anchor_lead_mask  # 仅 I=true
+```
+
+train/validation 的 `anchor_i_ecg` 从该窗口 target I 模拟构造，metadata 会标记：
+
+```text
+simulated_from_target_i_for_test_available_input
+```
+
+这仅模拟测试可见的输入；模型推理函数不得接受 `Y_12lead` 或 target NPY。
+
+### loss
+
+```python
+loss = joint_anchor_sync_loss(prediction, target, anchor_i)
+prediction = replace_output_i_with_anchor(prediction, anchor_i)  # 可选
+```
+
+loss 包含：
+
+- 完整 12 导联的 Huber + PCC；训练不覆盖模型预测 I；
+- 完整 d12 的导联代数约束；
+- I 的 observed consistency。
+
+逐点损失的合法性来自 `anchor_i_ecg <-> Y_12lead` 严格同步，**不是**来自 context。
+
+## 6. 预处理：模型分支必须遵守
+
+1. 使用 `ECGPreprocessor`；不要自己重新定义归一化。
+2. 固定 μV、500 Hz、10 秒、5000 点和 canonical d12 顺序。
+3. 每窗每导联减 median baseline。
+4. scale 只在 train 拟合，validation/test 必须复用冻结实例。
+5. watch、machine d6、body-scale d6、machine-I、d12 使用各自 source scale；machine-I scale 只能来自 train d12 的 I。
+6. raw-uV 其他导联只能用模型预测 baseline 合成，绝不能读取真实 target baseline。
+
+```python
+from ecg12gen.preprocessing import ECGPreprocessor, PreprocessingConfig
+
+preprocessor = ECGPreprocessor.fit(
+    PreprocessingConfig.from_yaml("configs/preprocessing.yaml"),
+    train_signals,
+)
+```
+
+## 7. validation、测试与评估
+
+validation 必须模拟测试接口：
+
+```text
+task1 validation: watch context + validation d12 I -> validation d12
+task2 validation: d6 context    + validation d12 I -> validation d12
+test:             organizer context + organizer machine-I -> prediction
+```
+
+validation 的 target 只用于：构造模拟可见 anchor、计算 loss、离线 V0 评分；不能作为模型输入的 hidden target。
+
+checkpoint 按 validation **official raw-uV V0** 选择。centered diagnostic 只用于定位形态/基线问题，不能替代 official V0。
+
+每次 validation 必须保留三套 r：
+
+| 指标 | 预测 | 用途 |
+|---|---|---|
+| `r_raw_12` | 模型原始完整 d12 输出 | 检查完整预测和 I 身份保持 |
+| `r_submit_12` | 仅在验证/模拟提交时用输入 anchor 覆盖预测 I | 最接近正式测试的官方成绩；用于 checkpoint 选择 |
+| `r_missing11` | 原始预测的 II、III、aVR、aVL、aVF、V1–V6 | 衡量真正缺失 11 导联的重建能力 |
+
+`pred_submit` 的 I 覆盖不是训练策略：训练时必须保留模型完整 d12 输出和 I 的监督；只有 validation/test 输出阶段才执行 `pred_submit[:, 0:1] = anchor_i_ecg`。
 
 ```powershell
-python scripts/check_d0_d1_v0.py --config configs/common.yaml
+python -m ecg12gen.evaluate `
+  --prediction results/task1_validation_prediction.npy `
+  --anchor results/task1_validation_anchor_i.npy `
+  --target ../task1_output/task1_validation_target.npy `
+  --metadata ../task1_output/task1_window_metadata.csv `
+  --task-id task1 `
+  --output-dir results/task1 `
+  --write-centered-diagnostic
+```
+
+task2 必须额外保留 machine/body 分层、subject-macro 和 V1–V6 RMSE。评估报告应写入 `evaluation_input_contract=joint_anchor_test_like`。
+
+## 8. 从 main 开始工作的最小清单
+
+```text
+1. 从 main 创建 baseline 分支。
+2. 运行共享检查。
+3. 实现 Anchor encoder + d12 decoder，并跑严格预训练。
+4. 先报告 Anchor-only baseline。
+5. 添加 Context encoder + Fusion module，跑 Joint-anchor adaptation。
+6. 在相同预算下比较 Anchor-only vs Joint-anchor。
+7. 仅以 raw-V0 validation 选择 checkpoint；记录 task2 分层诊断。
+8. 测试时只传 context + 主办方 machine-I anchor。
+```
+
+共享检查：
+
+```powershell
+python scripts/check_d0_d1_v0.py
 python scripts/check_experiment_protocol.py
 python scripts/check_preprocessing_protocol.py
-python scripts/check_abc_experiment_protocol.py
 python scripts/check_body_scale_variants.py
 ```
 
-3. 选择对应 Dataset 和 A/B/C 配置；只用 train 拟合 ECGPreprocessor。
-4. 模型输入必须保留 X_ecg、lead_mask、missing_mask、task_id、supervision_mode、alignment_mode 等字段。
-5. 按监督类型使用对应 loss，不能把弱配对当作同步波形。
-6. 只在 validation 上运行 V0，不能用 validation target 训练或调权。
-7. 在分支实验记录中写明网络、输入版本、loss、baseline head/adapter 和 V0 结果。
+正式配置：
 
-禁止提交原始 ECG、task1_output、task2_output、task2_body_scale_ablation、task1_rpeak_pseudo_output、checkpoint 和敏感数据。
+- `configs/experiments/task1_joint_anchor.yaml`
+- `configs/experiments/task2_joint_anchor.yaml`
+- `configs/training_protocol_v1.yaml`
+- `configs/losses.yaml`
+
+不要向 main 提交原始 ECG、窗口 NPY、checkpoint、预测、患者级结果或训练日志。实验详情记录到 `docs/experiment-record-template.md`。

@@ -1,65 +1,49 @@
-"""Non-training B2-v1 contract and smoke checks."""
+"""Non-training B2 P0/C1/C2, leakage, and task2 dual-context smoke test."""
 from __future__ import annotations
-
 import inspect
+import subprocess
 import sys
 from pathlib import Path
-
 import numpy as np
 import torch
+ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
+from ecg12gen.b2_data import (DualContextIntersectionError, build_joint_dataset, build_strict_dataset,
+                               fit_b2_preprocessor, task2_dual_intersection)
+from ecg12gen.b2_model import B2JointAnchorPatchTransformer, B2ModelConfig
+from ecg12gen.b2_train import P0_STAGE, P1_STAGE, _forward, fit_b2
+from ecg12gen.evaluate import evaluate_joint_anchor_predictions
+from ecg12gen.losses import joint_anchor_sync_loss, strict_anchor_pretrain_loss
+from scripts.predict_b2 import _explicit
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from ecg12gen.b2_data import _weak_samples, build_strict_dataset, fit_b2_preprocessor
-from ecg12gen.b2_model import B2MaskedPatchTransformer
-from ecg12gen.b2_train import strict_missing_loss, weak_route_loss
-from ecg12gen.dataset import ECGDataConfig
-from ecg12gen.d12_pretrain import StrictD12PretrainDataset
-
+def _batch(n: int = 2) -> dict[str, torch.Tensor]:
+    return {"anchor_model": torch.randn(n,1,5000), "target_model": torch.randn(n,12,5000), "anchor_lead_mask": torch.tensor([[True]+[False]*11]*n),
+            "watch_context_model": torch.randn(n,1,5000), "watch_available": torch.ones(n,dtype=torch.bool),
+            "machine_d6_model": torch.randn(n,6,5000), "machine_d6_mask": torch.ones(n,6,dtype=torch.bool), "machine_available": torch.ones(n,dtype=torch.bool),
+            "body_d6_model": torch.randn(n,6,5000), "body_d6_mask": torch.ones(n,6,dtype=torch.bool), "body_available": torch.ones(n,dtype=torch.bool)}
 
 def main() -> None:
-    torch.manual_seed(42)
-    model = B2MaskedPatchTransformer()
-    assert 250_000 <= model.parameter_count <= 400_000
-    task1_input = torch.randn(2, 1, 5000)
-    task1_mask = torch.tensor([[True] + [False] * 11] * 2)
-    task1_missing = ~task1_mask
-    task1_output = model(task1_input, task1_mask, task1_missing)
-    assert task1_output.shape == (2, 12, 5000)
-    task2_input = torch.randn(2, 6, 5000)
-    task2_mask = torch.tensor([[True] * 6 + [False] * 6] * 2)
-    task2_output = model(task2_input, task2_mask, ~task2_mask)
-    assert task2_output.shape == (2, 12, 5000)
-    assert torch.equal(task1_missing, ~task1_mask) and torch.equal(~task2_mask, ~task2_mask)
-    assert not any(parameter.requires_grad for name, parameter in model.named_buffers() if name == "positional_encoding")
-
-    prediction = torch.randn(2, 12, 5000)
-    target = torch.randn(2, 12, 5000)
-    missing = torch.tensor([[False] + [True] * 11, [False] + [True] * 11])
-    baseline_loss = strict_missing_loss(prediction, target, missing)
-    observed_changed = prediction.clone(); observed_changed[:, 0] += 100.0
-    target_observed_changed = target.clone(); target_observed_changed[:, 0] -= 100.0
-    assert torch.allclose(strict_missing_loss(observed_changed, target_observed_changed, missing), baseline_loss)
-
-    weak_source = inspect.getsource(weak_route_loss)
-    assert "masked_huber_loss" not in weak_source and "masked_pcc_loss" not in weak_source
-    assert "observed_consistency_loss" in weak_source and "spectral_stat_loss" in weak_source
-    assert "pair_invariant_stat_loss" in weak_source
-    predict_source = (ROOT / "scripts" / "predict_b2.py").read_text(encoding="utf-8")
-    assert "baseline_uV" not in predict_source and "target_baseline" not in predict_source
-
-    config = ECGDataConfig.from_yaml(ROOT / "configs" / "common.yaml")
-    strict_rows = StrictD12PretrainDataset(config, "d12_i_pretrain")
-    assert len(strict_rows) > 0 and all(sample.split == "train" for sample in strict_rows)
-    preprocessor = fit_b2_preprocessor(ROOT / "configs" / "common.yaml", "task2", "B_detrend_0p2Hz_then_window")
-    strict = build_strict_dataset(ROOT / "configs" / "common.yaml", "task2", preprocessor)
-    assert all(sample.split == "train" for sample in strict.samples)
-    task2_b_samples = _weak_samples(config, "task2", "train", "B_detrend_0p2Hz_then_window")
-    assert task2_b_samples and all(sample.meta.get("input_processing_variant", "") != "A_raw_window" for sample in task2_b_samples if "input_processing_variant" in sample.meta)
-    assert all(sample.meta.get("device_type") != "body_scale_d6" or sample.meta.get("input_processing_variant") == "B_detrend_0p2Hz_then_window" for sample in task2_b_samples)
-    print(f"PASS: B2 forward/masks/loss guards; parameters={model.parameter_count}; strict_train={len(strict_rows)}; task2-B={len(task2_b_samples)}")
-
-
-if __name__ == "__main__":
-    main()
+    torch.manual_seed(42); p0 = B2JointAnchorPatchTransformer(B2ModelConfig(fusion_mode="none")); c2 = B2JointAnchorPatchTransformer(B2ModelConfig(fusion_mode="film_gated_residual")); c2.load_state_dict(p0.state_dict()); p0.eval(); c2.eval()
+    batch = _batch(); raw_p0, raw_c2 = _forward(p0,batch,"task1"), _forward(c2,batch,"task1")
+    assert raw_p0.shape == (2,12,5000) and torch.allclose(raw_p0, raw_c2, atol=1e-6)
+    assert abs(float(torch.sigmoid(c2.gate.bias).mean().detach()) - .03) < .002
+    assert _forward(c2,batch,"task2").shape == (2,12,5000)
+    assert torch.isfinite(strict_anchor_pretrain_loss(raw_p0,batch["target_model"],batch["anchor_model"]))
+    assert torch.isfinite(joint_anchor_sync_loss(raw_c2,batch["target_model"],batch["anchor_model"]))
+    changed=batch["target_model"].clone(); changed[:,:1]+=100; assert not torch.allclose(joint_anchor_sync_loss(raw_c2,changed,batch["anchor_model"]), joint_anchor_sync_loss(raw_c2,batch["target_model"],batch["anchor_model"]))
+    pre1=fit_b2_preprocessor(ROOT/"configs"/"common.yaml","task1"); strict=build_strict_dataset(ROOT/"configs"/"common.yaml",pre1); t1=build_joint_dataset(ROOT/"configs"/"common.yaml","task1","validation",pre1,context_view="shuffle_watch")
+    assert strict[0].anchor_model.shape==(1,5000) and not strict[0].watch_available and t1[0].meta["context_shuffled"] and t1[0].meta["context_subject_id"] != t1[0].meta["subject_id"]
+    pre2=fit_b2_preprocessor(ROOT/"configs"/"common.yaml","task2"); machine=build_joint_dataset(ROOT/"configs"/"common.yaml","task2","validation",pre2,context_view="machine"); body=build_joint_dataset(ROOT/"configs"/"common.yaml","task2","validation",pre2,context_view="body")
+    assert machine[0].machine_available and not machine[0].body_available and body[0].body_available and not body[0].machine_available
+    pairs_train, counts_train=task2_dual_intersection(ROOT/"configs"/"common.yaml","train"); pairs_val, counts_val=task2_dual_intersection(ROOT/"configs"/"common.yaml","validation")
+    assert counts_train["both_rows"] == len(pairs_train) and counts_val["both_rows"] == len(pairs_val)
+    try: build_joint_dataset(ROOT/"configs"/"common.yaml","task2","train",pre2,context_view="both"); assert pairs_train
+    except DualContextIntersectionError: assert not pairs_train
+    try: fit_b2(c2,machine,machine,pre2.scale_uV_by_source["d12"],"task2",ROOT/"tmp_should_not_exist",stage=P1_STAGE); raise AssertionError("P1 without P0 accepted")
+    except ValueError: pass
+    missing_anchor=subprocess.run([sys.executable,str(ROOT/"scripts"/"predict_b2.py"),"--checkpoint","unused.pt","--task-id","task1","--output-dir","unused"],capture_output=True,text=True)
+    assert missing_anchor.returncode != 0 and "--anchor-npy" in (missing_anchor.stdout+missing_anchor.stderr)
+    target=np.random.default_rng(42).normal(size=(2,12,5000)).astype(np.float32); anchor=np.ones((2,1,5000),np.float32); summary,_,_,submit=evaluate_joint_anchor_predictions(target,target,anchor,"task1"); assert np.array_equal(submit[:,:1],anchor) and summary["prediction_view"]=="submit_anchor_i_replaced"
+    assert "target" not in inspect.signature(_explicit).parameters
+    source=(ROOT/"ecg12gen"/"b2_train.py").read_text(encoding="utf-8"); assert "replace_output_i_with_anchor" not in source and "rpeak" not in source and "raw_weak" not in source
+    print(f"PASS: B2 P0/C1/C2; strict={len(strict)}; T2 machine/body={len(machine)}/{len(body)}; dual train/val={counts_train['both_rows']}/{counts_val['both_rows']}")
+if __name__ == "__main__": main()

@@ -31,6 +31,7 @@ def main() -> None:
     }
     original = train["body_scale_d6"].copy()
     preprocessor = ECGPreprocessor.fit(config, train)
+    assert np.allclose(preprocessor.scale_uV_by_source["ecg_machine_i"], preprocessor.scale_uV_by_source["d12"][:1])
     body = preprocessor.transform_window(train["body_scale_d6"][0], "body_scale_d6")
     assert np.array_equal(train["body_scale_d6"], original), "raw input was mutated"
     assert np.allclose(np.median(body.model_signal, axis=1), 0.0, atol=1e-6)

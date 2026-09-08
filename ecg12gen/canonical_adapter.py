@@ -9,7 +9,7 @@ from .contracts import ContractError, canonical_lead_mask
 def canonicalize_input_ecg(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Pad canonical 1/6-lead ECG to 12 leads and return its lead mask.
 
-    D0 raw shapes remain unchanged in ``UnifiedECGDataset``. This adapter is
+    Raw context shapes remain unchanged in ``JointAnchorDataset``. This adapter is
     opt-in for masked fixed-channel models; absent leads are zero placeholders
     and must always be interpreted with the returned mask.
     """
