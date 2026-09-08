@@ -174,7 +174,11 @@ class B2JointAnchorPatchTransformer(nn.Module):
                 h_joint = h_film + torch.sigmoid(self.gate(z)).unsqueeze(1) * self.residual(torch.cat((h_film, expanded), dim=-1))
         lead_ids = torch.arange(NUM_LEADS, device=anchor_i_ecg.device)
         decoded = self.lead_decoder(self.decoder_norm(h_joint).unsqueeze(1) + self.lead_embedding(lead_ids).view(1, NUM_LEADS, 1, -1))
-        return decoded.permute(0, 1, 3, 2).reshape(anchor_i_ecg.shape[0], NUM_LEADS, WINDOW_SAMPLES)
+        # ``decoded`` is [B, leads, tokens, patch_size].  The token dimension
+        # already follows chronological order, so flatten tokens first and
+        # patch samples second.  Permuting to [patch_size, tokens] would
+        # interleave distant time points and scramble every output waveform.
+        return decoded.reshape(anchor_i_ecg.shape[0], NUM_LEADS, WINDOW_SAMPLES)
 
 
 B2MaskedPatchTransformer = B2JointAnchorPatchTransformer

@@ -5,7 +5,7 @@ import csv
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -18,6 +18,7 @@ from .losses import joint_anchor_sync_loss, strict_anchor_pretrain_loss
 from .training import seed_everything
 
 P0_STAGE, P1_STAGE = "P0_anchor_only", "P1_joint_anchor"
+MAX_EPOCHS = 200
 
 
 def _loader(dataset: B2PreparedDataset, shuffle: bool, seed: int) -> DataLoader:
@@ -58,7 +59,10 @@ def validate_v0(model: B2JointAnchorPatchTransformer, dataset: B2PreparedDataset
     prediction, target_array, anchor_array = np.concatenate(raw), np.concatenate(target), np.concatenate(anchor)
     overall, _, _, submit = evaluate_joint_anchor_predictions(prediction, target_array, anchor_array, task_id)
     if task_id == "task2":
-        subjects, devices = evaluate_task2_diagnostics(submit, target_array, [{"subject_id": str(x["subject_id"]), "input_type": str(x["input_type"])} for x in metadata])
+        subjects, devices = evaluate_task2_diagnostics(
+            submit, target_array,
+            [{"subject_id": str(x.get("subject_id", "")), "input_type": str(x.get("input_type", "strict"))} for x in metadata],
+        )
         overall["task2_subject_macro_rows"], overall["task2_device_rows"] = len(subjects), len(devices)
     metric = float(overall["task1_r1" if task_id == "task1" else "task2_r2"])
     return ValidationResult(metric, overall, prediction.astype(np.float32), submit.astype(np.float32), anchor_array.astype(np.float32), target_array.astype(np.float32), metadata)
@@ -79,10 +83,34 @@ def _save_validation(output: Path, validation: ValidationResult) -> None:
         for i, row in enumerate(validation.metadata): writer.writerow({"array_index": i, "subject_id": row.get("subject_id", ""), "input_type": row.get("input_type", ""), "split": row.get("split", "validation")})
 
 
+def _strict_train_metrics(model: B2JointAnchorPatchTransformer, dataset: B2PreparedDataset,
+                          d12_scale_uV: np.ndarray, task_id: str, device: torch.device,
+                          checkpoint_epoch: int) -> dict[str, Any]:
+    """Report strict-pretraining R on the train-only strict diagnostic set.
+
+    The strict protocol intentionally has no strict validation split.  These
+    metrics are therefore diagnostic train-set R values and are never used for
+    checkpoint selection.
+    """
+    result = validate_v0(model, dataset, d12_scale_uV, task_id, device)
+    return {
+        "split": "train",
+        "diagnostic_only": True,
+        "evaluation_input_contract": "strict_anchor_pretrain_train_diagnostic",
+        "checkpoint_epoch": checkpoint_epoch,
+        "n_windows": len(dataset),
+        "r_raw_12": result.overall["r_raw_12"],
+        "r_submit_12": result.overall["r_submit_12"],
+        "r_missing11": result.overall["r_missing11"],
+        "twelve_lead_mean_rmse_uV": result.overall["twelve_lead_mean_rmse_uV"],
+    }
+
+
 def fit_b2(model: B2JointAnchorPatchTransformer, train_dataset: B2PreparedDataset, validation_dataset: B2PreparedDataset,
            d12_scale_uV: np.ndarray, task_id: str, output_dir: str | Path, *, stage: str,
-           p0_checkpoint: str | Path | None = None, device: str = "cpu", epochs: int = 100) -> Path:
-    if stage not in {P0_STAGE, P1_STAGE} or not 1 <= epochs <= 100: raise ValueError("invalid B2 stage or epoch count")
+           p0_checkpoint: str | Path | None = None, device: str = "cpu", epochs: int = MAX_EPOCHS,
+           validation_views: Mapping[str, B2PreparedDataset] | None = None) -> Path:
+    if stage not in {P0_STAGE, P1_STAGE} or not 1 <= epochs <= MAX_EPOCHS: raise ValueError("invalid B2 stage or epoch count")
     if stage == P0_STAGE and train_dataset.mode != "strict_anchor_pretrain": raise ValueError("P0 must use strict_anchor_pretrain data")
     if stage == P1_STAGE and (train_dataset.mode != "joint_anchor" or p0_checkpoint is None): raise ValueError("P1 must use joint-anchor data and an explicit P0 checkpoint")
     seed_everything(42, deterministic=True); device_t = torch.device(device); model.to(device_t)
@@ -106,5 +134,27 @@ def fit_b2(model: B2JointAnchorPatchTransformer, train_dataset: B2PreparedDatase
             torch.save({"schema": model.checkpoint_schema, "model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch,
                         "stage": stage, "task_id": task_id, "model_config": asdict(model.config), "p0_checkpoint": str(p0_checkpoint) if p0_checkpoint else None,
                         "checkpoint_selection": "best_validation_raw_uV_submit_anchor_i_replaced_v0"}, best_path)
-    (output / "history.json").write_text(json.dumps({"stage": stage, "checkpoint_selection": "raw_uV_submit_anchor_i_replaced_v0", "history": history}, indent=2, default=str), encoding="utf-8")
+    history_payload: dict[str, Any] = {"stage": stage, "epochs_requested": epochs,
+        "checkpoint_selection": "raw_uV_submit_anchor_i_replaced_v0", "history": history}
+    best_payload = None
+    if stage == P0_STAGE or validation_views:
+        best_payload = torch.load(best_path, map_location=device_t, weights_only=False)
+        model.load_state_dict(best_payload["model"], strict=True)
+    validation_view_metrics: dict[str, dict[str, Any]] = {}
+    if validation_views:
+        for view_name, view_dataset in validation_views.items():
+            view_result = validate_v0(model, view_dataset, np.asarray(d12_scale_uV, np.float32), task_id, device_t)
+            view_metrics = {**view_result.overall, "context_view": view_name,
+                            "checkpoint_epoch": int(best_payload["epoch"])}
+            validation_view_metrics[view_name] = view_metrics
+            (output / f"validation_{view_name}_metrics.json").write_text(
+                json.dumps(view_metrics, indent=2, default=str), encoding="utf-8")
+    if stage == P0_STAGE:
+        strict_metrics = _strict_train_metrics(model, train_dataset, np.asarray(d12_scale_uV, np.float32),
+                                                task_id, device_t, int(best_payload["epoch"]))
+        history_payload["strict_train_best_checkpoint"] = strict_metrics
+        (output / "strict_train_metrics.json").write_text(json.dumps(strict_metrics, indent=2, default=str), encoding="utf-8")
+    if validation_view_metrics:
+        history_payload["validation_views"] = validation_view_metrics
+    (output / "history.json").write_text(json.dumps(history_payload, indent=2, default=str), encoding="utf-8")
     return best_path

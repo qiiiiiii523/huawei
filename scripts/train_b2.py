@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
 from ecg12gen.b2_data import (build_joint_dataset, build_strict_dataset, dataset_summary,
                                fit_b2_preprocessor, task2_dual_intersection)
 from ecg12gen.b2_model import B2JointAnchorPatchTransformer, B2ModelConfig
-from ecg12gen.b2_train import P0_STAGE, P1_STAGE, fit_b2
+from ecg12gen.b2_train import MAX_EPOCHS, P0_STAGE, P1_STAGE, fit_b2
 
 
 def _spec(name: str) -> tuple[dict[str, object], dict[str, object]]:
@@ -30,7 +30,8 @@ def main() -> None:
     parser.add_argument("--body-scale-variant", choices=("A_raw_window", "B_detrend_0p2Hz_then_window"), default="A_raw_window")
     parser.add_argument("--context-channel-indices", type=int, nargs="+", default=None)
     parser.add_argument("--common-intersection", action="store_true", help="Evaluate/train machine or body on the verified body+machine common intersection")
-    parser.add_argument("--epochs", type=int, default=100); parser.add_argument("--device", default="cpu")
+    parser.add_argument("--epochs", type=int, default=MAX_EPOCHS, help=f"training epochs (1-{MAX_EPOCHS})")
+    parser.add_argument("--device", default="cpu")
     parser.add_argument("--output-dir", default=None); args = parser.parse_args()
     model_raw, exp = _spec(args.experiment)
     if exp.get("task_id") and exp["task_id"] != args.task_id: raise SystemExit("--task-id disagrees with experiment")
@@ -51,17 +52,27 @@ def main() -> None:
     train = build_strict_dataset(args.config, preprocessor) if stage == P0_STAGE else build_joint_dataset(args.config, args.task_id, "train", preprocessor, args.body_scale_variant, indices, view, common_intersection=args.common_intersection)
     validation_view = "auto" if stage == P0_STAGE else view
     validation = build_joint_dataset(args.config, args.task_id, "validation", preprocessor, args.body_scale_variant, indices, validation_view, common_intersection=args.common_intersection)
+    validation_views = None
+    if stage == P0_STAGE and args.task_id == "task2":
+        validation_views = {
+            view_name: build_joint_dataset(args.config, "task2", "validation", preprocessor,
+                                           args.body_scale_variant, indices, view_name,
+                                           common_intersection=False)
+            for view_name in ("machine", "body")
+        }
     model_values = dict(model_raw); model_values["time_transformer_layers"] = model_values.pop("anchor_time_transformer_layers")
     model_values.update({"fusion_mode": exp["fusion_mode"], "context_dropout": 0.10, "initial_gate": 0.03})
     model_config = B2ModelConfig(**model_values)
     (output / "preprocessing_scales.json").write_text(json.dumps({k: v.tolist() for k, v in preprocessor.scale_uV_by_source.items()}, indent=2), encoding="utf-8")
     (output / "b2_run.json").write_text(json.dumps({"experiment": args.experiment, "task_id": args.task_id, "stage": stage,
         "context_view": view, "common_intersection": args.common_intersection, "diagnostic_only": bool(exp.get("diagnostic_only", False)), "p0_checkpoint": args.p0_checkpoint,
-        "model_config": model_config.__dict__, "train": dataset_summary(train), "validation": dataset_summary(validation),
+        "model_config": model_config.__dict__, "epochs": args.epochs, "train": dataset_summary(train), "validation": dataset_summary(validation),
+        "validation_views": {name: dataset_summary(dataset) for name, dataset in (validation_views or {}).items()},
         "task2_common_intersection": intersection, "training_output_i_replacement": "forbidden",
         "validation_input_contract": "joint_anchor_test_like"}, indent=2), encoding="utf-8")
     checkpoint = fit_b2(B2JointAnchorPatchTransformer(model_config), train, validation, preprocessor.scale_uV_by_source["d12"],
-                        args.task_id, output, stage=stage, p0_checkpoint=args.p0_checkpoint, device=args.device, epochs=args.epochs)
+                        args.task_id, output, stage=stage, p0_checkpoint=args.p0_checkpoint, device=args.device,
+                        epochs=args.epochs, validation_views=validation_views)
     print(f"B2 complete: {args.experiment}; checkpoint={checkpoint}")
 
 

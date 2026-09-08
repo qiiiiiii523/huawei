@@ -24,6 +24,11 @@ def _batch(n: int = 2) -> dict[str, torch.Tensor]:
 def main() -> None:
     torch.manual_seed(42); p0 = B2JointAnchorPatchTransformer(B2ModelConfig(fusion_mode="none")); c2 = B2JointAnchorPatchTransformer(B2ModelConfig(fusion_mode="film_gated_residual")); c2.load_state_dict(p0.state_dict()); p0.eval(); c2.eval()
     batch = _batch(); raw_p0, raw_c2 = _forward(p0,batch,"task1"), _forward(c2,batch,"task1")
+    decoded = []
+    hook = p0.lead_decoder.register_forward_hook(lambda _module, _inputs, output: decoded.append(output.detach()))
+    ordered = _forward(p0, batch, "task1")
+    hook.remove()
+    assert len(decoded) == 1 and torch.allclose(ordered, decoded[0].reshape(2, 12, 5000), atol=1e-6)
     assert raw_p0.shape == (2,12,5000) and torch.allclose(raw_p0, raw_c2, atol=1e-6)
     assert abs(float(torch.sigmoid(c2.gate.bias).mean().detach()) - .03) < .002
     assert _forward(c2,batch,"task2").shape == (2,12,5000)
