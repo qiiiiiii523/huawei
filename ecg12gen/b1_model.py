@@ -39,14 +39,14 @@ class B1Model(nn.Module):
     def __init__(self, fusion_mode="none", dropout=.1, variant="base", d12_scale=None):
         super().__init__();
         if fusion_mode not in {"none","film_gated_residual"}: raise ContractError("unsupported fusion_mode")
-        if variant not in {"base","wide","dilated"}: raise ContractError("unknown B1 variant")
+        if variant not in {"base","wide","dilated","core7"}: raise ContractError("unknown B1 variant")
         self.fusion_mode=fusion_mode; self.variant=variant; w=(32,64,128,256) if variant=="wide" else (24,48,96,192)
         self.widths=w; self.register_buffer("d12_scale",torch.ones(12) if d12_scale is None else torch.as_tensor(d12_scale,dtype=torch.float32))
         self.enc=nn.ModuleList([ResBlock(a,b,1 if i<2 else 2) for i,(a,b) in enumerate(zip((1,)+w[:-1],w))])
         self.bottleneck_extra=nn.Sequential(ResBlock(w[-1],w[-1],4),ResBlock(w[-1],w[-1],8)) if variant=="dilated" else nn.Identity()
         self.down=nn.ModuleList([nn.Conv1d(w[i],w[i],4,stride=2,padding=1) for i in range(3)])
         self.dec=nn.ModuleList([ResBlock(w[i+1]+w[i],w[i],1) for i in (2,1,0)])
-        self.out=nn.Conv1d(w[0],N12,1); self.dropout=nn.Dropout(dropout)
+        self.out=nn.Conv1d(w[0],7 if variant=="core7" else N12,1); self.dropout=nn.Dropout(dropout)
         self.watch_context_encoder=ContextEncoder(1,False); self.machine_d6_context_encoder=ContextEncoder(6,True); self.body_d6_context_encoder=ContextEncoder(6,True)
         self.film=nn.Linear(CCTX,2*w[-1]); self.gate=nn.Linear(CCTX,N12)
         self.residual_adapter=nn.Sequential(nn.Conv1d(w[0]+CCTX,w[0],3,padding=1),nn.GroupNorm(max(1,min(8,w[0]//4)),w[0]),nn.SiLU(),nn.Conv1d(w[0],1,3,padding=1))
@@ -59,7 +59,7 @@ class B1Model(nn.Module):
     @property
     def architecture_id(self): return f"B1_residual_dilated_unet_feature_c3_{self.variant}_v2"
     @property
-    def architecture_config(self): return {"architecture_id":self.architecture_id,"widths":list(self.widths),"bottleneck_extra":self.variant=="dilated","downsample":"stride2_x3","norm":"GroupNorm","c3":"feature_film_then_gated_residual","context_dim":CCTX}
+    def architecture_config(self): return {"architecture_id":self.architecture_id,"widths":list(self.widths),"output_parameterization":"core7_analytic_limb" if self.variant=="core7" else "full12","bottleneck_extra":self.variant=="dilated","downsample":"stride2_x3","norm":"GroupNorm","c3":"feature_film_then_gated_residual","context_dim":CCTX}
     @property
     def architecture_config_hash(self): return hashlib.sha256(json.dumps(self.architecture_config,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     @property
@@ -84,9 +84,22 @@ class B1Model(nn.Module):
         out=[]
         for i,s in enumerate(srcs): out.append((self.machine_d6_context_encoder if s=="ecg_machine_d6" else self.body_d6_context_encoder)(c[i:i+1],mask[i:i+1])[0])
         return torch.stack(out)
+    def _compose_core7(self, anchor_i, core):
+        """Compose full centered-scaled d12 from II+V1-V6 core outputs."""
+        if core.ndim != 3 or core.shape[1] != 7: raise ContractError("core7 head must output [B,7,T]")
+        sc=self.d12_scale.to(dtype=core.dtype,device=core.device)
+        morphology=core.new_zeros((core.shape[0],N12,core.shape[-1]))
+        morphology[:,0]=anchor_i[:,0]*sc[0]
+        morphology[:,1]=core[:,0]*sc[1]
+        morphology[:,6:12]=core[:,1:7]*sc[6:12,None]
+        i,ii=morphology[:,0],morphology[:,1]
+        morphology[:,2]=ii-i; morphology[:,3]=-(i+ii)/2; morphology[:,4]=i-ii/2; morphology[:,5]=ii-i/2
+        med=morphology.median(dim=-1,keepdim=True).values
+        return (morphology-med)/sc.view(1,N12,1)
     def forward(self,anchor_i,*,context_ecg=None,context_source_type=None,context_lead_mask=None):
         high,bottleneck=self._anchor(anchor_i)
-        if self.fusion_mode=="none": return self.out(high)
+        if self.fusion_mode=="none":
+            raw=self.out(high); return self._compose_core7(anchor_i,raw) if self.variant=="core7" else raw
         if context_ecg is None or context_source_type is None: raise ContractError("context required")
         c=self._ctx(context_ecg,context_source_type,context_lead_mask); gam,bet=self.film(c).chunk(2,1); bottleneck=bottleneck*(1+gam[:,:,None])+bet[:,:,None]
         # C3 FiLM is applied before the decoder; decode once more from conditioned bottleneck.
@@ -96,6 +109,7 @@ class B1Model(nn.Module):
             if i<3: z=self.down[i](z)
         z=bottleneck
         for d,s in zip(self.dec,reversed(skips[:-1])): z=d(torch.cat((F.interpolate(z,size=s.shape[-1],mode='linear',align_corners=False),s),1))
+        if self.variant=="core7": raise ContractError("core7 P1 is not enabled in this P0-only experiment")
         pred=self.out(z); bsz=anchor_i.shape[0]; cmap=c[:,None,:,None].expand(bsz,N12,CCTX,WINDOW_SAMPLES); h=z[:,None].expand(bsz,N12,z.shape[1],WINDOW_SAMPLES); din=torch.cat((h,cmap),2).reshape(bsz*N12,z.shape[1]+CCTX,WINDOW_SAMPLES); delta=self.residual_adapter(din).reshape(bsz,N12,WINDOW_SAMPLES); return pred+torch.sigmoid(self.gate(c))[:,:,None]*delta
     @torch.no_grad()
     def predict_baseline(self,anchor_i,anchor_baseline=None):
