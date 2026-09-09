@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from .b1_model import B1Model
 from .contracts import ContractError
@@ -26,7 +27,7 @@ def validate(model, ds, scale, task, dev, bs=4, shuffle_context=False):
         moved=_move(batch,dev)
         if shuffle_context and model.fusion_mode!="none":
             p=torch.roll(torch.arange(moved["context"].shape[0],device=dev),1); moved["context"]=moved["context"][p]; moved["context_lead_mask"]=moved["context_lead_mask"][p]; moved["context_source_type"]=[moved["context_source_type"][int(i)] for i in p.cpu()]
-        o=_forward(model,moved); base=model.predict_baseline(moved["anchor_i"]).cpu().numpy(); ps.append(_raw(o.cpu().numpy(),base,scale)); ys.append(batch["target_raw"].numpy()); aa.append(batch["anchor_raw"].numpy())
+        o=_forward(model,moved); base=model.predict_baseline(moved["anchor_i"],moved.get("anchor_baseline")).cpu().numpy(); ps.append(_raw(o.cpu().numpy(),base,scale)); ys.append(batch["target_raw"].numpy()); aa.append(batch["anchor_raw"].numpy())
     p,t,a=np.concatenate(ps),np.concatenate(ys),np.concatenate(aa); summary,raw,submit,psub=evaluate_joint_anchor_predictions(p,t,a,task)
     return {"summary":summary,"raw_details":raw,"submit_details":submit,"prediction_raw":p,"prediction_submit":psub,"target_raw":t,"anchor_raw":a}
 
@@ -34,18 +35,20 @@ def train_b1(args: Any) -> Path:
     if args.stage=="P0_anchor_only" and args.fusion_mode!="none": raise ContractError("P0 requires fusion_mode=none")
     if args.stage=="P1-C3" and (args.fusion_mode!="film_gated_residual" or not args.p0_checkpoint): raise ContractError("P1-C3 requires compatible P0 checkpoint")
     seed_everything(args.seed,deterministic=True); dev=torch.device(args.device); pre=fit_preprocessor(args.config,args.task_id,args.body_scale_variant,args.context_source_type if args.stage=="P1-C3" else None)
-    model=B1Model(fusion_mode=args.fusion_mode,dropout=args.dropout).to(dev)
+    model=B1Model(fusion_mode=args.fusion_mode,dropout=args.dropout,variant=args.variant,d12_scale=None).to(dev)
+    model.d12_scale.copy_(torch.as_tensor(pre.scale_uV_by_source["d12"],dtype=torch.float32))
     if args.stage=="P1-C3":
         ck=torch.load(args.p0_checkpoint,map_location="cpu",weights_only=False)
         if ck.get("architecture_id")!=model.architecture_id or ck.get("architecture_config_hash")!=model.architecture_config_hash: raise ContractError("P0/P1 architecture metadata mismatch")
         model.load_state_dict(ck["model"],strict=True)
     train_ds=StrictDataset(args.config,pre) if args.stage=="P0_anchor_only" else JointDataset(args.config,args.task_id,"train",pre,args.body_scale_variant,args.context_source_type)
     val_ds=JointDataset(args.config,args.task_id,"validation",pre,args.body_scale_variant,args.context_source_type if args.stage=="P1-C3" else None)
-    out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); scale=pre.scale_uV_by_source["d12"]; opt=torch.optim.AdamW(model.parameters(),lr=args.lr,weight_decay=args.weight_decay); best=-float("inf"); hist=[]
+    out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); scale=pre.scale_uV_by_source["d12"]; opt=torch.optim.AdamW(model.parameters(),lr=args.lr,weight_decay=args.weight_decay); scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,T_max=max(1,args.epochs),eta_min=args.lr*0.05); best=-float("inf"); hist=[]
     for ep in range(1,args.epochs+1):
         model.train(); losses=[]
         for batch in _loader(train_ds,args.batch_size,True,args.seed):
-            b=_move(batch,dev); opt.zero_grad(set_to_none=True); pred=_forward(model,b); loss=(strict_anchor_pretrain_loss(pred,b["target"],b["anchor_i"],d12_scale_uV=torch.as_tensor(scale,device=dev)) if args.stage=="P0_anchor_only" else joint_anchor_sync_loss(pred,b["target"],b["anchor_i"],d12_scale_uV=torch.as_tensor(scale,device=dev))); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5.0); opt.step(); losses.append(float(loss.detach().cpu()))
+            b=_move(batch,dev); opt.zero_grad(set_to_none=True); pred=_forward(model,b); loss=(strict_anchor_pretrain_loss(pred,b["target"],b["anchor_i"],d12_scale_uV=torch.as_tensor(scale,device=dev)) if args.stage=="P0_anchor_only" else joint_anchor_sync_loss(pred,b["target"],b["anchor_i"],d12_scale_uV=torch.as_tensor(scale,device=dev))); baseline=model.predict_baseline(b["anchor_i"],b.get("anchor_baseline"))/torch.as_tensor(scale,device=dev); loss=loss+args.baseline_weight*F.smooth_l1_loss(baseline,b["target_baseline"]); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5.0); opt.step(); losses.append(float(loss.detach().cpu()))
+        scheduler.step()
         val=validate(model,val_ds,scale,args.task_id,dev,args.batch_size); metric=float(val["summary"]["r_submit_12"]); row={"epoch":ep,"train_loss":float(np.mean(losses)),"validation":val["summary"]}
         if args.stage=="P1-C3":
             sh=validate(model,val_ds,scale,args.task_id,dev,args.batch_size,True); row["shuffled_context"]={"r_submit_12":float(sh["summary"]["r_submit_12"]),"r_missing11":float(sh["summary"]["r_missing11"])}

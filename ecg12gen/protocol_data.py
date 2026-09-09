@@ -42,7 +42,7 @@ class StrictDataset(Dataset):
     def __getitem__(self, i):
         s = self.src[i]; y = self.pre.transform_d12_target(s.Y_12lead).model_signal
         a = self.pre.transform_window(s.Y_12lead[:1], "ecg_machine_i").model_signal
-        return {"anchor_i": torch.from_numpy(a.copy()), "target": torch.from_numpy(y.copy()),
+        return {"anchor_i": torch.from_numpy(a.copy()), "anchor_baseline": torch.from_numpy((self.pre.transform_window(s.Y_12lead[:1], "ecg_machine_i").baseline_uV / self.pre.scale_uV_by_source["d12"][0]).copy()), "target_baseline": torch.from_numpy((self.pre.transform_d12_target(s.Y_12lead).baseline_uV / self.pre.scale_uV_by_source["d12"]).copy()), "target": torch.from_numpy(y.copy()),
                 "anchor_raw": torch.from_numpy(np.asarray(s.Y_12lead[:1], np.float32).copy()),
                 "target_raw": torch.from_numpy(np.asarray(s.Y_12lead, np.float32).copy()), "meta": s.meta}
 
@@ -56,13 +56,13 @@ class JointDataset(Dataset):
         c = _context(self.pre, s.context_ecg, src, s.context_lead_mask)
         a = self.pre.transform_window(s.anchor_i_ecg, "ecg_machine_i").model_signal
         y = self.pre.transform_d12_target(s.Y_12lead).model_signal
-        return {"anchor_i": torch.from_numpy(a.copy()), "context": torch.from_numpy(c.copy()),
+        return {"anchor_i": torch.from_numpy(a.copy()), "anchor_baseline": torch.from_numpy((self.pre.transform_window(s.anchor_i_ecg, "ecg_machine_i").baseline_uV / self.pre.scale_uV_by_source["d12"][0]).copy()), "target_baseline": torch.from_numpy((self.pre.transform_d12_target(s.Y_12lead).baseline_uV / self.pre.scale_uV_by_source["d12"]).copy()), "context": torch.from_numpy(c.copy()),
                 "context_source_type": src, "context_lead_mask": torch.from_numpy(s.context_lead_mask.copy()),
                 "target": torch.from_numpy(y.copy()), "anchor_raw": torch.from_numpy(s.anchor_i_ecg.copy()),
                 "target_raw": torch.from_numpy(s.Y_12lead.copy()), "subject_id": s.subject_id, "meta": s.meta}
 
 def collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
-    keys = ("anchor_i", "target", "anchor_raw", "target_raw")
+    keys = ("anchor_i", "anchor_baseline", "target_baseline", "target", "anchor_raw", "target_raw")
     out = {k: torch.stack([x[k] for x in batch]) for k in keys}
     if "context" in batch[0]:
         out["context"] = torch.stack([x["context"] for x in batch])

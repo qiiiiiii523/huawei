@@ -36,27 +36,30 @@ class ContextEncoder(nn.Module):
         return self.proj(z.mean(1))
 
 class B1Model(nn.Module):
-    def __init__(self, fusion_mode="none", dropout=.1):
+    def __init__(self, fusion_mode="none", dropout=.1, variant="base", d12_scale=None):
         super().__init__();
         if fusion_mode not in {"none","film_gated_residual"}: raise ContractError("unsupported fusion_mode")
-        self.fusion_mode=fusion_mode; w=(24,48,96,192)
+        if variant not in {"base","wide","dilated"}: raise ContractError("unknown B1 variant")
+        self.fusion_mode=fusion_mode; self.variant=variant; w=(32,64,128,256) if variant=="wide" else (24,48,96,192)
+        self.widths=w; self.register_buffer("d12_scale",torch.ones(12) if d12_scale is None else torch.as_tensor(d12_scale,dtype=torch.float32))
         self.enc=nn.ModuleList([ResBlock(a,b,1 if i<2 else 2) for i,(a,b) in enumerate(zip((1,)+w[:-1],w))])
+        self.bottleneck_extra=nn.Sequential(ResBlock(w[-1],w[-1],4),ResBlock(w[-1],w[-1],8)) if variant=="dilated" else nn.Identity()
         self.down=nn.ModuleList([nn.Conv1d(w[i],w[i],4,stride=2,padding=1) for i in range(3)])
         self.dec=nn.ModuleList([ResBlock(w[i+1]+w[i],w[i],1) for i in (2,1,0)])
         self.out=nn.Conv1d(w[0],N12,1); self.dropout=nn.Dropout(dropout)
         self.watch_context_encoder=ContextEncoder(1,False); self.machine_d6_context_encoder=ContextEncoder(6,True); self.body_d6_context_encoder=ContextEncoder(6,True)
         self.film=nn.Linear(CCTX,2*w[-1]); self.gate=nn.Linear(CCTX,N12)
-        self.residual_adapter=nn.Sequential(nn.Conv1d(w[0]+CCTX,w[0],3,padding=1),nn.GroupNorm(6,w[0]),nn.SiLU(),nn.Conv1d(w[0],1,3,padding=1))
-        self.baseline_head=nn.Sequential(nn.Linear(w[-1],64),nn.SiLU(),nn.Linear(64,N12)); self._init_adapters()
+        self.residual_adapter=nn.Sequential(nn.Conv1d(w[0]+CCTX,w[0],3,padding=1),nn.GroupNorm(max(1,min(8,w[0]//4)),w[0]),nn.SiLU(),nn.Conv1d(w[0],1,3,padding=1))
+        self.baseline_head=nn.Sequential(nn.Linear(w[-1]+1,64),nn.SiLU(),nn.Linear(64,N12)); self._init_adapters()
     def _init_adapters(self):
         nn.init.zeros_(self.film.weight); nn.init.zeros_(self.film.bias); nn.init.zeros_(self.gate.weight); nn.init.constant_(self.gate.bias,-2.944439)
         nn.init.zeros_(self.residual_adapter[-1].weight); nn.init.zeros_(self.residual_adapter[-1].bias); nn.init.zeros_(self.baseline_head[-1].weight); nn.init.zeros_(self.baseline_head[-1].bias)
     @property
     def parameter_count(self): return sum(p.numel() for p in self.parameters())
     @property
-    def architecture_id(self): return "B1_residual_dilated_unet_feature_c3_v1"
+    def architecture_id(self): return f"B1_residual_dilated_unet_feature_c3_{self.variant}_v2"
     @property
-    def architecture_config(self): return {"architecture_id":self.architecture_id,"widths":[24,48,96,192],"downsample":"stride2_x3","norm":"GroupNorm","c3":"feature_film_then_gated_residual","context_dim":CCTX}
+    def architecture_config(self): return {"architecture_id":self.architecture_id,"widths":list(self.widths),"bottleneck_extra":self.variant=="dilated","downsample":"stride2_x3","norm":"GroupNorm","c3":"feature_film_then_gated_residual","context_dim":CCTX}
     @property
     def architecture_config_hash(self): return hashlib.sha256(json.dumps(self.architecture_config,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     @property
@@ -69,7 +72,7 @@ class B1Model(nn.Module):
         for i,e in enumerate(self.enc):
             z=e(z); skips.append(z)
             if i<3: z=self.down[i](z)
-        bottleneck=z
+        bottleneck=self.bottleneck_extra(z)
         for d,s in zip(self.dec,reversed(skips[:-1])):
             z=d(torch.cat((F.interpolate(z,size=s.shape[-1],mode='linear',align_corners=False),s),1))
         return self.dropout(z),bottleneck
@@ -95,4 +98,8 @@ class B1Model(nn.Module):
         for d,s in zip(self.dec,reversed(skips[:-1])): z=d(torch.cat((F.interpolate(z,size=s.shape[-1],mode='linear',align_corners=False),s),1))
         pred=self.out(z); bsz=anchor_i.shape[0]; cmap=c[:,None,:,None].expand(bsz,N12,CCTX,WINDOW_SAMPLES); h=z[:,None].expand(bsz,N12,z.shape[1],WINDOW_SAMPLES); din=torch.cat((h,cmap),2).reshape(bsz*N12,z.shape[1]+CCTX,WINDOW_SAMPLES); delta=self.residual_adapter(din).reshape(bsz,N12,WINDOW_SAMPLES); return pred+torch.sigmoid(self.gate(c))[:,:,None]*delta
     @torch.no_grad()
-    def predict_baseline(self,anchor_i): return self.baseline_head(self._anchor(anchor_i)[1].mean(-1))
+    def predict_baseline(self,anchor_i,anchor_baseline=None):
+        b=self._anchor(anchor_i)[1].mean(-1)
+        if anchor_baseline is None: anchor_baseline=anchor_i.new_zeros((anchor_i.shape[0],1))
+        if anchor_baseline.ndim==1: anchor_baseline=anchor_baseline[:,None]
+        return self.baseline_head(torch.cat((b,anchor_baseline.to(b.dtype)),1))*self.d12_scale.to(b.dtype)
