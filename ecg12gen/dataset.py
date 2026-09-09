@@ -9,6 +9,8 @@ import numpy as np
 
 from .config import load_yaml_config, resolve_config_path
 from .contracts import D12_LEADS, ECG_SAMPLING_RATE_HZ, WINDOW_SAMPLES, ContractError, JointAnchorSample, canonical_lead_mask
+from .device_qc import d12_target_mask, d6_input_mask, load_device_interpretation_qc
+from .device_qc import d12_target_mask, d6_input_mask, load_device_interpretation_qc
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -69,6 +71,8 @@ class JointAnchorDataset:
         self._rows = sorted((r for r in _read_csv(task_dir / f"{prefix}_window_metadata.csv") if r["split"] == self.split), key=lambda r: int(r["array_index"]))
         if len(self._rows) != len(self._inputs) or len(self._rows) != len(self._targets) or [int(r["array_index"]) for r in self._rows] != list(range(len(self._rows))):
             raise ContractError("Array rows and split metadata do not agree")
+        self._device_qc = load_device_interpretation_qc(self.config.path("device_interpretation_qc_csv"))
+        self._device_qc = load_device_interpretation_qc(self.config.path("device_interpretation_qc_csv"))
         split_rows = _read_csv(self.config.path("subject_split_csv"))
         self._subject_split = {r["subject_id"]: r["split"] for r in split_rows}
         if len(self._subject_split) != len(split_rows): raise ContractError("subject_split.csv has duplicate subject_id")
@@ -80,6 +84,12 @@ class JointAnchorDataset:
             self._body_b_rows = {int(r["canonical_array_index"]): r for r in _read_csv(self.config.path("task2_body_scale_b_metadata")) if r["split"] == self.split}
         self._indices = [i for i, row in enumerate(self._rows) if self._eligible(row)]
 
+    def _target_qc(self, row: dict[str, str]) -> dict[str, str]:
+        qc = self._device_qc.get(row["target_record_id"])
+        if not qc or qc["device_type"] != "ecg_machine_d12":
+            raise ContractError("Every d12 target must have a device-interpretation QC row")
+        return qc
+
     def _eligible(self, row: dict[str, str]) -> bool:
         pair = self._pairs.get(row["pair_id"])
         if self._subject_split.get(row["subject_id"]) != self.split or row.get("quality_status") != "usable" or not pair:
@@ -88,6 +98,15 @@ class JointAnchorDataset:
             return False
         if pair.get("subject_id") != row["subject_id"] or pair.get("target_record_id") != row["target_record_id"] or pair.get("split") != self.split:
             raise ContractError("Context and target must retain the same subject/split target pair identity")
+        target_qc = self._target_qc(row)
+        if self.split == "train" and target_qc["d12_direct_supervision_eligible"] != "true":
+            return False
+        if self.task_id == "task2" and row.get("input_type") == "ecg_machine_d6":
+            input_qc = self._device_qc.get(row["input_record_id"])
+            if not input_qc or input_qc["device_type"] != "ecg_machine_d6":
+                raise ContractError("Every ecg_machine_d6 context must have a device-interpretation QC row")
+            if self.split == "train" and input_qc["d6_context_training_eligible"] != "true":
+                return False
         return not (self.task_id == "task2" and self.body_scale_variant == "B_detrend_0p2Hz_then_window" and row.get("input_type") == "body_scale_d6" and int(row["array_index"]) not in self._body_b_rows)
 
     def __len__(self) -> int: return len(self._indices)
@@ -116,5 +135,15 @@ class JointAnchorDataset:
             context_mask = np.zeros(6, dtype=bool); context_mask[list(self.context_channel_indices)] = True
         else: context_mask = np.ones(1, dtype=bool)
         target = np.asarray(self._targets[array_index], dtype=np.float32)
-        sample = JointAnchorSample(context_ecg=context, context_source_type=input_type, anchor_i_ecg=target[:1].copy(), anchor_source_type="ecg_machine_i", Y_12lead=target, anchor_lead_mask=canonical_lead_mask(1), context_lead_mask=context_mask, task_id=self.task_id, split=self.split, subject_id=row["subject_id"], pair_id=row["pair_id"], target_record_id=row["target_record_id"], window_id=row["window_id"], meta=meta, input_type=input_type)
+        target_qc = self._target_qc(row)
+        target_quality_mask = d12_target_mask(target_qc)
+        input_quality_mask = np.ones(context.shape[0], dtype=bool)
+        if self.task_id == "task2" and input_type == "ecg_machine_d6":
+            input_qc = self._device_qc[row["input_record_id"]]
+            input_quality_mask = d6_input_mask(input_qc)[list(self.context_channel_indices)]
+            meta["input_device_qc_warning"] = input_qc["has_signal_quality_warning"]
+            meta["input_bad_observed_leads"] = input_qc["bad_observed_input_leads"]
+        meta["target_device_qc_warning"] = target_qc["has_signal_quality_warning"]
+        meta["target_bad_leads"] = target_qc["bad_leads_all"]
+        sample = JointAnchorSample(context_ecg=context, context_source_type=input_type, anchor_i_ecg=target[:1].copy(), anchor_source_type="ecg_machine_i", Y_12lead=target, anchor_lead_mask=canonical_lead_mask(1), context_lead_mask=context_mask, task_id=self.task_id, split=self.split, subject_id=row["subject_id"], pair_id=row["pair_id"], target_record_id=row["target_record_id"], window_id=row["window_id"], meta=meta, input_type=input_type, target_quality_mask=target_quality_mask, input_quality_mask=input_quality_mask)
         sample.validate(); return sample

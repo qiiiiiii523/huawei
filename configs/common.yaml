@@ -7,6 +7,7 @@ paths:
   subject_split_csv: metadata/subject_split.csv
   task1_pair_manifest_csv: metadata/pair_manifest_task1.csv
   task2_pair_manifest_csv: metadata/pair_manifest_task2.csv
+  device_interpretation_qc_csv: metadata/device_interpretation_qc.csv
   output_dir: outputs
   training_protocol_config: configs/training_protocol_v1.yaml
   experiment_record_template: docs/experiment-record-template.md

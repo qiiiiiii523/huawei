@@ -7,6 +7,18 @@ import torch.nn.functional as F
 EPS = 1e-8
 
 
+def _target_mask_or_all(target_lead_mask: torch.Tensor | None, prediction: torch.Tensor) -> torch.Tensor:
+    """Validate an optional [batch, 12] direct-supervision quality mask."""
+    if target_lead_mask is None:
+        return torch.ones(prediction.shape[:2], dtype=torch.bool, device=prediction.device)
+    mask = torch.as_tensor(target_lead_mask, dtype=torch.bool, device=prediction.device)
+    if mask.shape != prediction.shape[:2]:
+        raise ValueError("target_lead_mask must have shape [batch,12]")
+    if torch.any(mask.sum(dim=1) < 1):
+        raise ValueError("each batch item needs at least one directly supervised target lead")
+    return mask
+
+
 def replace_output_i_with_anchor(prediction: torch.Tensor, anchor_i: torch.Tensor) -> torch.Tensor:
     """Return a d12 prediction whose observed I is exactly the test-time anchor."""
     if prediction.ndim != 3 or prediction.shape[1] != 12 or anchor_i.shape != prediction[:, :1].shape:
@@ -47,13 +59,14 @@ def strict_anchor_pretrain_loss(prediction: torch.Tensor, target: torch.Tensor,
                                 anchor_i: torch.Tensor, *, huber_weight: float = 1.0,
                                 pcc_weight: float = 0.1, physiology_weight: float = 0.05,
                                 observed_weight: float = 0.02,
-                                d12_scale_uV: torch.Tensor | None = None) -> torch.Tensor:
-    """Strict same-window machine-I -> d12 loss; all twelve leads are trained."""
+                                d12_scale_uV: torch.Tensor | None = None,
+                                target_lead_mask: torch.Tensor | None = None) -> torch.Tensor:
+    """Strict same-window machine-I -> d12 loss, optionally masking bad target leads."""
     if prediction.shape != target.shape or prediction.ndim != 3 or prediction.shape[1] != 12:
         raise ValueError("prediction and target must be matching [batch,12,time]")
     if anchor_i.shape != prediction[:, :1].shape:
         raise ValueError("anchor_i must be [batch,1,time]")
-    all_leads = torch.ones(prediction.shape[:2], dtype=torch.bool, device=prediction.device)
+    all_leads = _target_mask_or_all(target_lead_mask, prediction)
     anchor_mask = torch.zeros_like(all_leads); anchor_mask[:, 0] = True
     physiology = (physiology_constraint_loss(prediction, d12_scale_uV)
                   if physiology_weight else prediction.new_zeros(()))
@@ -67,7 +80,8 @@ def joint_anchor_sync_loss(prediction: torch.Tensor, target: torch.Tensor,
                            anchor_i: torch.Tensor, *, huber_weight: float = 1.0,
                            pcc_weight: float = 0.1, physiology_weight: float = 0.05,
                            observed_weight: float = 0.02,
-                           d12_scale_uV: torch.Tensor | None = None) -> torch.Tensor:
+                           d12_scale_uV: torch.Tensor | None = None,
+                           target_lead_mask: torch.Tensor | None = None) -> torch.Tensor:
     """Joint-anchor loss; the model predicts and is supervised on all d12 leads.
 
     Full-d12 pointwise supervision is legal because the input includes the
@@ -78,7 +92,7 @@ def joint_anchor_sync_loss(prediction: torch.Tensor, target: torch.Tensor,
         raise ValueError("prediction and target must be matching [batch,12,time]")
     if anchor_i.shape != prediction[:, :1].shape:
         raise ValueError("anchor_i must be [batch,1,time]")
-    all_leads = torch.ones(prediction.shape[:2], dtype=torch.bool, device=prediction.device)
+    all_leads = _target_mask_or_all(target_lead_mask, prediction)
     anchor_mask = torch.zeros_like(all_leads); anchor_mask[:, 0] = True
     physiology = (physiology_constraint_loss(prediction, d12_scale_uV)
                   if physiology_weight else prediction.new_zeros(()))

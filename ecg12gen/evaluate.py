@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 from .contracts import D12_LEADS, ContractError, canonical_lead_mask
+from .device_qc import d12_target_mask, load_device_interpretation_qc
 
 TASK2_GENERATED_LEAD_INDICES = np.arange(6, 12)
 MISSING_11_LEAD_INDICES = np.arange(1, 12)
@@ -83,8 +84,28 @@ def evaluate_centered_diagnostic(prediction_uV: np.ndarray, target_uV: np.ndarra
     return overall, details
 
 
+def _add_quality_strata(details: list[dict[str, float | str]], prediction: np.ndarray, target: np.ndarray,
+                        target_quality_mask: np.ndarray) -> None:
+    """Add clean/warning diagnostics without changing the official all-window score."""
+    quality = np.asarray(target_quality_mask, dtype=bool)
+    if quality.shape != prediction.shape[:2]:
+        raise ContractError("target_quality_mask must have shape [N,12]")
+    for lead_index, row in enumerate(details):
+        pred = prediction[:, lead_index, :]
+        truth = target[:, lead_index, :]
+        for name, selector in (("clean", quality[:, lead_index]), ("warning", ~quality[:, lead_index])):
+            row[f"n_{name}_windows"] = int(selector.sum())
+            if selector.any():
+                row[f"{name}_pearson_r"] = _pearson(pred[selector].reshape(-1), truth[selector].reshape(-1))
+                row[f"{name}_rmse_uV"] = float(np.sqrt(np.mean((pred[selector].astype(np.float64) - truth[selector].astype(np.float64)) ** 2)))
+            else:
+                row[f"{name}_pearson_r"] = float("nan")
+                row[f"{name}_rmse_uV"] = float("nan")
+
+
 def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray,
-                                      anchor_i_ecg: np.ndarray, task_id: str) -> tuple[dict[str, float | str], list[dict[str, float | str]], list[dict[str, float | str]], np.ndarray]:
+                                      anchor_i_ecg: np.ndarray, task_id: str,
+                                      target_quality_mask: np.ndarray | None = None) -> tuple[dict[str, float | str], list[dict[str, float | str]], list[dict[str, float | str]], np.ndarray]:
     """Evaluate P0/P1 validation with raw, submit-like, and missing-11 views.
 
     Training must use ``prediction_raw`` unchanged.  Only this validation/test
@@ -102,6 +123,9 @@ def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.nda
     submit = raw.copy()
     submit[:, :1] = anchor
     submit_overall, submit_details = evaluate_predictions(submit, target, task_id, observed_mask)
+    if target_quality_mask is not None:
+        _add_quality_strata(raw_details, raw, target, target_quality_mask)
+        _add_quality_strata(submit_details, submit, target, target_quality_mask)
     missing_r = float(np.nanmean([float(row["pearson_r"]) for row in raw_details[1:]]))
     summary: dict[str, float | str] = {
         **submit_overall,
@@ -235,6 +259,9 @@ def write_report(output_dir: str | Path, overall: dict[str, Any], details: list[
     lines.extend(f"| {key} | {value} |" for key, value in overall.items())
     lines += ["", "## Per-lead metrics", "", "| Lead | Pearson r | RMSE (uV) | Input present |", "|---|---:|---:|:---:|"]
     lines.extend(f"| {row['lead']} | {row['pearson_r']:.6f} | {row['rmse_uV']:.6f} | {row['input_present']} |" for row in details)
+    if "clean_pearson_r" in details[0]:
+        lines += ["", "## Device-QC clean / warning subsets", "", "| Lead | Clean windows | Clean r | Clean RMSE (uV) | Warning windows | Warning r | Warning RMSE (uV) |", "|---|---:|---:|---:|---:|---:|---:|"]
+        lines.extend(f"| {row['lead']} | {row['n_clean_windows']} | {row['clean_pearson_r']:.6f} | {row['clean_rmse_uV']:.6f} | {row['n_warning_windows']} | {row['warning_pearson_r']:.6f} | {row['warning_rmse_uV']:.6f} |" for row in details)
     markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return overall_csv, lead_csv, markdown
 
@@ -269,6 +296,18 @@ def write_task2_diagnostics(output_dir: str | Path, subject_rows: list[dict[str,
         handle.write("\n".join(lines) + "\n")
     return subject_csv, device_csv
 
+def _target_quality_masks(metadata_rows: list[dict[str, str]], qc_path: Path) -> np.ndarray:
+    qc_rows = load_device_interpretation_qc(qc_path)
+    masks = []
+    for row in metadata_rows:
+        target_record_id = row.get("target_record_id")
+        qc = qc_rows.get(target_record_id or "")
+        if not qc or qc["device_type"] != "ecg_machine_d12":
+            raise ContractError("Every validation target requires a d12 device-interpretation QC row")
+        masks.append(d12_target_mask(qc))
+    return np.asarray(masks, dtype=bool)
+
+
 def _validation_metadata_rows(path: Path, expected_n: int) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         rows = [row for row in csv.DictReader(handle) if row.get("split") == "validation"]
@@ -290,12 +329,14 @@ def main() -> None:
     parser.add_argument("--metadata", required=True, help="Window metadata CSV; validation rows are required")
     parser.add_argument("--task-id", required=True, choices=("task1", "task2"))
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--device-qc-csv", help="Optional device_interpretation_qc.csv; adds clean/warning per-lead diagnostics without changing official metrics.")
     parser.add_argument("--write-centered-diagnostic", action="store_true", help="Also write a non-official per-window-centered morphology report.")
     args = parser.parse_args()
     prediction, target, anchor = (np.load(args.prediction, mmap_mode="r"), np.load(args.target, mmap_mode="r"),
                                   np.load(args.anchor, mmap_mode="r"))
     metadata_rows = _validation_metadata_rows(Path(args.metadata), len(prediction))
-    overall, raw_details, submit_details, prediction_submit = evaluate_joint_anchor_predictions(prediction, target, anchor, args.task_id)
+    target_quality_mask = _target_quality_masks(metadata_rows, Path(args.device_qc_csv)) if args.device_qc_csv else None
+    overall, raw_details, submit_details, prediction_submit = evaluate_joint_anchor_predictions(prediction, target, anchor, args.task_id, target_quality_mask)
     paths = list(write_report(args.output_dir, overall, submit_details, title="Joint-anchor submit-like V0 validation report"))
     primary_report = paths[-1]
     raw_overall, _ = evaluate_predictions(prediction, target, args.task_id)
@@ -307,6 +348,8 @@ def main() -> None:
         centered_prediction = _center_per_window_uV(prediction_submit)
         centered_target = _center_per_window_uV(target)
         centered_overall, centered_details = evaluate_centered_diagnostic(centered_prediction, centered_target, args.task_id)
+        if target_quality_mask is not None:
+            _add_quality_strata(centered_details, centered_prediction, centered_target, target_quality_mask)
         centered_dir = Path(args.output_dir) / "centered_diagnostic"
         centered_paths = list(write_report(centered_dir, centered_overall, centered_details, title="Centered morphology diagnostic (not official)"))
         if args.task_id == "task2":

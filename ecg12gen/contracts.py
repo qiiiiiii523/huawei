@@ -36,6 +36,8 @@ class ECGSample:
     alignment_mode: str
     pair_confidence: str
     pair_status: str
+    target_quality_mask: np.ndarray | None = None
+    input_quality_mask: np.ndarray | None = None
 
     def validate(self) -> None:
         if self.task_id not in {"task1", "task2"}:
@@ -51,6 +53,10 @@ class ECGSample:
             raise ContractError("missing_mask must be the complement of lead_mask")
         if int(self.lead_mask.sum()) != expected_inputs:
             raise ContractError("lead_mask does not describe X_ecg")
+        for name, mask, expected_shape in (("target_quality_mask", self.target_quality_mask, (12,)),
+                                           ("input_quality_mask", self.input_quality_mask, (expected_inputs,))):
+            if mask is not None and np.asarray(mask, dtype=bool).shape != expected_shape:
+                raise ContractError(f"{name} must have shape {expected_shape}")
         if self.split not in {"train", "validation"}:
             raise ContractError(f"Unknown split: {self.split}")
         if self.supervision_mode == SupervisionMode.D12_I_PRETRAIN.value and self.split != "train":
@@ -92,6 +98,8 @@ class JointAnchorSample:
     pointwise_loss_allowed: bool = True
     anchor_available_at_test: bool = True
     supervision_mode: str = SupervisionMode.JOINT_ANCHOR_ADAPTATION.value
+    target_quality_mask: np.ndarray | None = None
+    input_quality_mask: np.ndarray | None = None
 
     def validate(self) -> None:
         if self.task_id not in {"task1", "task2"} or self.split not in {"train", "validation"}:
@@ -103,6 +111,8 @@ class JointAnchorSample:
         if self.anchor_i_ecg.shape != (1, WINDOW_SAMPLES) or self.Y_12lead.shape != (12, WINDOW_SAMPLES): raise ContractError("anchor/target shapes are invalid")
         if self.anchor_source_type != "ecg_machine_i": raise ContractError("anchor must be ecg_machine_i")
         if self.anchor_lead_mask.shape != (12,) or not (self.anchor_lead_mask[0] and self.anchor_lead_mask.sum() == 1): raise ContractError("only I is observed at target time")
+        if self.target_quality_mask is not None and np.asarray(self.target_quality_mask, dtype=bool).shape != (12,): raise ContractError("target_quality_mask must have 12 entries")
+        if self.input_quality_mask is not None and np.asarray(self.input_quality_mask, dtype=bool).shape != (expected,): raise ContractError("input_quality_mask must match context channels")
         if self.context_target_relation != "same_subject_cross_time" or self.anchor_target_relation != "same_record_same_window": raise ContractError("wrong relation labels")
         if self.context_target_sync or not self.anchor_target_sync or not self.pointwise_loss_allowed or not self.anchor_available_at_test: raise ContractError("wrong sync/supervision flags")
         if self.supervision_mode != SupervisionMode.JOINT_ANCHOR_ADAPTATION.value: raise ContractError("wrong supervision mode")

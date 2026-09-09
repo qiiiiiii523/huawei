@@ -1,7 +1,7 @@
 # ECG project quality-control rules
 # Status values are intentionally limited to these three values.
 
-spec_status: v0.1-main
+spec_status: v0.2-device-interpretation-qc
 allowed_quality_status:
   - usable
   - review
@@ -49,7 +49,24 @@ missing_values:
 training_eligibility:
   default: usable_only
   under_30_sec: exclude_from_training
-  note: "Records shorter than 30 seconds are retained for audit but are not used for training in v0.1."
+  note: "Records shorter than 30 seconds are retained for audit but are not used for training."
+
+device_interpretation_qc:
+  sidecar_csv: metadata/device_interpretation_qc.csv
+  parser: "MDC_ECG_INTERPRETATION_STATEMENT; only the explicit 信号质量差(...) statement is actionable"
+  source_records: [ecg_machine_d6, ecg_machine_d12]
+  d12_target:
+    named_bad_leads: "exclude from direct Huber/PCC supervision only"
+    unnamed_leads: "retain direct supervision"
+    minimum_reliable_target_leads: 6
+    fewer_than_minimum: "exclude window from direct target supervision"
+    arrays_and_raw_records: "retain unchanged"
+  ecg_machine_d6_context:
+    actionable_leads: [I, II, III, aVR, aVL, aVF]
+    named_observed_bad_lead: "exclude the d6 context sample from training"
+    expected_chest_lead_dropout: "ignore"
+  body_scale_d6:
+    affected: false
 
 protection:
   raw_data_must_not_be_modified: true
