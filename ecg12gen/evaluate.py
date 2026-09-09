@@ -30,7 +30,7 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
     if not np.isfinite(prediction).all() or not np.isfinite(target).all():
         raise ContractError("V0 evaluation requires finite prediction and target values")
     if lead_mask is None:
-        mask = np.broadcast_to(canonical_lead_mask(1 if task_id == "task1" else 6), (prediction.shape[0], 12))
+        mask = np.broadcast_to(canonical_lead_mask(1), (prediction.shape[0], 12))
     else:
         mask = np.asarray(lead_mask, dtype=bool)
         if mask.shape == (12,):
@@ -49,6 +49,10 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
     mean_r = float(np.nanmean(correlations))
     overall: dict[str, float | str] = {
         "split": "validation", "task_id": task_id, "n_windows": int(prediction.shape[0]),
+        "evaluation_input_contract": "joint_anchor_test_like",
+        "context_target_relation": "same_subject_cross_time",
+        "anchor_target_relation": "same_record_same_window",
+        "anchor_available_at_test": True,
         "twelve_lead_mean_pearson_r": mean_r, "twelve_lead_mean_rmse_uV": float(np.mean(rmses)),
         "task1_r1": mean_r if task_id == "task1" else float("nan"),
         "task2_r2": mean_r if task_id == "task2" else float("nan"),
@@ -275,3 +279,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray, anchor_i_ecg: np.ndarray, task_id: str):
+    """Main-contract raw, submit-like, and missing-11 validation views."""
+    raw=np.asarray(prediction_raw); target=np.asarray(target); anchor=np.asarray(anchor_i_ecg)
+    if raw.ndim!=3 or raw.shape[1:]!=(12,5000): raise ContractError('prediction_raw must be [N,12,5000]')
+    if anchor.shape!=(raw.shape[0],1,5000): raise ContractError('anchor_i_ecg must be [N,1,5000]')
+    mask=np.broadcast_to(canonical_lead_mask(1),(raw.shape[0],12)); raw_overall,raw_details=evaluate_predictions(raw,target,task_id,mask); submit=raw.copy(); submit[:,:1]=anchor; submit_overall,submit_details=evaluate_predictions(submit,target,task_id,mask)
+    summary={**submit_overall,'prediction_view':'submit_anchor_i_replaced','r_raw_12':float(raw_overall['twelve_lead_mean_pearson_r']),'r_submit_12':float(submit_overall['twelve_lead_mean_pearson_r']),'r_missing11':float(np.nanmean([row['pearson_r'] for row in raw_details[1:]])),'r_missing11_leads':','.join(D12_LEADS[1:])}
+    return summary,raw_details,submit_details,submit

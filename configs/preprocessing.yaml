@@ -18,6 +18,7 @@ sources:
   watch_ecg: {expected_leads: 1}
   ecg_machine_d6: {expected_leads: 6}
   body_scale_d6: {expected_leads: 6}
+  ecg_machine_i: {expected_leads: 1, scale_fit_source: train_target_d12:I}
   d12: {expected_leads: 12}
 
 target_transform: d12

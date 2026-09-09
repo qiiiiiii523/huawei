@@ -74,6 +74,31 @@ fair_baseline_comparison:
   adapter: disabled
   baseline_head: disabled_for_first_comparison
 
+context_fusion_protocol:
+  config: configs/context_fusion_protocol.yaml
+  standard: context-fusion-standard-v1
+  stages: [P0_anchor_only, P1-C1, P1-C2, P1-C3]
+  applies_to: [M1]
+two_stage_protocol:
+  strict_anchor_pretrain:
+    supervision_mode: d12_i_pretrain
+    input: train-only machine I(C)
+    target: machine d12(C)
+    strict_index: metadata/d12_strict_pretrain_index.csv
+    output: full_d12_prediction
+    loss_profile: strict_anchor_pretrain
+    experiment: P0_anchor_only
+  joint_anchor_adaptation:
+    supervision_mode: joint_anchor_adaptation
+    input: cross-time context ECG + target-time machine I anchor
+    context_target_relation: same_subject_cross_time
+    anchor_target_relation: same_record_same_window
+    context_target_pointwise_loss: forbidden
+    output: full_d12_prediction
+    training_output_i_replacement: forbidden
+    initialization: required_P0_strict_pretrained_weights
+    loss_profile: joint_anchor_sync
+    test_anchor_requirement: organizer_explicit_machine_i_anchor
 validation:
   run_on: "validation_only"
   official_view: "raw_uV"

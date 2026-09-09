@@ -36,3 +36,17 @@ calibration:
   max_batches: 200
   method: median_unweighted_component_loss
   automatic_weight_rewrite: false
+strict_anchor_pretrain:
+  huber_full_d12: 1.00
+  pcc_full_d12: 0.10
+  physiology: 0.05
+  observed_anchor_consistency: 0.02
+  pointwise_target_loss_basis: anchor_target_same_record_same_window_only
+joint_anchor_sync:
+  huber_full_d12: 1.00
+  pcc_full_d12: 0.10
+  physiology: 0.05
+  observed_anchor_consistency: 0.02
+  observed_anchor_leads: [I]
+  pointwise_target_loss_basis: anchor_target_same_record_same_window_only
+  context_target_pointwise_loss: forbidden

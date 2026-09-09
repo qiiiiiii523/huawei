@@ -90,6 +90,7 @@ class ECGPreprocessor:
             window_ranges = np.percentile(array, 95, axis=2) - np.percentile(array, 5, axis=2)
             scale = np.maximum(np.median(window_ranges, axis=0), config.minimum_scale_uV).astype(np.float32)
             scales[source] = scale
+        scales['ecg_machine_i'] = scales[config.target_transform][:1].copy()
         return cls(config=config, scale_uV_by_source=scales)
 
     def transform_window(self, raw_window: np.ndarray, source_type: str) -> ModelSignal:

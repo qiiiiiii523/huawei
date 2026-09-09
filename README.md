@@ -182,3 +182,21 @@ python scripts/check_body_scale_variants.py
 7. 在分支实验记录中写明网络、输入版本、loss、baseline head/adapter 和 V0 结果。
 
 禁止提交原始 ECG、task1_output、task2_output、task2_body_scale_ablation、task1_rpeak_pseudo_output、checkpoint 和敏感数据。
+
+## 10. candidate/M1 formal Axial implementation
+
+M1 的正式实现位于 `ecg12gen/m1_axial.py`，版本为 `M1-axial-lead-time-v1`。它只接受 target-time `machine I(C)` 的 `[B,1,5000]` anchor，CNN 保留 `F0=[B,64,5000]`、`F1=[B,128,1250]`、`F2=[B,256,250]`，显式构造 `[B,12,250,d_model]` 网格，并在每个 `AxialLeadTimeBlock` 中分别执行双向 time attention 和 lead attention。decoder 通过 lead-conditioned F1/F0 skip 恢复至 `[B,12,5000]`。
+
+正式入口是 `scripts/train_m1_axial.py` 和 `scripts/predict_m1_axial.py`。P0 使用 `strict_anchor_pretrain` 与 train-only strict index；P1 使用 `joint_anchor_adaptation` 与 `joint_anchor_sync_loss`，必须传入同架构、同 d12 scale 的 `--p0-checkpoint`。P1 的 context 只有 task1 `watch_ecg`，或 task2 互斥的 `ecg_machine_d6` / `body_scale_d6`；不支持 both、R 峰伪配对、跨时刻硬对齐或训练阶段 I 回填。
+
+四种 `fusion_mode` 是 `none`、`film`、`gated_residual`、`film_gated_residual`。其中 `none` 不实例化 context encoder；FiLM 为零初始化，gate 初始约 0.05，residual 最后一层零初始化。训练保存 `prediction_raw.npy` 与仅在 validation/test 生成的 `prediction_submit.npy`；正式 inference 只接受 `--anchor-npy` 及合法 context，不接受隐藏 target 参数。
+
+示例：
+
+```powershell
+python scripts/train_m1_axial.py --task-id task1 --stage P0_anchor_only --fusion-mode none --epochs 1 --output-dir results/m1_p0_smoke
+python scripts/train_m1_axial.py --task-id task1 --stage P1_joint_anchor --fusion-mode film_gated_residual --p0-checkpoint results/m1_p0_smoke/m1_best.pt --context-source-type watch_ecg --epochs 1 --output-dir results/m1_p1_smoke
+python scripts/check_m1.py
+```
+
+当前代码实现的是候选模块与协议/检查；没有任何 M1 消融结果被预先宣称。后续只依据同一 P0 初始化、subject split、预处理、loss、预算和 checkpoint 规则下的 `r_submit_12`、`r_missing11` 及 shuffled-context 对照判断 context fusion 是否有效。

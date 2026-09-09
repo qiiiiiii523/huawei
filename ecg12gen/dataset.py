@@ -13,7 +13,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from .config import load_yaml_config, resolve_config_path
-from .contracts import D12_LEADS, ECG_SAMPLING_RATE_HZ, WINDOW_SAMPLES, ContractError, ECGSample, SupervisionMode, canonical_lead_mask
+from .contracts import D12_LEADS, ECG_SAMPLING_RATE_HZ, WINDOW_SAMPLES, ContractError, ECGSample, JointAnchorSample, SupervisionMode, canonical_lead_mask
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -140,3 +140,42 @@ class UnifiedECGDataset:
     @property
     def excluded_rows(self) -> int:
         return len(self._rows) - len(self._indices)
+
+class JointAnchorDataset:
+    def __init__(self, config: ECGDataConfig | str | Path, task_id: str, split: str, body_scale_variant: str = 'A_raw_window', context_channel_indices: tuple[int, ...] | list[int] | None = None) -> None:
+        self.config = ECGDataConfig.from_yaml(config) if not isinstance(config, ECGDataConfig) else config
+        if task_id not in {'task1','task2'} or split not in {'train','validation'}: raise ContractError('invalid joint-anchor task or split')
+        self.task_id, self.split, self.body_scale_variant = task_id, split, body_scale_variant
+        indices = (0,) if task_id == 'task1' else tuple(range(6) if context_channel_indices is None else context_channel_indices)
+        if task_id == 'task1' and indices != (0,): raise ContractError('task1 uses fixed watch I context')
+        if task_id == 'task2' and (not indices or len(set(indices)) != len(indices) or any(i not in range(6) for i in indices)): raise ContractError('task2 context indices must be canonical d6')
+        self.context_channel_indices = indices
+        self._base = UnifiedECGDataset(self.config, task_id, split)
+        self._samples = [self._base[i] for i in range(len(self._base))]
+        if task_id == 'task2' and body_scale_variant == 'B_detrend_0p2Hz_then_window':
+            from .body_scale import BodyScaleVariantDataset
+            body = list(BodyScaleVariantDataset(self.config, split, body_scale_variant))
+            self._samples = [sample for sample in self._samples if sample.meta.get('device_type') != 'body_scale_d6'] + body
+        if not self._samples: raise ContractError('joint-anchor dataset is empty')
+
+    def __len__(self) -> int: return len(self._samples)
+
+    def __iter__(self) -> Iterator[JointAnchorSample]:
+        for index in range(len(self)): yield self[index]
+
+    def __getitem__(self, index: int) -> JointAnchorSample:
+        source = self._samples[index]
+        input_type = str(source.meta.get('device_type', 'watch_ecg')) if self.task_id == 'task1' else str(source.meta.get('device_type', 'ecg_machine_d6'))
+        context = np.asarray(source.X_ecg, dtype=np.float32)[list(self.context_channel_indices)]
+        context_mask = np.zeros(6 if self.task_id == 'task2' else 1, dtype=bool)
+        context_mask[list(self.context_channel_indices)] = True
+        target = np.asarray(source.Y_12lead, dtype=np.float32)
+        subject_id = str(source.meta.get('subject_id', 'unknown'))
+        window_id = str(source.meta.get('window_id', index))
+        target_record_id = str(source.meta.get('target_record_id', window_id))
+        pair_id = str(source.meta.get('pair_id', f'{subject_id}:{window_id}'))
+        meta = dict(source.meta)
+        meta.update({'anchor_construction': 'simulated_from_target_i_for_test_available_input', 'anchor_target_record_id': target_record_id, 'anchor_window_id': window_id})
+        sample = JointAnchorSample(context_ecg=context, context_source_type=input_type, anchor_i_ecg=target[:1].copy(), anchor_source_type='ecg_machine_i', Y_12lead=target, anchor_lead_mask=canonical_lead_mask(1), context_lead_mask=context_mask, task_id=self.task_id, split=self.split, subject_id=subject_id, pair_id=pair_id, target_record_id=target_record_id, window_id=window_id, meta=meta, input_type=input_type)
+        sample.validate()
+        return sample
