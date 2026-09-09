@@ -28,3 +28,9 @@ All candidates used the same protocol, seed 42, batch 16, 40 epochs, cosine LR (
 | dilated bottleneck | 9 / 0.5131 | 8 / 0.5185 | 0.7060 / 0.7196 |
 
 The wider U-Net is the current P0 candidate. It did not exceed the earlier protocol-native P0 scores (`0.5169` Task1, `0.5251` Task2), so baseline supervision plus this schedule is not yet a net improvement. Chest leads remain the limiting factor (best wide Task2 E2 r: V1 `.301`, V3 `.207`, V6 `.231`). The next high-value P0 experiment is the constrained seven-output/analytic-limb head, followed by a fair re-evaluation of the best backbone.
+
+## Core7 analytic-limb P0
+
+The head freely predicts `II+V1–V6`; I is the strict anchor identity path, and III/aVR/aVL/aVF are generated in μV morphology space before conversion back to centered-scaled d12. With the same 40-epoch budget and optimizer, the best checkpoints were epoch 3: Task1 E2 `r_submit=0.5122`, `r_missing11=0.4679`, centered `r=0.7035` / RMSE `183.93 μV`; Task2 E2 `r_submit=0.5213`, `r_missing11=0.4778`, centered `r=0.7178` / RMSE `179.86 μV`. Task2 V1–V6 centered `r=0.6181`, RMSE `271.03 μV`.
+
+Core7 therefore did not beat the existing full-12 P0 (`0.5169` / `0.5251`) under this schedule. It remains a useful constrained-output candidate, but should not replace the current P0 checkpoint without a dedicated loss/learning-rate sweep.
