@@ -21,6 +21,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default=str(ROOT / 'configs' / 'common.yaml'))
     parser.add_argument('--m1-config', default=str(ROOT / 'configs' / 'm1.yaml'))
+    parser.add_argument('--attention-axes', choices=('both', 'time_only', 'lead_only'), default=None)
     parser.add_argument('--task-id', choices=('task1', 'task2'), required=True)
     parser.add_argument('--stage', choices=('P0_anchor_only', 'P1_joint_anchor'), required=True)
     parser.add_argument('--fusion-mode', choices=('none', 'film', 'gated_residual', 'film_gated_residual'), default='none')
@@ -55,6 +56,10 @@ def main() -> None:
     seed_everything(42, deterministic=True)
     with Path(args.m1_config).open(encoding='utf-8') as handle:
         config = yaml.safe_load(handle)['architecture']
+    if args.attention_axes is not None:
+        config = dict(config)
+        if args.attention_axes == 'both': config.pop('attention_axes', None)
+        else: config['attention_axes'] = args.attention_axes
     source_type = 'watch_ecg' if args.task_id == 'task1' and args.stage == 'P1_joint_anchor' else args.context_source_type
     preprocessor = fit_m1_preprocessor(args.config, args.task_id, args.stage, source_type, args.body_scale_variant)
     train, validation = build_m1_datasets(args.config, args.task_id, args.stage, source_type, preprocessor, args.body_scale_variant)

@@ -9,11 +9,13 @@ from .contracts import ContractError, D12_LEADS, WINDOW_SAMPLES
 ARCHITECTURE_VERSION='M1-axial-lead-time-v1'
 ARCHITECTURE_ID='M1-P0-multiscale-cnn-axial-lead-time'
 DEFAULT_CONFIG={'architecture_version':ARCHITECTURE_VERSION,'architecture_id':ARCHITECTURE_ID,'d_model':128,'num_blocks':4,'num_heads':4,'ffn_dim':256,'dropout':.1,'cnn_channels':[64,128,256],'decoder_channels':[128,64],'time_tokens':250,'lead_order':list(D12_LEADS)}
+ATTENTION_AXES={'both','time_only','lead_only'}
 def architecture_config_hash(config=None):
     value=dict(DEFAULT_CONFIG if config is None else config); return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
 def merged_config(config=None):
     value=dict(DEFAULT_CONFIG); value.update(config or {})
     if value['architecture_version']!=ARCHITECTURE_VERSION: raise ValueError('M1 requires Axial architecture_version')
+    if value.get('attention_axes','both') not in ATTENTION_AXES: raise ValueError(f'attention_axes must be one of {sorted(ATTENTION_AXES)}')
     if tuple(value['lead_order'])!=D12_LEADS: raise ContractError('M1 lead order must match canonical d12 order')
     if not 4<=int(value['num_blocks'])<=8: raise ValueError('num_blocks must be [4,8]')
     if int(value['d_model'])%int(value['num_heads']): raise ValueError('d_model must divide heads')
@@ -39,13 +41,27 @@ class FeedForward(nn.Module):
     def __init__(self,d,h,p): super().__init__(); self.net=nn.Sequential(nn.Linear(d,h),nn.GELU(),nn.Dropout(p),nn.Linear(h,d),nn.Dropout(p))
     def forward(self,x): return self.net(x)
 class AxialLeadTimeBlock(nn.Module):
-    def __init__(self,d=128,heads=4,ffn=256,p=.1):
-        super().__init__(); self.time_norm=nn.LayerNorm(d); self.time_attention=nn.MultiheadAttention(d,heads,dropout=p,batch_first=True); self.time_ffn_norm=nn.LayerNorm(d); self.time_ffn=FeedForward(d,ffn,p); self.lead_norm=nn.LayerNorm(d); self.lead_attention=nn.MultiheadAttention(d,heads,dropout=p,batch_first=True); self.lead_ffn_norm=nn.LayerNorm(d); self.lead_ffn=FeedForward(d,ffn,p); self.dropout=nn.Dropout(p); self.time_attention_calls=0; self.lead_attention_calls=0; self.last_time_is_causal=False
+    def __init__(self,d=128,heads=4,ffn=256,p=.1,attention_axes='both'):
+        super().__init__()
+        if attention_axes not in ATTENTION_AXES: raise ValueError(f'unsupported attention_axes: {attention_axes}')
+        self.attention_axes=attention_axes; self.use_time_attention=attention_axes in {'both','time_only'}; self.use_lead_attention=attention_axes in {'both','lead_only'}
+        if self.use_time_attention: self.time_norm=nn.LayerNorm(d); self.time_attention=nn.MultiheadAttention(d,heads,dropout=p,batch_first=True)
+        else: self.time_norm=None; self.time_attention=None
+        self.time_ffn_norm=nn.LayerNorm(d); self.time_ffn=FeedForward(d,ffn,p)
+        if self.use_lead_attention: self.lead_norm=nn.LayerNorm(d); self.lead_attention=nn.MultiheadAttention(d,heads,dropout=p,batch_first=True)
+        else: self.lead_norm=None; self.lead_attention=None
+        self.lead_ffn_norm=nn.LayerNorm(d); self.lead_ffn=FeedForward(d,ffn,p)
+        self.dropout=nn.Dropout(p); self.time_attention_calls=0; self.lead_attention_calls=0; self.last_time_is_causal=False
     def forward(self,z):
         if z.ndim!=4 or z.shape[1:3]!=(12,250): raise ContractError('Axial block expects [B,12,250,d]')
-        b,_,t,d=z.shape; x=z.reshape(b*12,t,d); q=self.time_norm(x)
-        y,_=self.time_attention(q,q,q,need_weights=False,is_causal=False); self.time_attention_calls+=1; x=x+self.dropout(y); x=x+self.time_ffn(self.time_ffn_norm(x)); z=x.reshape(b,12,t,d)
-        x=z.permute(0,2,1,3).reshape(b*t,12,d); q=self.lead_norm(x); y,_=self.lead_attention(q,q,q,need_weights=False,is_causal=False); self.lead_attention_calls+=1; x=x+self.dropout(y); x=x+self.lead_ffn(self.lead_ffn_norm(x)); return x.reshape(b,t,12,d).permute(0,2,1,3)
+        b,_,t,d=z.shape; x=z.reshape(b*12,t,d)
+        if self.use_time_attention:
+            q=self.time_norm(x); y,_=self.time_attention(q,q,q,need_weights=False,is_causal=False); self.time_attention_calls+=1; x=x+self.dropout(y)
+        x=x+self.time_ffn(self.time_ffn_norm(x)); z=x.reshape(b,12,t,d)
+        x=z.permute(0,2,1,3).reshape(b*t,12,d)
+        if self.use_lead_attention:
+            q=self.lead_norm(x); y,_=self.lead_attention(q,q,q,need_weights=False,is_causal=False); self.lead_attention_calls+=1; x=x+self.dropout(y)
+        x=x+self.lead_ffn(self.lead_ffn_norm(x)); return x.reshape(b,t,12,d).permute(0,2,1,3)
 class LeadConditionedSkip(nn.Module):
     def __init__(self,cin,cout,d): super().__init__(); self.signal=nn.Conv1d(cin,cout,1); self.lead=nn.Linear(d,cout)
     def forward(self,x,e): return self.signal(x)[:,None]+self.lead(e)[None,:,:,None]
@@ -78,8 +94,8 @@ class M1AxialLeadTimeModel(nn.Module):
         super().__init__();
         if fusion_mode not in {'none','film','gated_residual','film_gated_residual'}: raise ValueError('unsupported fusion_mode')
         if task_id not in {'task1','task2'}: raise ValueError('task_id must be task1 or task2')
-        self.config=merged_config(config); self.fusion_mode=fusion_mode; self.task_id=task_id; self.context_dropout=float(context_dropout); self.source_dropout=float(source_dropout); d=int(self.config['d_model']); self.d_model=d
-        self.cnn_encoder=MultiScaleCNNEncoder(float(self.config['dropout'])); self.anchor_projection=nn.Linear(256,d); self.time_position=nn.Parameter(torch.randn(1,250,d)*.02); self.lead_embedding=nn.Parameter(torch.randn(12,d)*.02); self.lead_state_embedding=nn.Parameter(torch.randn(2,d)*.02); self.axial_blocks=nn.ModuleList([AxialLeadTimeBlock(d,int(self.config['num_heads']),int(self.config['ffn_dim']),float(self.config['dropout'])) for _ in range(int(self.config['num_blocks']))]); self.final_norm=nn.LayerNorm(d); self.decoder=LeadTimeDecoder(d,float(self.config['dropout']))
+        self.config=merged_config(config); self.attention_axes=self.config.get('attention_axes','both'); self.fusion_mode=fusion_mode; self.task_id=task_id; self.context_dropout=float(context_dropout); self.source_dropout=float(source_dropout); d=int(self.config['d_model']); self.d_model=d
+        self.cnn_encoder=MultiScaleCNNEncoder(float(self.config['dropout'])); self.anchor_projection=nn.Linear(256,d); self.time_position=nn.Parameter(torch.randn(1,250,d)*.02); self.lead_embedding=nn.Parameter(torch.randn(12,d)*.02); self.lead_state_embedding=nn.Parameter(torch.randn(2,d)*.02); self.axial_blocks=nn.ModuleList([AxialLeadTimeBlock(d,int(self.config['num_heads']),int(self.config['ffn_dim']),float(self.config['dropout']),self.attention_axes) for _ in range(int(self.config['num_blocks']))]); self.final_norm=nn.LayerNorm(d); self.decoder=LeadTimeDecoder(d,float(self.config['dropout']))
         self.watch_context_encoder=None; self.body_d6_context_encoder=None; self.machine_d6_context_encoder=None; self.film=None; self.gate=None; self.residual=None
         if fusion_mode!='none':
             if task_id=='task1': self.watch_context_encoder=WatchContextEncoder(d)
@@ -88,7 +104,7 @@ class M1AxialLeadTimeModel(nn.Module):
             if fusion_mode in {'gated_residual','film_gated_residual'}: self.gate=nn.Linear(d,1); nn.init.zeros_(self.gate.weight); nn.init.constant_(self.gate.bias,-2.944439); self.residual=nn.Sequential(nn.Linear(d,d),nn.GELU(),nn.Linear(d,1)); nn.init.zeros_(self.residual[-1].weight); nn.init.zeros_(self.residual[-1].bias)
         self.last_trace=M1ForwardTrace((0,),0,0,False)
     @property
-    def architecture_metadata(self): return {'architecture_version':ARCHITECTURE_VERSION,'architecture_id':ARCHITECTURE_ID,'architecture_config':dict(self.config),'architecture_config_hash':architecture_config_hash(self.config),'lead_order':list(D12_LEADS),'d_model':self.d_model,'fusion_mode':self.fusion_mode,'task_id':self.task_id}
+    def architecture_metadata(self): return {'architecture_version':ARCHITECTURE_VERSION,'architecture_id':ARCHITECTURE_ID,'architecture_config':dict(self.config),'architecture_config_hash':architecture_config_hash(self.config),'lead_order':list(D12_LEADS),'d_model':self.d_model,'attention_axes':self.attention_axes,'fusion_mode':self.fusion_mode,'task_id':self.task_id}
     @property
     def parameter_count(self): return sum(p.numel() for p in self.parameters())
     def _context(self,x,source,mask):
