@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 from .b1_model import B1Model
 from .contracts import ContractError
-from .evaluate import evaluate_joint_anchor_predictions
+from .evaluate import evaluate_joint_anchor_predictions, evaluate_centered_diagnostic
 from .losses import strict_anchor_pretrain_loss, joint_anchor_sync_loss
 from .protocol_data import StrictDataset, JointDataset, collate, fit_preprocessor
 from .training import seed_everything
@@ -51,5 +51,5 @@ def train_b1(args: Any) -> Path:
             sh=validate(model,val_ds,scale,args.task_id,dev,args.batch_size,True); row["shuffled_context"]={"r_submit_12":float(sh["summary"]["r_submit_12"]),"r_missing11":float(sh["summary"]["r_missing11"])}
         hist.append(row); print(json.dumps(row,ensure_ascii=False),flush=True)
         if metric>best:
-            best=metric; ck={"model":model.state_dict(),"task_id":args.task_id,"stage":args.stage,"fusion_mode":args.fusion_mode,"architecture_id":model.architecture_id,"architecture_config_hash":model.architecture_config_hash,"parameter_count":model.parameter_count,"epoch":ep,"best_metric":best,"scale_uV":scale.tolist()}; torch.save(ck,out/"b1_best.pt"); np.save(out/"prediction_E1_raw_uV.npy",val["prediction_raw"]); np.save(out/"prediction_E2_submit_uV.npy",val["prediction_submit"]); np.save(out/"validation_target_raw_uV.npy",val["target_raw"]); (out/"validation_summary.json").write_text(json.dumps(val["summary"],indent=2),encoding="utf-8")
+            best=metric; ck={"model":model.state_dict(),"task_id":args.task_id,"stage":args.stage,"fusion_mode":args.fusion_mode,"architecture_id":model.architecture_id,"architecture_config_hash":model.architecture_config_hash,"parameter_count":model.parameter_count,"epoch":ep,"best_metric":best,"scale_uV":scale.tolist()}; torch.save(ck,out/"b1_best.pt"); np.save(out/"prediction_E1_raw_uV.npy",val["prediction_raw"]); np.save(out/"prediction_E2_submit_uV.npy",val["prediction_submit"]); np.save(out/"validation_target_raw_uV.npy",val["target_raw"]); centered,centered_details=evaluate_centered_diagnostic(val["prediction_submit"],val["target_raw"],args.task_id); (out/"validation_summary.json").write_text(json.dumps(val["summary"],indent=2),encoding="utf-8"); (out/"validation_metrics.json").write_text(json.dumps({"E1_raw_details":val["raw_details"],"E2_submit_details":val["submit_details"],"E2_submit_centered":centered,"E2_submit_centered_details":centered_details},indent=2),encoding="utf-8")
     (out/"history.json").write_text(json.dumps(hist,indent=2),encoding="utf-8"); return out/"b1_best.pt"
