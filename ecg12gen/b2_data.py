@@ -1,148 +1,134 @@
-"""B2 data adapters built on the frozen D0/D1 datasets and preprocessing."""
+"""B2 adapters for the latest main joint-anchor data contract."""
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .body_scale import BodyScaleVariantDataset
-from .canonical_adapter import canonicalize_input_ecg
-from .contracts import ECGSample, SupervisionMode, canonical_lead_mask
-from .dataset import ECGDataConfig, UnifiedECGDataset
+from .contracts import ECGSample, JointAnchorSample, SupervisionMode, canonical_lead_mask
+from .dataset import ECGDataConfig, JointAnchorDataset
 from .d12_pretrain import StrictD12PretrainDataset
 from .preprocessing import ECGPreprocessor, PreprocessingConfig
 
 
-def _source_type(sample: ECGSample) -> str:
-    if sample.X_ecg.shape[0] == 1:
-        return "watch_ecg"
-    device_type = str(sample.meta.get("device_type", ""))
-    if device_type == "body_scale_d6":
-        return "body_scale_d6"
-    return "ecg_machine_d6"
-
-
-def _stack_or_raise(values: list[np.ndarray], name: str) -> np.ndarray:
+def _stack(values: list[np.ndarray], name: str) -> np.ndarray:
     if not values:
         raise ValueError(f"No train samples available for {name}")
     return np.stack(values).astype(np.float32, copy=False)
 
 
-def _task_train_target_array(config: ECGDataConfig, task_id: str) -> np.ndarray:
-    return np.load(config.path(f"{task_id}_output") / f"{task_id}_train_target.npy", mmap_mode="r")
+def _source_context(sample: JointAnchorSample) -> np.ndarray:
+    """Restore a selected task-2 context to canonical d6 before scaling."""
+    if sample.task_id != "task2":
+        return np.asarray(sample.context_ecg, dtype=np.float32)
+    full = np.zeros((6, sample.context_ecg.shape[-1]), dtype=np.float32)
+    full[np.flatnonzero(sample.context_lead_mask)] = sample.context_ecg
+    return full
 
 
-def fit_b2_preprocessor(
-    config_path: str | Path,
-    task_id: str,
-    task2_variant: str = "A_raw_window",
-) -> ECGPreprocessor:
-    """Fit all source scales from train-only arrays for one B2 experiment."""
-    config = ECGDataConfig.from_yaml(config_path)
-    preprocessing_config = PreprocessingConfig.from_yaml(config.repository_root / "configs" / "preprocessing.yaml")
-    train_samples = list(UnifiedECGDataset(config, task_id, "train"))
-    train_signals: dict[str, np.ndarray] = {
-        "d12": np.asarray(_task_train_target_array(config, task_id), dtype=np.float32),
-    }
-    if task_id == "task1":
-        train_signals["watch_ecg"] = _stack_or_raise([sample.X_ecg for sample in train_samples], "watch_ecg")
-    else:
-        machine = [sample.X_ecg for sample in train_samples if sample.meta.get("device_type") == "ecg_machine_d6"]
-        train_signals["ecg_machine_d6"] = _stack_or_raise(machine, "ecg_machine_d6")
-        if task2_variant == "B_detrend_0p2Hz_then_window":
-            body_dataset = BodyScaleVariantDataset(config, "train", task2_variant)
-        else:
-            body_dataset = BodyScaleVariantDataset(config, "train", "A_raw_window")
-        train_signals["body_scale_d6"] = _stack_or_raise([sample.X_ecg for sample in body_dataset], "body_scale_d6")
-    return ECGPreprocessor.fit(preprocessing_config, train_signals)
+def fit_b2_preprocessor(config_path: str | Path, task_id: str,
+                        body_scale_variant: str = "A_raw_window",
+                        context_channel_indices: tuple[int, ...] | None = None,
+                        d12_scale_uV: np.ndarray | None = None) -> ECGPreprocessor:
+    """Fit frozen scales using train-only strict targets and context windows."""
+    root = ECGDataConfig.from_yaml(config_path).repository_root
+    preprocessing = PreprocessingConfig.from_yaml(root / "configs" / "preprocessing.yaml")
+    strict = list(StrictD12PretrainDataset(config_path, SupervisionMode.D12_I_PRETRAIN.value))
+    joint = list(JointAnchorDataset(config_path, task_id, "train", body_scale_variant, context_channel_indices))
+    signals: dict[str, list[np.ndarray]] = {"d12": [sample.Y_12lead for sample in strict]}
+    for sample in joint:
+        signals.setdefault(sample.context_source_type, []).append(_source_context(sample))
+    fitted = ECGPreprocessor.fit(preprocessing, {key: _stack(value, key) for key, value in signals.items()})
+    if d12_scale_uV is not None:
+        scale = np.asarray(d12_scale_uV, dtype=np.float32)
+        if scale.shape != (12,) or not np.isfinite(scale).all() or np.any(scale <= 0):
+            raise ValueError("d12_scale_uV must be finite, positive, and have shape [12]")
+        fitted.scale_uV_by_source["d12"] = scale.copy()
+    # Main defines machine-I as a view of the train d12 I scale.
+    fitted.scale_uV_by_source["ecg_machine_i"] = fitted.scale_uV_by_source["d12"][:1].copy()
+    return fitted
 
 
-def _canonical_observed_d12(
-    input_model: np.ndarray,
-    input_scale_uV: np.ndarray,
-    d12_scale_uV: np.ndarray,
-    lead_mask: np.ndarray,
-) -> np.ndarray:
-    """Map centered source input to the frozen canonical d12 model scale."""
-    canonical, inferred_mask = canonicalize_input_ecg(input_model)
-    if not np.array_equal(inferred_mask, lead_mask):
-        raise ValueError("canonical input mask disagrees with ECGSample lead_mask")
-    output = np.zeros_like(canonical, dtype=np.float32)
-    channels = int(lead_mask.sum())
-    ratio = np.asarray(input_scale_uV, dtype=np.float32) / np.asarray(d12_scale_uV[:channels], dtype=np.float32)
-    output[:, :] = canonical.astype(np.float32, copy=False)
-    output[:channels] *= ratio[:, None]
-    output[~lead_mask] = 0.0
-    return output
+def _transform_anchor(preprocessor: ECGPreprocessor, raw: np.ndarray) -> np.ndarray:
+    raw = np.asarray(raw, dtype=np.float32)
+    if raw.ndim != 2 or raw.shape[0] != 1:
+        raise ValueError("anchor_i_ecg must have shape [1,5000]")
+    return preprocessor.transform_window(raw, "ecg_machine_i").model_signal
 
 
 @dataclass(frozen=True)
 class B2Item:
-    input_model: torch.Tensor
+    anchor_model: torch.Tensor
     target_model: torch.Tensor
-    observed_d12_model: torch.Tensor
-    lead_mask: torch.Tensor
-    missing_mask: torch.Tensor
+    raw_anchor_i_uV: torch.Tensor
     raw_target_uV: torch.Tensor
+    anchor_lead_mask: torch.Tensor
+    context_model: torch.Tensor
+    context_lead_mask: torch.Tensor
+    context_source_type: str
     meta: dict[str, Any]
 
 
 class B2PreparedDataset(Dataset[B2Item]):
-    """Prepare one supervision route without changing any source arrays."""
+    """Torch view over strict P0 or joint-anchor P1 samples."""
 
-    def __init__(self, samples: Sequence[ECGSample], preprocessor: ECGPreprocessor, mode: str) -> None:
-        if mode not in {"strict", "weak", "pseudo"}:
-            raise ValueError("mode must be strict, weak, or pseudo")
-        self.samples = list(samples)
-        self.preprocessor = preprocessor
-        self.mode = mode
+    def __init__(self, samples: Sequence[ECGSample | JointAnchorSample],
+                 preprocessor: ECGPreprocessor, mode: str) -> None:
+        if mode not in {"strict_anchor_pretrain", "joint_anchor"}:
+            raise ValueError("mode must be strict_anchor_pretrain or joint_anchor")
+        self.samples, self.preprocessor, self.mode = list(samples), preprocessor, mode
         for sample in self.samples:
             sample.validate()
-            if mode == "strict" and sample.split != "train":
-                raise ValueError("strict B2 data is train-only")
-            if mode == "pseudo":
-                if sample.split != "train" or sample.meta.get("accepted") is not True:
-                    raise ValueError("pseudo B2 data must be accepted train samples")
-                if sample.alignment_mode != "pseudo_rpeak_monotonic_warp":
-                    raise ValueError("pseudo B2 data has an invalid alignment mode")
+            if mode == "strict_anchor_pretrain":
+                if not isinstance(sample, ECGSample) or sample.split != "train":
+                    raise ValueError("strict anchor data must be train-only ECGSample rows")
+            elif not isinstance(sample, JointAnchorSample):
+                raise ValueError("joint-anchor data must contain JointAnchorSample rows")
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> B2Item:
         sample = self.samples[index]
-        lead_mask = np.asarray(sample.lead_mask, dtype=bool)
-        missing_mask = np.asarray(sample.missing_mask, dtype=bool)
-        if not np.array_equal(missing_mask, ~lead_mask):
-            raise ValueError("lead_mask and missing_mask are not complementary")
-
-        target_model = self.preprocessor.transform_d12_target(sample.Y_12lead).model_signal
-        if self.mode == "strict":
-            channels = int(lead_mask.sum())
-            input_model = target_model[:channels].copy()
-            observed_model = np.zeros_like(target_model)
-            observed_model[:channels] = target_model[:channels]
+        if self.mode == "strict_anchor_pretrain":
+            assert isinstance(sample, ECGSample)
+            target_raw = np.asarray(sample.Y_12lead, dtype=np.float32)
+            context_model = np.zeros((1, target_raw.shape[-1]), dtype=np.float32)
+            context_mask = np.zeros((1,), dtype=bool)
+            source = "watch_ecg"
+            meta = dict(sample.meta)
         else:
-            source_type = _source_type(sample)
-            input_view = self.preprocessor.transform_window(sample.X_ecg, source_type)
-            input_model = input_view.model_signal
-            observed_model = _canonical_observed_d12(
-                input_model, input_view.scale_uV, self.preprocessor.scale_uV_by_source["d12"], lead_mask
-            )
-
+            assert isinstance(sample, JointAnchorSample)
+            target_raw = np.asarray(sample.Y_12lead, dtype=np.float32)
+            context_raw = np.asarray(sample.context_ecg, dtype=np.float32)
+            if sample.task_id == "task2":
+                full = _source_context(sample)
+                context_model_full = self.preprocessor.transform_window(full, sample.context_source_type).model_signal
+                context_model = context_model_full[np.flatnonzero(sample.context_lead_mask)]
+                context_mask = np.asarray(sample.context_lead_mask, dtype=bool)
+            else:
+                context_model = self.preprocessor.transform_window(context_raw, sample.context_source_type).model_signal
+                context_mask = np.ones((1,), dtype=bool)
+            source = sample.context_source_type
+            meta = dict(sample.meta)
+            meta.update({"subject_id": sample.subject_id, "input_type": sample.context_source_type,
+                         "split": sample.split, "window_id": sample.window_id})
+        anchor_raw = target_raw[:1].copy()
+        target_model = self.preprocessor.transform_d12_target(target_raw).model_signal
+        anchor_model = _transform_anchor(self.preprocessor, anchor_raw)
         return B2Item(
-            input_model=torch.from_numpy(np.asarray(input_model, dtype=np.float32)),
-            target_model=torch.from_numpy(np.asarray(target_model, dtype=np.float32)),
-            observed_d12_model=torch.from_numpy(np.asarray(observed_model, dtype=np.float32)),
-            lead_mask=torch.from_numpy(lead_mask),
-            missing_mask=torch.from_numpy(missing_mask),
-            raw_target_uV=torch.from_numpy(np.asarray(sample.Y_12lead, dtype=np.float32).copy()),
-            meta=dict(sample.meta),
+            anchor_model=torch.from_numpy(np.asarray(anchor_model, np.float32)),
+            target_model=torch.from_numpy(np.asarray(target_model, np.float32)),
+            raw_anchor_i_uV=torch.from_numpy(anchor_raw.copy()),
+            raw_target_uV=torch.from_numpy(target_raw.copy()),
+            anchor_lead_mask=torch.from_numpy(canonical_lead_mask(1)),
+            context_model=torch.from_numpy(np.asarray(context_model, np.float32)),
+            context_lead_mask=torch.from_numpy(np.asarray(context_mask, bool)),
+            context_source_type=source, meta=meta,
         )
 
 
@@ -150,86 +136,44 @@ def b2_collate(items: Sequence[B2Item]) -> dict[str, Any]:
     if not items:
         raise ValueError("Cannot collate an empty B2 batch")
     return {
-        "input_model": torch.stack([item.input_model for item in items]),
-        "target_model": torch.stack([item.target_model for item in items]),
-        "observed_d12_model": torch.stack([item.observed_d12_model for item in items]),
-        "lead_mask": torch.stack([item.lead_mask for item in items]),
-        "missing_mask": torch.stack([item.missing_mask for item in items]),
-        "raw_target_uV": torch.stack([item.raw_target_uV for item in items]),
-        "meta": [item.meta for item in items],
+        "anchor_model": torch.stack([x.anchor_model for x in items]),
+        "target_model": torch.stack([x.target_model for x in items]),
+        "raw_anchor_i_uV": torch.stack([x.raw_anchor_i_uV for x in items]),
+        "raw_target_uV": torch.stack([x.raw_target_uV for x in items]),
+        "anchor_lead_mask": torch.stack([x.anchor_lead_mask for x in items]),
+        "context_model": torch.stack([x.context_model for x in items]),
+        "context_lead_mask": torch.stack([x.context_lead_mask for x in items]),
+        "context_source_type": [x.context_source_type for x in items],
+        "meta": [x.meta for x in items],
     }
 
 
-def _weak_samples(config: ECGDataConfig, task_id: str, split: str, task2_variant: str) -> list[ECGSample]:
-    unified = list(UnifiedECGDataset(config, task_id, split))
-    if task_id == "task1":
-        return unified
-    if task2_variant == "A_raw_window":
-        allowed = {"ecg_machine_d6", "body_scale_d6"}
-        return [sample for sample in unified if sample.meta.get("device_type") in allowed]
-    machine = [sample for sample in unified if sample.meta.get("device_type") == "ecg_machine_d6"]
-    body = list(BodyScaleVariantDataset(config, split, "B_detrend_0p2Hz_then_window"))
-    if any(sample.meta.get("input_processing_variant") == "A_raw_window" for sample in body):
-        raise ValueError("task2-B body dataset unexpectedly contains raw body-scale A")
-    return machine + body
+def build_strict_dataset(config_path: str | Path, preprocessor: ECGPreprocessor) -> B2PreparedDataset:
+    samples = list(StrictD12PretrainDataset(config_path, SupervisionMode.D12_I_PRETRAIN.value))
+    return B2PreparedDataset(samples, preprocessor, "strict_anchor_pretrain")
 
 
-def build_weak_dataset(
-    config_path: str | Path,
-    task_id: str,
-    split: str,
-    preprocessor: ECGPreprocessor,
-    task2_variant: str = "A_raw_window",
-) -> B2PreparedDataset:
-    config = ECGDataConfig.from_yaml(config_path)
-    return B2PreparedDataset(_weak_samples(config, task_id, split, task2_variant), preprocessor, "weak")
+def build_joint_dataset(config_path: str | Path, task_id: str, split: str,
+                        preprocessor: ECGPreprocessor,
+                        body_scale_variant: str = "A_raw_window",
+                        context_channel_indices: tuple[int, ...] | None = None,
+                        context_view: str = "auto") -> B2PreparedDataset:
+    if context_view not in {"auto", "machine", "body", "watch", "none"}:
+        raise ValueError("unknown context_view")
+    dataset = JointAnchorDataset(config_path, task_id, split, body_scale_variant, context_channel_indices)
+    samples = list(dataset)
+    if context_view in {"machine", "body", "watch"}:
+        expected = {"machine": "ecg_machine_d6", "body": "body_scale_d6", "watch": "watch_ecg"}[context_view]
+        samples = [x for x in samples if x.context_source_type == expected]
+    if context_view == "none":
+        samples = []
+    return B2PreparedDataset(samples, preprocessor, "joint_anchor")
 
 
-def build_strict_dataset(
-    config_path: str | Path,
-    task_id: str,
-    preprocessor: ECGPreprocessor,
-) -> B2PreparedDataset:
-    config = ECGDataConfig.from_yaml(config_path)
-    mode = SupervisionMode.D12_I_PRETRAIN.value if task_id == "task1" else SupervisionMode.D12_SIX_PRETRAIN.value
-    samples = list(StrictD12PretrainDataset(config, mode))
-    if any(sample.split != "train" for sample in samples):
-        raise ValueError("strict index unexpectedly contains validation rows")
-    return B2PreparedDataset(samples, preprocessor, "strict")
+def build_joint_anchor_dataset(*args: Any, **kwargs: Any) -> B2PreparedDataset:
+    return build_joint_dataset(*args, **kwargs)
 
 
-def build_pseudo_dataset(
-    config_path: str | Path,
-    preprocessor: ECGPreprocessor,
-    variant: str = "C1",
-) -> B2PreparedDataset:
-    config = ECGDataConfig.from_yaml(config_path)
-    if variant not in {"C1", "C2"}:
-        raise ValueError("pseudo variant must be C1 or C2")
-    directory = config.repository_root.parent / ("task1_rpeak_pseudo_output_c2" if variant == "C2" else "task1_rpeak_pseudo_output")
-    inputs = np.load(directory / "task1_rpeak_train_input.npy", mmap_mode="r")
-    targets = np.load(directory / "task1_rpeak_train_target.npy", mmap_mode="r")
-    with (directory / "task1_rpeak_train_window_metadata.csv").open(encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    if inputs.shape[0] != targets.shape[0] or inputs.shape[0] != len(rows):
-        raise ValueError("pseudo arrays and metadata have different lengths")
-    samples: list[ECGSample] = []
-    for index, row in enumerate(rows):
-        accepted = row.get("accepted", "").lower() == "true"
-        if not accepted or row.get("split") != "train" or row.get("alignment_mode") != "pseudo_rpeak_monotonic_warp":
-            raise ValueError("pseudo dataset contains a non-accepted or non-train row")
-        quality = float(row["alignment_quality_score"])
-        if not 0.0 <= quality <= 1.0:
-            raise ValueError("alignment_quality_score must be in [0, 1]")
-        mask = canonical_lead_mask(1)
-        samples.append(ECGSample(
-            X_ecg=np.asarray(inputs[index], dtype=np.float32), lead_mask=mask,
-            Y_12lead=np.asarray(targets[index], dtype=np.float32), missing_mask=~mask,
-            task_id="task1", ppg=None, acc=None,
-            meta={"subject_id": row["subject_id"], "window_id": row["source_window_id"], "accepted": True,
-                  "alignment_quality_score": quality, "pointwise_loss_allowed": True},
-            modality_mask={"ppg": False, "acc": False}, split="train",
-            supervision_mode="rpeak_pseudo_adaptation", pairing_type="rpeak_pseudo",
-            alignment_mode="pseudo_rpeak_monotonic_warp", pair_confidence="not_applicable", pair_status="accepted",
-        ))
-    return B2PreparedDataset(samples, preprocessor, "pseudo")
+def dataset_summary(dataset: B2PreparedDataset) -> dict[str, Any]:
+    return {"n_samples": len(dataset), "mode": dataset.mode,
+            "context_sources": sorted({x.context_source_type for x in dataset.samples if isinstance(x, JointAnchorSample)})}
