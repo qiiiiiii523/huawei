@@ -1,5 +1,8 @@
 # Generated data, model artefacts, and local reports must stay out of Git.
 outputs/
+data/
+checkpoints/
+logs/
 evaluation_results/
 check_results/
 *.npy
