@@ -16,3 +16,15 @@ Task-2 V1–V6 E2: machine `r=0.3390`, centered `r=0.6044`, centered RMSE `279.4
 On the same subsets, P0 gives `r_submit=0.5158` (machine, n=240) and `0.5779` (body, n=60). Therefore C3 gain is small for machine (+0.0023) and negative for body; raw/detrended are tied. Shuffle scores were near or above matched scores, so these runs do **not** establish that context is being used.
 
 Older loss-v2 numbers in previous revisions are exploratory and not comparable to this table.
+
+## P0 optimization sweep (main `3ba5eb8`)
+
+All candidates used the same protocol, seed 42, batch 16, 40 epochs, cosine LR (`1e-4`→`5e-6`), and an auxiliary train-only baseline-head loss. Only the B1 backbone variant changed.
+
+| variant | Task1 best epoch / E2 r_submit | Task2 best epoch / E2 r_submit | centered r (T1 / T2) |
+|---|---:|---:|---:|
+| base | 14 / 0.4931 | 14 / 0.5034 | 0.6831 / 0.6990 |
+| wide (32/64/128/256) | 6 / **0.5138** | 6 / **0.5219** | **0.7087 / 0.7235** |
+| dilated bottleneck | 9 / 0.5131 | 8 / 0.5185 | 0.7060 / 0.7196 |
+
+The wider U-Net is the current P0 candidate. It did not exceed the earlier protocol-native P0 scores (`0.5169` Task1, `0.5251` Task2), so baseline supervision plus this schedule is not yet a net improvement. Chest leads remain the limiting factor (best wide Task2 E2 r: V1 `.301`, V3 `.207`, V6 `.231`). The next high-value P0 experiment is the constrained seven-output/analytic-limb head, followed by a fair re-evaluation of the best backbone.
