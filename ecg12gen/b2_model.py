@@ -85,6 +85,14 @@ def _canonical_with_mask(ecg: torch.Tensor, lead_mask: torch.Tensor) -> tuple[to
         canonical = torch.zeros((ecg.shape[0], NUM_LEADS, WINDOW_SAMPLES), dtype=ecg.dtype, device=ecg.device)
         canonical[mask] = ecg.reshape(-1, WINDOW_SAMPLES)
         return canonical, mask
+    if mask.shape[1] == 1:
+        if ecg.shape[1] != 1 or not torch.all(mask):
+            raise ContractError("single-lead context mask does not match ECG channels")
+        canonical = torch.zeros((ecg.shape[0], NUM_LEADS, WINDOW_SAMPLES), dtype=ecg.dtype, device=ecg.device)
+        canonical[:, 0] = ecg[:, 0]
+        full_mask = torch.zeros((ecg.shape[0], NUM_LEADS), dtype=torch.bool, device=ecg.device)
+        full_mask[:, 0] = True
+        return canonical, full_mask
     if mask.shape[1] != NUM_D6_LEADS or mask.sum(dim=1).tolist() != [ecg.shape[1]] * ecg.shape[0]:
         raise ContractError("context lead mask must be [B,6] and match channels")
     canonical = torch.zeros((ecg.shape[0], NUM_LEADS, WINDOW_SAMPLES), dtype=ecg.dtype, device=ecg.device)
