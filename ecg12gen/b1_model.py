@@ -35,15 +35,23 @@ class ContextEncoder(nn.Module):
             z=z+self.lead[idx]
         return self.proj(z.mean(1))
 
+class TemporalAttention(nn.Module):
+    def __init__(self, channels, tokens=625, model_dim=128):
+        super().__init__(); self.to_tokens=nn.Conv1d(channels,model_dim,1); self.to_channels=nn.Conv1d(model_dim,channels,1)
+        layer=nn.TransformerEncoderLayer(model_dim,4,512,.1,activation="gelu",batch_first=True,norm_first=True)
+        self.encoder=nn.TransformerEncoder(layer,2); self.position=nn.Parameter(torch.zeros(1,tokens,model_dim)); nn.init.normal_(self.position,std=.01)
+    def forward(self,x):
+        z=self.to_tokens(x).transpose(1,2)+self.position[:,:x.shape[-1]]; z=self.encoder(z).transpose(1,2); return x+self.to_channels(z)
+
 class B1Model(nn.Module):
     def __init__(self, fusion_mode="none", dropout=.1, variant="base", d12_scale=None):
         super().__init__();
         if fusion_mode not in {"none","film_gated_residual"}: raise ContractError("unsupported fusion_mode")
-        if variant not in {"base","wide","dilated","core7"}: raise ContractError("unknown B1 variant")
-        self.fusion_mode=fusion_mode; self.variant=variant; w=(32,64,128,256) if variant=="wide" else (24,48,96,192)
+        if variant not in {"base","wide","dilated","core7","softcore","attention"}: raise ContractError("unknown B1 variant")
+        self.fusion_mode=fusion_mode; self.variant=variant; w=(32,64,128,256) if variant in {"wide","softcore","attention"} else (24,48,96,192)
         self.widths=w; self.register_buffer("d12_scale",torch.ones(12) if d12_scale is None else torch.as_tensor(d12_scale,dtype=torch.float32))
         self.enc=nn.ModuleList([ResBlock(a,b,1 if i<2 else 2) for i,(a,b) in enumerate(zip((1,)+w[:-1],w))])
-        self.bottleneck_extra=nn.Sequential(ResBlock(w[-1],w[-1],4),ResBlock(w[-1],w[-1],8)) if variant=="dilated" else nn.Identity()
+        self.bottleneck_extra=(nn.Sequential(ResBlock(w[-1],w[-1],4),ResBlock(w[-1],w[-1],8)) if variant=="dilated" else TemporalAttention(w[-1]) if variant=="attention" else nn.Identity())
         self.down=nn.ModuleList([nn.Conv1d(w[i],w[i],4,stride=2,padding=1) for i in range(3)])
         self.dec=nn.ModuleList([ResBlock(w[i+1]+w[i],w[i],1) for i in (2,1,0)])
         self.out=nn.Conv1d(w[0],7 if variant=="core7" else N12,1); self.dropout=nn.Dropout(dropout)
@@ -51,6 +59,7 @@ class B1Model(nn.Module):
         self.film=nn.Linear(CCTX,2*w[-1]); self.gate=nn.Linear(CCTX,N12)
         self.residual_adapter=nn.Sequential(nn.Conv1d(w[0]+CCTX,w[0],3,padding=1),nn.GroupNorm(max(1,min(8,w[0]//4)),w[0]),nn.SiLU(),nn.Conv1d(w[0],1,3,padding=1))
         self.baseline_head=nn.Sequential(nn.Linear(w[-1]+1,64),nn.SiLU(),nn.Linear(64,N12)); self._init_adapters()
+        self.analytic_gate_logits=nn.Parameter(torch.full((4,),-1.3862944)) if variant=="softcore" else None
     def _init_adapters(self):
         nn.init.zeros_(self.film.weight); nn.init.zeros_(self.film.bias); nn.init.zeros_(self.gate.weight); nn.init.constant_(self.gate.bias,-2.944439)
         nn.init.zeros_(self.residual_adapter[-1].weight); nn.init.zeros_(self.residual_adapter[-1].bias); nn.init.zeros_(self.baseline_head[-1].weight); nn.init.zeros_(self.baseline_head[-1].bias)
@@ -59,7 +68,7 @@ class B1Model(nn.Module):
     @property
     def architecture_id(self): return f"B1_residual_dilated_unet_feature_c3_{self.variant}_v2"
     @property
-    def architecture_config(self): return {"architecture_id":self.architecture_id,"widths":list(self.widths),"output_parameterization":"core7_analytic_limb" if self.variant=="core7" else "full12","bottleneck_extra":self.variant=="dilated","downsample":"stride2_x3","norm":"GroupNorm","c3":"feature_film_then_gated_residual","context_dim":CCTX}
+    def architecture_config(self): return {"architecture_id":self.architecture_id,"widths":list(self.widths),"output_parameterization":"core7_analytic_limb" if self.variant=="core7" else "full12_soft_analytic" if self.variant=="softcore" else "full12","bottleneck_extra":self.variant if self.variant in {"dilated","attention"} else "none","downsample":"stride2_x3","norm":"GroupNorm","c3":"feature_film_then_gated_residual","context_dim":CCTX}
     @property
     def architecture_config_hash(self): return hashlib.sha256(json.dumps(self.architecture_config,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     @property
@@ -96,10 +105,14 @@ class B1Model(nn.Module):
         morphology[:,2]=ii-i; morphology[:,3]=-(i+ii)/2; morphology[:,4]=i-ii/2; morphology[:,5]=ii-i/2
         med=morphology.median(dim=-1,keepdim=True).values
         return (morphology-med)/sc.view(1,N12,1)
+    def _soft_analytic(self, full):
+        sc=self.d12_scale.to(dtype=full.dtype,device=full.device); morphology=full*sc.view(1,N12,1); i,ii=morphology[:,0],morphology[:,1]
+        derived=torch.stack((ii-i,-(i+ii)/2,i-ii/2,ii-i/2),1); derived=derived-derived.median(dim=-1,keepdim=True).values; derived=derived/sc[2:6].view(1,4,1)
+        gate=torch.sigmoid(self.analytic_gate_logits).view(1,4,1); output=full.clone(); output[:,2:6]=(1-gate)*full[:,2:6]+gate*derived; return output
     def forward(self,anchor_i,*,context_ecg=None,context_source_type=None,context_lead_mask=None):
         high,bottleneck=self._anchor(anchor_i)
         if self.fusion_mode=="none":
-            raw=self.out(high); return self._compose_core7(anchor_i,raw) if self.variant=="core7" else raw
+            raw=self.out(high); return self._compose_core7(anchor_i,raw) if self.variant=="core7" else self._soft_analytic(raw) if self.variant=="softcore" else raw
         if context_ecg is None or context_source_type is None: raise ContractError("context required")
         c=self._ctx(context_ecg,context_source_type,context_lead_mask); gam,bet=self.film(c).chunk(2,1); bottleneck=bottleneck*(1+gam[:,:,None])+bet[:,:,None]
         # C3 FiLM is applied before the decoder; decode once more from conditioned bottleneck.
