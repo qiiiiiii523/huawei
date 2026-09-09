@@ -39,13 +39,19 @@ calibration:
 strict_anchor_pretrain:
   huber_full_d12: 1.00
   pcc_full_d12: 0.10
-  physiology: 0.05
+  physiology: 0.10
+  physiology_mode: anchored_weighted_limb_algebra
+  physiology_relation_weights: {III: 2.0, aVR: 0.5, aVL: 1.0, aVF: 1.0}
+  physiology_anchor: machine_i_at_target_time
   observed_anchor_consistency: 0.02
   pointwise_target_loss_basis: anchor_target_same_record_same_window_only
 joint_anchor_sync:
   huber_full_d12: 1.00
   pcc_full_d12: 0.10
-  physiology: 0.05
+  physiology: 0.10
+  physiology_mode: anchored_weighted_limb_algebra
+  physiology_relation_weights: {III: 2.0, aVR: 0.5, aVL: 1.0, aVF: 1.0}
+  physiology_anchor: machine_i_at_target_time
   observed_anchor_consistency: 0.02
   observed_anchor_leads: [I]
   pointwise_target_loss_basis: anchor_target_same_record_same_window_only
