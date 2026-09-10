@@ -289,6 +289,19 @@ class B3Model(nn.Module):
             context = context * (torch.rand(context.shape[0], 1, device=context.device) >= self.source_dropout)
         return context
 
+    def forward_anchor_only(self, anchor_i: torch.Tensor) -> torch.Tensor:
+        """Run the current anchor backbone without any context contribution.
+
+        This is used by the P1 zero-context diagnostic.  It intentionally uses
+        the *current* anchor parameters, so after fine-tuning it measures the
+        adapted anchor path rather than silently reloading the original P0
+        checkpoint.
+        """
+        _check_anchor(anchor_i)
+        f0, f1, _, tokens = self._anchor_features(anchor_i)
+        prediction, _ = self.decoder(tokens, f0, f1)
+        return prediction
+
     def forward(self, anchor_i: torch.Tensor, *, context_ecg: torch.Tensor | None = None,
                 context_source_type: str | Sequence[str] | None = None,
                 context_lead_mask: torch.Tensor | None = None) -> torch.Tensor:

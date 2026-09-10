@@ -39,16 +39,32 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--context-dropout", type=float, default=0.0)
     parser.add_argument("--source-dropout", type=float, default=0.0)
-    parser.add_argument("--anchor-lr", type=float, default=1e-3)
-    parser.add_argument("--context-lr", type=float, default=2e-3)
+    parser.add_argument("--anchor-lr", type=float, default=None)
+    parser.add_argument("--context-lr", type=float, default=None)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--freeze-anchor-epochs", type=int, default=0)
+    parser.add_argument("--freeze-anchor-epochs", type=int, default=None)
+    parser.add_argument("--warmup-epochs", type=int, default=5)
+    parser.add_argument("--min-lr-ratio", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     if args.task_id == "task1" and args.context_source_type not in {None, "watch_ecg"}:
         parser.error("task1 requires watch_ecg context")
     if args.task_id == "task2" and args.stage == "P1-C3" and args.context_source_type not in {"ecg_machine_d6", "body_scale_d6"}:
         parser.error("task2 requires exactly one d6 --context-source-type")
+    if args.stage == "P0_anchor_only":
+        args.anchor_lr = 1e-3 if args.anchor_lr is None else args.anchor_lr
+        args.context_lr = 2e-3 if args.context_lr is None else args.context_lr
+        args.freeze_anchor_epochs = 0 if args.freeze_anchor_epochs is None else args.freeze_anchor_epochs
+        args.warmup_epochs = 0
+        args.min_lr_ratio = 1.0
+    else:
+        args.anchor_lr = 2e-5 if args.anchor_lr is None else args.anchor_lr
+        args.context_lr = 5e-4 if args.context_lr is None else args.context_lr
+        args.freeze_anchor_epochs = 10 if args.freeze_anchor_epochs is None else args.freeze_anchor_epochs
+    if args.freeze_anchor_epochs < 0 or args.warmup_epochs < 0:
+        parser.error("freeze/warmup epochs must be non-negative")
+    if not 0.0 <= args.min_lr_ratio <= 1.0:
+        parser.error("min-lr-ratio must be in [0,1]")
     checkpoint = train_b3(args)
     print(f"B3 complete: {checkpoint}")
 

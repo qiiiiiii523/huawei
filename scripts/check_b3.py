@@ -14,7 +14,7 @@ from ecg12gen.contracts import ContractError
 from ecg12gen.evaluate import evaluate_joint_anchor_predictions
 from ecg12gen.losses import joint_anchor_sync_loss, strict_anchor_pretrain_loss
 from ecg12gen.b3_model import B3Model
-from ecg12gen.b3_train import train_b3
+from ecg12gen.b3_train import _p1_lr_multiplier, train_b3
 
 
 def _assert_grad(model: B3Model, prediction: torch.Tensor, target: torch.Tensor, anchor: torch.Tensor) -> None:
@@ -61,6 +61,16 @@ def main() -> None:
         assert prediction.shape == (1, 12, 5000)
         _assert_grad(model, prediction, target, anchor)
 
+    # The explicit zero-context diagnostic must exactly reproduce the P0
+    # anchor path before P1 optimization, without changing checkpoint shape.
+    p0.eval()
+    c3_zero = B3Model(fusion_mode="film_gated_residual")
+    c3_zero.load_state_dict(p0.state_dict(), strict=True)
+    c3_zero.eval()
+    assert torch.allclose(c3_zero.forward_anchor_only(anchor), p0(anchor), atol=1e-6, rtol=1e-5)
+    assert _p1_lr_multiplier(0, 100, 5, 0.05) == 0.2
+    assert abs(_p1_lr_multiplier(99, 100, 5, 0.05) - 0.05) < 1e-8
+
     task2_mask = torch.tensor([[True, True, True, True, True, True]])
     for source in ("ecg_machine_d6", "body_scale_d6"):
         model = B3Model(fusion_mode="film_gated_residual")
@@ -87,7 +97,7 @@ def main() -> None:
         raise AssertionError("P1-C3 without P0 checkpoint did not fail")
     except ContractError:
         pass
-    print("PASS: B3 P0/P1-C3 shapes, strict/joint backward, source/mask selection, submit identity, and forced P0 checkpoint")
+    print("PASS: B3-v2 shapes, strict/joint backward, zero-context path, LR schedule, source/mask selection, submit identity, and forced P0 checkpoint")
 
 
 if __name__ == "__main__":
