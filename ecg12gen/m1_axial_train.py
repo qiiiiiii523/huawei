@@ -21,21 +21,22 @@ def forward(model,batch):
     if model.fusion_mode!='none': kwargs.update(context=batch['context_model'],context_source_type=batch['context_source_type'],context_lead_mask=batch['context_lead_mask'])
     return model(batch['anchor_model'],**kwargs)
 def _loss(model,pred,batch,d12_scale):
-    if model.fusion_mode=='none': return strict_anchor_pretrain_loss(pred,batch['target_model'],batch['anchor_model'],d12_scale_uV=d12_scale)
-    return joint_anchor_sync_loss(pred,batch['target_model'],batch['anchor_model'],d12_scale_uV=d12_scale)
+    if model.fusion_mode=='none':
+        return strict_anchor_pretrain_loss(pred,batch['target_model'],batch['anchor_model'],target_lead_mask=batch['target_quality_mask'],d12_scale_uV=d12_scale)
+    return joint_anchor_sync_loss(pred,batch['target_model'],batch['anchor_model'],target_lead_mask=batch['target_quality_mask'],d12_scale_uV=d12_scale)
 def _base_name(name):
     return name.startswith(('cnn_encoder.','anchor_projection.','time_position','lead_embedding','lead_state_embedding','axial_blocks.','final_norm.','decoder.'))
 def _set_anchor_requires_grad(model,enabled):
     for name,p in model.named_parameters():
         if _base_name(name): p.requires_grad=enabled
 def validate(model,ds,d12_scale,device,out,max_batches=None):
-    model.eval(); preds=[]; targets=[]; anchors=[]
+    model.eval(); preds=[]; targets=[]; anchors=[]; target_quality_masks=[]
     with torch.no_grad():
         for batch_index, raw in enumerate(loader(ds,4,False,42)):
             if max_batches is not None and batch_index >= max_batches: break
-            batch=move(raw,device); preds.append(forward(model,batch).cpu().numpy()); targets.append(raw['raw_target_uV'].numpy()); anchors.append(raw['raw_anchor_uV'].numpy())
-    prediction=np.concatenate(preds).astype(np.float32)*np.asarray(d12_scale,dtype=np.float32)[None,:,None]; target=np.concatenate(targets).astype(np.float32); anchor=np.concatenate(anchors).astype(np.float32)
-    summary,raw_details,submit_details,submit=evaluate_joint_anchor_predictions(prediction,target,anchor,model.task_id)
+            batch=move(raw,device); preds.append(forward(model,batch).cpu().numpy()); targets.append(raw['raw_target_uV'].numpy()); anchors.append(raw['raw_anchor_uV'].numpy()); target_quality_masks.append(raw['target_quality_mask'].numpy())
+    prediction=np.concatenate(preds).astype(np.float32)*np.asarray(d12_scale,dtype=np.float32)[None,:,None]; target=np.concatenate(targets).astype(np.float32); anchor=np.concatenate(anchors).astype(np.float32); target_quality_mask=np.concatenate(target_quality_masks).astype(bool)
+    summary,raw_details,submit_details,submit=evaluate_joint_anchor_predictions(prediction,target,anchor,model.task_id,target_quality_mask)
     out.mkdir(parents=True,exist_ok=True); np.save(out/'prediction_raw.npy',prediction); np.save(out/'prediction_submit.npy',submit)
     (out/'validation_metrics.json').write_text(json.dumps(summary,indent=2,default=str),encoding='utf-8')
     return summary
@@ -74,8 +75,8 @@ def fit_m1(model,train_ds,val_ds,d12_scale,output_dir,*,stage,epochs=1,device='c
         for batch_index, raw in enumerate(train_loader):
             if max_train_batches is not None and batch_index >= max_train_batches: break
             batch=move(raw,device); opt.zero_grad(set_to_none=True); loss=_loss(model,forward(model,batch),batch,torch.as_tensor(d12_scale,device=device)); loss.backward(); opt.step(); total+=float(loss.detach()); steps+=1
-        metrics=validate(model,val_ds,d12_scale,device,out,max_validation_batches); row={'epoch':epoch,'train_loss':total/max(1,steps),'validation':metrics}; history.append(row); metric=float(metrics['r_submit_12'])
-        print(f'epoch={epoch}; train_loss={row["train_loss"]:.6f}; r_submit_12={metric:.6f}; r_missing11={float(metrics["r_missing11"]):.6f}')
+        metrics=validate(model,val_ds,d12_scale,device,out,max_validation_batches); row={'epoch':epoch,'train_loss':total/max(1,steps),'validation':metrics}; history.append(row); metric=float(metrics['r_missing11'])
+        print(f'epoch={epoch}; train_loss={row["train_loss"]:.6f}; r_missing11={metric:.6f}; r_submit_12={float(metrics["r_submit_12"]):.6f}')
         if metric>best:
             best=metric; ckpt={**model.architecture_metadata,**required_checkpoint_metadata(model,d12_scale),'model':model.state_dict(),'optimizer':opt.state_dict(),'epoch':epoch,'stage':stage,'target_d12_scale_uV':np.asarray(d12_scale,dtype=np.float32).tolist()}; torch.save(ckpt,out/'m1_best.pt')
     (out/'history.json').write_text(json.dumps({'best_metric':best,'history':history},indent=2,default=str),encoding='utf-8'); return out/'m1_best.pt'

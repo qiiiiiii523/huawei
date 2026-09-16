@@ -8,6 +8,7 @@ import numpy as np
 from .contracts import D12_LEADS, ContractError, canonical_lead_mask
 
 TASK2_GENERATED_LEAD_INDICES = np.arange(6, 12)
+MISSING_11_LEAD_INDICES = np.arange(1, 12)
 def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     x, y = x.astype(np.float64, copy=False), y.astype(np.float64, copy=False)
     x, y = x - x.mean(), y - y.mean()
@@ -280,11 +281,34 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray, anchor_i_ecg: np.ndarray, task_id: str):
+def _add_quality_strata(details: list[dict[str, float | str]], prediction: np.ndarray,
+                        target: np.ndarray, target_quality_mask: np.ndarray) -> None:
+    quality = np.asarray(target_quality_mask, dtype=bool)
+    if quality.shape != prediction.shape[:2]:
+        raise ContractError('target_quality_mask must have shape [N,12]')
+    for lead_index, row in enumerate(details):
+        pred, truth = prediction[:, lead_index, :], target[:, lead_index, :]
+        for name, selector in (("clean", quality[:, lead_index]), ("warning", ~quality[:, lead_index])):
+            row[f'n_{name}_windows'] = int(selector.sum())
+            if selector.any():
+                row[f'{name}_pearson_r'] = _pearson(pred[selector].reshape(-1), truth[selector].reshape(-1))
+                row[f'{name}_rmse_uV'] = float(np.sqrt(np.mean((pred[selector].astype(np.float64) - truth[selector].astype(np.float64)) ** 2)))
+            else:
+                row[f'{name}_pearson_r'] = float('nan')
+                row[f'{name}_rmse_uV'] = float('nan')
+
+
+def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray,
+                                      anchor_i_ecg: np.ndarray, task_id: str,
+                                      target_quality_mask: np.ndarray | None = None):
     """Main-contract raw, submit-like, and missing-11 validation views."""
     raw=np.asarray(prediction_raw); target=np.asarray(target); anchor=np.asarray(anchor_i_ecg)
     if raw.ndim!=3 or raw.shape[1:]!=(12,5000): raise ContractError('prediction_raw must be [N,12,5000]')
+    if target.shape != raw.shape: raise ContractError('target must match prediction_raw shape')
     if anchor.shape!=(raw.shape[0],1,5000): raise ContractError('anchor_i_ecg must be [N,1,5000]')
     mask=np.broadcast_to(canonical_lead_mask(1),(raw.shape[0],12)); raw_overall,raw_details=evaluate_predictions(raw,target,task_id,mask); submit=raw.copy(); submit[:,:1]=anchor; submit_overall,submit_details=evaluate_predictions(submit,target,task_id,mask)
-    summary={**submit_overall,'prediction_view':'submit_anchor_i_replaced','r_raw_12':float(raw_overall['twelve_lead_mean_pearson_r']),'r_submit_12':float(submit_overall['twelve_lead_mean_pearson_r']),'r_missing11':float(np.nanmean([row['pearson_r'] for row in raw_details[1:]])),'r_missing11_leads':','.join(D12_LEADS[1:])}
+    if target_quality_mask is not None:
+        _add_quality_strata(raw_details, raw, target, target_quality_mask)
+        _add_quality_strata(submit_details, submit, target, target_quality_mask)
+    summary={**raw_overall,'prediction_view':'raw_prediction_official_missing11','checkpoint_selection_metric':'r_missing11','anchor_i_replacement_role':'diagnostic_only_not_scored','r_raw_12':float(raw_overall['twelve_lead_mean_pearson_r']),'r_submit_12':float(submit_overall['twelve_lead_mean_pearson_r']),'r_missing11':float(np.nanmean([raw_details[index]['pearson_r'] for index in MISSING_11_LEAD_INDICES])),'r_missing11_leads':','.join(D12_LEADS[index] for index in MISSING_11_LEAD_INDICES)}
     return summary,raw_details,submit_details,submit

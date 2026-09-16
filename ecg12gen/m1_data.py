@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 from .contracts import JointAnchorSample, SupervisionMode, WINDOW_SAMPLES, canonical_lead_mask
 from .dataset import ECGDataConfig
 from .d12_pretrain import StrictD12PretrainDataset
+from .device_qc import d12_target_mask, d6_input_mask, load_device_interpretation_qc
 from .preprocessing import ECGPreprocessor, PreprocessingConfig
 
 @dataclass(frozen=True)
@@ -22,6 +23,8 @@ class M1Item:
     raw_target_uV: torch.Tensor
     raw_anchor_uV: torch.Tensor
     meta: dict[str,Any]
+    target_quality_mask: torch.Tensor
+    input_quality_mask: torch.Tensor | None
 
 class M1PreparedDataset(Dataset[M1Item]):
     def __init__(self, samples:list[Any], preprocessor:ECGPreprocessor, stage:str, source_type:str|None=None):
@@ -45,12 +48,36 @@ class M1PreparedDataset(Dataset[M1Item]):
             if source!=self.source_type: raise ValueError('context source routing mismatch')
             context_model=self.preprocessor.transform_window(np.asarray(sample.context_ecg,dtype=np.float32),source).model_signal
             context_mask=np.asarray(sample.context_lead_mask,dtype=bool)
-        return M1Item(torch.from_numpy(anchor), None if context_model is None else torch.from_numpy(context_model), torch.from_numpy(target), source, None if context_mask is None else torch.from_numpy(context_mask), torch.from_numpy(target_raw.copy()), torch.from_numpy(anchor_raw), dict(sample.meta))
+        target_quality_mask = getattr(sample, 'target_quality_mask', None)
+        if target_quality_mask is None:
+            raise ValueError('M1 sample is missing target_quality_mask from device QC')
+        input_quality_mask = getattr(sample, 'input_quality_mask', None)
+        return M1Item(
+            torch.from_numpy(anchor),
+            None if context_model is None else torch.from_numpy(context_model),
+            torch.from_numpy(target), source,
+            None if context_mask is None else torch.from_numpy(context_mask),
+            torch.from_numpy(target_raw.copy()), torch.from_numpy(anchor_raw), dict(sample.meta),
+            torch.from_numpy(np.asarray(target_quality_mask, dtype=bool)),
+            None if input_quality_mask is None else torch.from_numpy(np.asarray(input_quality_mask, dtype=bool)),
+        )
 
 def m1_collate(items:list[M1Item])->dict[str,Any]:
     if not items: raise ValueError('empty M1 batch')
     context=[item.context_model for item in items]
-    return {'anchor_model':torch.stack([x.anchor_model for x in items]),'context_model':None if context[0] is None else torch.stack(context), 'target_model':torch.stack([x.target_model for x in items]), 'context_source_type':items[0].context_source_type, 'context_lead_mask':None if items[0].context_lead_mask is None else torch.stack([x.context_lead_mask for x in items]), 'raw_target_uV':torch.stack([x.raw_target_uV for x in items]), 'raw_anchor_uV':torch.stack([x.raw_anchor_uV for x in items]), 'meta':[x.meta for x in items]}
+    input_quality = [item.input_quality_mask for item in items]
+    return {
+        'anchor_model': torch.stack([x.anchor_model for x in items]),
+        'context_model': None if context[0] is None else torch.stack(context),
+        'target_model': torch.stack([x.target_model for x in items]),
+        'context_source_type': items[0].context_source_type,
+        'context_lead_mask': None if items[0].context_lead_mask is None else torch.stack([x.context_lead_mask for x in items]),
+        'target_quality_mask': torch.stack([x.target_quality_mask for x in items]),
+        'input_quality_mask': None if input_quality[0] is None else torch.stack(input_quality),
+        'raw_target_uV': torch.stack([x.raw_target_uV for x in items]),
+        'raw_anchor_uV': torch.stack([x.raw_anchor_uV for x in items]),
+        'meta': [x.meta for x in items],
+    }
 
 def _read_csv(path):
     with path.open('r', encoding='utf-8-sig', newline='') as handle:
@@ -65,6 +92,7 @@ def _m1_joint_anchor_samples(config:ECGDataConfig, task_id:str, split:str, body_
         raise ValueError(f'invalid M1 target shape: {targets.shape}')
     subject_split={row['subject_id']:row['split'] for row in _read_csv(config.path('subject_split_csv'))}
     pairs={row['pair_id']:row for row in _read_csv(config.path(f'{task_id}_pair_manifest_csv'))}
+    device_qc=load_device_interpretation_qc(config.path('device_interpretation_qc_csv'))
     if task_id=='task2' and body_scale_variant=='B_detrend_0p2Hz_then_window':
         inputs=np.load(config.path('task2_body_scale_b_train_input' if split=='train' else 'task2_body_scale_b_validation_input'),mmap_mode='r')
         rows=[row for row in _read_csv(config.path('task2_body_scale_b_metadata')) if row['split']==split]
@@ -87,15 +115,30 @@ def _m1_joint_anchor_samples(config:ECGDataConfig, task_id:str, split:str, body_
             raise ValueError('invalid subject split')
         if pair.get('pair_status')!='paired' or pair.get('input_quality_status')!='usable' or pair.get('target_quality_status')!='usable':
             continue
+        target_record_id=str(row.get('target_record_id') or pair.get('target_record_id') or '')
+        target_qc=device_qc.get(target_record_id)
+        if not target_qc or target_qc.get('device_type') != 'ecg_machine_d12':
+            raise ValueError(f'M1 target lacks device QC: {target_record_id}')
+        if split == 'train' and target_qc.get('d12_direct_supervision_eligible') != 'true':
+            continue
+        input_quality_mask=np.ones(6 if task_id=='task2' else 1,dtype=bool)
+        if task_id == 'task2' and source_type == 'ecg_machine_d6':
+            input_record_id=str(row.get('input_record_id') or pair.get('input_record_id') or '')
+            input_qc=device_qc.get(input_record_id)
+            if not input_qc or input_qc.get('device_type') != 'ecg_machine_d6':
+                raise ValueError(f'M1 d6 context lacks device QC: {input_record_id}')
+            if split == 'train' and input_qc.get('d6_context_training_eligible') != 'true':
+                continue
+            input_quality_mask=d6_input_mask(input_qc)
         if input_index>=len(inputs) or target_index>=len(targets):
             raise ValueError('M1 joint-anchor array index out of bounds')
         context=np.asarray(inputs[input_index],dtype=np.float32)
         target=np.asarray(targets[target_index],dtype=np.float32)
         context_mask=np.ones(6 if task_id=='task2' else 1,dtype=bool)
         subject_id,window_id=str(row['subject_id']),str(row['window_id'])
-        target_record_id=str(row.get('target_record_id') or pair.get('target_record_id') or window_id)
+        target_record_id=target_record_id or window_id
         meta={'subject_id':subject_id,'window_id':window_id,'pair_id':row['pair_id'],'device_type':source_type,'target_record_id':target_record_id,'input_processing_variant':body_scale_variant,'anchor_construction':'simulated_from_target_i_for_test_available_input','anchor_target_record_id':target_record_id,'anchor_window_id':window_id,'context_target_relation':'same_subject_cross_time','anchor_target_relation':'same_record_same_window','pointwise_loss_allowed':True,'context_target_pointwise_loss':False}
-        sample=JointAnchorSample(context_ecg=context,context_source_type=source_type,anchor_i_ecg=target[:1].copy(),anchor_source_type='ecg_machine_i',Y_12lead=target,anchor_lead_mask=canonical_lead_mask(1),context_lead_mask=context_mask,task_id=task_id,split=split,subject_id=subject_id,pair_id=row['pair_id'],target_record_id=target_record_id,window_id=window_id,meta=meta,input_type=source_type)
+        sample=JointAnchorSample(context_ecg=context,context_source_type=source_type,anchor_i_ecg=target[:1].copy(),anchor_source_type='ecg_machine_i',Y_12lead=target,anchor_lead_mask=canonical_lead_mask(1),context_lead_mask=context_mask,task_id=task_id,split=split,subject_id=subject_id,pair_id=row['pair_id'],target_record_id=target_record_id,window_id=window_id,meta=meta,input_type=source_type,target_quality_mask=d12_target_mask(target_qc),input_quality_mask=input_quality_mask)
         sample.validate()
         samples.append(sample)
     if not samples:

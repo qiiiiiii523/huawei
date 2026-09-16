@@ -7,6 +7,16 @@ import torch.nn.functional as F
 EPS = 1e-8
 
 
+def _target_mask_or_all(target_lead_mask: torch.Tensor, prediction: torch.Tensor) -> torch.Tensor:
+    """Validate the main device-QC mask used for direct d12 supervision."""
+    mask = torch.as_tensor(target_lead_mask, dtype=torch.bool, device=prediction.device)
+    if mask.shape != prediction.shape[:2]:
+        raise ValueError("target_lead_mask must have shape [batch,12]")
+    if torch.any(mask.sum(dim=1) < 1):
+        raise ValueError("each batch item needs at least one directly supervised target lead")
+    return mask
+
+
 def _lead_weight(mask: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
     if values.ndim != 3 or mask.shape != values.shape[:2]:
         raise ValueError("mask must have [batch, lead] shape for [batch, lead, time] values")
@@ -116,16 +126,16 @@ def anchored_weighted_limb_physiology_loss(
     per_relation = (residuals / residual_scale).square().mean(dim=(0, 2))
     return (per_relation * weights).sum() / weights.sum()
 
-def strict_anchor_pretrain_loss(prediction: torch.Tensor, target: torch.Tensor, anchor_i: torch.Tensor, *, huber_weight: float = 1.0, pcc_weight: float = 0.1, physiology_weight: float = 0.10, observed_weight: float = 0.02, d12_scale_uV: torch.Tensor | None = None) -> torch.Tensor:
+def strict_anchor_pretrain_loss(prediction: torch.Tensor, target: torch.Tensor, anchor_i: torch.Tensor, *, target_lead_mask: torch.Tensor, huber_weight: float = 1.0, pcc_weight: float = 0.1, physiology_weight: float = 0.10, observed_weight: float = 0.02, d12_scale_uV: torch.Tensor | None = None) -> torch.Tensor:
     if prediction.shape != target.shape or prediction.ndim != 3 or prediction.shape[1] != 12:
         raise ValueError('prediction and target must be matching [batch,12,time]')
     if anchor_i.shape != prediction[:, :1].shape:
         raise ValueError('anchor_i must be [batch,1,time]')
-    all_leads = torch.ones(prediction.shape[:2], dtype=torch.bool, device=prediction.device)
+    all_leads = _target_mask_or_all(target_lead_mask, prediction)
     anchor_mask = torch.zeros_like(all_leads); anchor_mask[:, 0] = True
     physiology = (anchored_weighted_limb_physiology_loss(prediction, anchor_i, d12_scale_uV)
                    if physiology_weight and d12_scale_uV is not None else prediction.new_zeros(()))
     return (huber_weight * masked_huber_loss(prediction, target, all_leads) + pcc_weight * masked_pcc_loss(prediction, target, all_leads) + physiology_weight * physiology + observed_weight * observed_consistency_loss(prediction, anchor_i.expand_as(prediction), anchor_mask))
 
-def joint_anchor_sync_loss(prediction: torch.Tensor, target: torch.Tensor, anchor_i: torch.Tensor, *, huber_weight: float = 1.0, pcc_weight: float = 0.1, physiology_weight: float = 0.10, observed_weight: float = 0.02, d12_scale_uV: torch.Tensor | None = None) -> torch.Tensor:
-    return strict_anchor_pretrain_loss(prediction, target, anchor_i, huber_weight=huber_weight, pcc_weight=pcc_weight, physiology_weight=physiology_weight, observed_weight=observed_weight, d12_scale_uV=d12_scale_uV)
+def joint_anchor_sync_loss(prediction: torch.Tensor, target: torch.Tensor, anchor_i: torch.Tensor, *, target_lead_mask: torch.Tensor, huber_weight: float = 1.0, pcc_weight: float = 0.1, physiology_weight: float = 0.10, observed_weight: float = 0.02, d12_scale_uV: torch.Tensor | None = None) -> torch.Tensor:
+    return strict_anchor_pretrain_loss(prediction, target, anchor_i, target_lead_mask=target_lead_mask, huber_weight=huber_weight, pcc_weight=pcc_weight, physiology_weight=physiology_weight, observed_weight=observed_weight, d12_scale_uV=d12_scale_uV)

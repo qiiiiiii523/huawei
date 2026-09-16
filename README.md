@@ -24,6 +24,7 @@ huawei_upload_tmp/
 - configs/experiments/：A/B/C 三条训练路线的配置。
 - metadata/subject_split.csv：唯一允许使用的 subject-level 划分。
 - metadata/d12_strict_pretrain_index.csv：去重后的 train-only d12 预训练索引。
+- metadata/device_interpretation_qc.csv：设备级目标/输入导联质量掩码及训练资格。
 - ecg12gen/dataset.py：task1/task2 跨设备弱配对读取器。
 - ecg12gen/d12_pretrain.py：严格 d12-I/d12-six 预训练读取器。
 - ecg12gen/body_scale.py：体脂秤 A/B 输入读取器。
@@ -123,6 +124,11 @@ train_b = BodyScaleVariantDataset(config, "train", "B_detrend_0p2Hz_then_window"
 - 主分数：0.5 × r1 + 0.5 × r2；
 - centered diagnostic 只用于形态诊断，不替代官方 raw V0。
 
+M1 使用 device-QC 的 `target_quality_mask` 进行直接监督：训练循环必须将 batch 的
+`target_quality_mask` 作为 `target_lead_mask` 传入 strict/joint loss，不能省略或默认全导联。
+checkpoint 统一按 raw prediction 的 `r_missing11`（II、III、aVR、aVL、aVF、V1--V6）选择；
+`r_submit_12` 仅保留为 anchor-I 替换后的诊断指标。
+
 评价命令：
 
 ```powershell
@@ -187,7 +193,7 @@ python scripts/check_body_scale_variants.py
 
 M1 的正式实现位于 `ecg12gen/m1_axial.py`，版本为 `M1-axial-lead-time-v1`。它只接受 target-time `machine I(C)` 的 `[B,1,5000]` anchor，CNN 保留 `F0=[B,64,5000]`、`F1=[B,128,1250]`、`F2=[B,256,250]`，显式构造 `[B,12,250,d_model]` 网格，并在每个 `AxialLeadTimeBlock` 中分别执行双向 time attention 和 lead attention。decoder 通过 lead-conditioned F1/F0 skip 恢复至 `[B,12,5000]`。
 
-正式入口是 `scripts/train_m1_axial.py` 和 `scripts/predict_m1_axial.py`。P0 使用 `strict_anchor_pretrain` 与 train-only strict index；P1 使用 `joint_anchor_adaptation` 与 `joint_anchor_sync_loss`，必须传入同架构、同 d12 scale 的 `--p0-checkpoint`。P1 的 context 只有 task1 `watch_ecg`，或 task2 互斥的 `ecg_machine_d6` / `body_scale_d6`；不支持 both、R 峰伪配对、跨时刻硬对齐或训练阶段 I 回填。
+正式入口是 `scripts/train_m1_axial.py` 和 `scripts/predict_m1_axial.py`。P0 使用 `strict_anchor_pretrain` 与 train-only strict index；P1 使用 `joint_anchor_adaptation` 与 `joint_anchor_sync_loss`，必须传入同架构、同 d12 scale 的 `--p0-checkpoint`。P1 的 context 只有 task1 `watch_ecg`，或 task2 互斥的 `ecg_machine_d6` / `body_scale_d6`；不支持 both、R 峰伪配对、跨时刻硬对齐或训练阶段 I 回填。strict/joint 样本均须携带 `target_quality_mask`，并按 device-QC 过滤训练样本。
 
 四种 `fusion_mode` 是 `none`、`film`、`gated_residual`、`film_gated_residual`。其中 `none` 不实例化 context encoder；FiLM 为零初始化，gate 初始约 0.05，residual 最后一层零初始化。训练保存 `prediction_raw.npy` 与仅在 validation/test 生成的 `prediction_submit.npy`；正式 inference 只接受 `--anchor-npy` 及合法 context，不接受隐藏 target 参数。
 
@@ -199,4 +205,4 @@ python scripts/train_m1_axial.py --task-id task1 --stage P1_joint_anchor --fusio
 python scripts/check_m1.py
 ```
 
-当前代码实现的是候选模块与协议/检查；没有任何 M1 消融结果被预先宣称。后续只依据同一 P0 初始化、subject split、预处理、loss、预算和 checkpoint 规则下的 `r_submit_12`、`r_missing11` 及 shuffled-context 对照判断 context fusion 是否有效。
+当前代码实现的是候选模块与协议/检查；没有任何 M1 消融结果被预先宣称。后续只依据同一 P0 初始化、subject split、预处理、loss、预算和 checkpoint 规则下的 `r_missing11`（主指标）、`r_raw_12`、`r_submit_12` 及 shuffled-context 对照判断 context fusion 是否有效。
