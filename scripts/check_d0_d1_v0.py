@@ -38,11 +38,15 @@ def main() -> None:
     assert overall["evaluation_input_contract"] == "joint_anchor_test_like" and all(not row["input_present"] for row in details[1:])
     raw = target.copy(); raw[:, :1] *= -1
     summary, raw_details, submit_details, submit = evaluate_joint_anchor_predictions(raw, target, target[:, :1], "task2")
-    assert summary["r_submit_12"] > summary["r_raw_12"] and summary["r_missing11"] == np.mean([row["pearson_r"] for row in raw_details[1:]])
+    assert summary["r_submit_12"] > summary["r_raw_12"]
+    assert summary["r_missing11"] == np.mean([row["pearson_r"] for row in raw_details[1:]])
+    assert summary["task2_r2"] == summary["r_missing11"]
+    assert summary["checkpoint_selection_metric"] == "r_missing11"
     prediction_t, target_t, anchor_t = torch.randn(2,12,500), torch.randn(2,12,500), torch.randn(2,1,500)
     scale_t = torch.linspace(200.0, 900.0, 12)
-    assert torch.isfinite(strict_anchor_pretrain_loss(prediction_t, target_t, anchor_t, d12_scale_uV=scale_t))
-    assert torch.isfinite(joint_anchor_sync_loss(prediction_t, target_t, anchor_t, d12_scale_uV=scale_t))
+    target_mask_t = torch.ones((2, 12), dtype=torch.bool)
+    assert torch.isfinite(strict_anchor_pretrain_loss(prediction_t, target_t, anchor_t, target_lead_mask=target_mask_t, d12_scale_uV=scale_t))
+    assert torch.isfinite(joint_anchor_sync_loss(prediction_t, target_t, anchor_t, target_lead_mask=target_mask_t, d12_scale_uV=scale_t))
     # Independent per-lead offsets are allowed after median baseline removal;
     # the corrected constraint should still accept an exactly consistent limb
     # morphology after unequal lead scaling.

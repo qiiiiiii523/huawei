@@ -95,7 +95,10 @@ def main() -> None:
         assert context_protocol["forbidden"][forbidden_name] is True
         assert context_protocol["shared_p1_rules"][forbidden_name] == "forbidden"
     assert context_protocol["shared_p1_rules"]["loss"] == "joint_anchor_sync_loss"
-    assert context_protocol["shared_p1_rules"]["checkpoint_selection"] == "best_validation_official_raw_uV_v0"
+    assert protocol["validation"]["checkpoint_selection"] == "maximize_validation_r_missing11"
+    assert protocol["validation"]["checkpoint_metric"] == "r_missing11"
+    assert context_protocol["shared_p1_rules"]["checkpoint_selection"] == "maximize_validation_r_missing11"
+    assert context_protocol["reporting"]["checkpoint_metric"] == "r_missing11"
     for task_name in ("task1", "task2"):
         with (ROOT / "configs" / "experiments" / f"{task_name}_joint_anchor.yaml").open(encoding="utf-8") as handle:
             experiment = yaml.safe_load(handle)

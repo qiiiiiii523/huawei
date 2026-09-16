@@ -10,7 +10,6 @@ import numpy as np
 from .config import load_yaml_config, resolve_config_path
 from .contracts import D12_LEADS, ECG_SAMPLING_RATE_HZ, WINDOW_SAMPLES, ContractError, JointAnchorSample, canonical_lead_mask
 from .device_qc import d12_target_mask, d6_input_mask, load_device_interpretation_qc
-from .device_qc import d12_target_mask, d6_input_mask, load_device_interpretation_qc
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -71,7 +70,6 @@ class JointAnchorDataset:
         self._rows = sorted((r for r in _read_csv(task_dir / f"{prefix}_window_metadata.csv") if r["split"] == self.split), key=lambda r: int(r["array_index"]))
         if len(self._rows) != len(self._inputs) or len(self._rows) != len(self._targets) or [int(r["array_index"]) for r in self._rows] != list(range(len(self._rows))):
             raise ContractError("Array rows and split metadata do not agree")
-        self._device_qc = load_device_interpretation_qc(self.config.path("device_interpretation_qc_csv"))
         self._device_qc = load_device_interpretation_qc(self.config.path("device_interpretation_qc_csv"))
         split_rows = _read_csv(self.config.path("subject_split_csv"))
         self._subject_split = {r["subject_id"]: r["split"] for r in split_rows}

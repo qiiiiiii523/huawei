@@ -122,9 +122,11 @@ simulated_from_target_i_for_test_available_input
 ### loss
 
 ```python
-loss = joint_anchor_sync_loss(prediction, target, anchor_i)
-prediction = replace_output_i_with_anchor(prediction, anchor_i)  # 可选
+loss = joint_anchor_sync_loss(prediction, target, anchor_i, target_lead_mask=target_quality_mask)
+prediction = replace_output_i_with_anchor(prediction, anchor_i)  # optional
 ```
+
+> **Required device-QC wiring:** Every training loop that consumes `JointAnchorDataset` or `StrictD12PretrainDataset` must pass the batch's `target_quality_mask` as `target_lead_mask` to the shared loss. The loss intentionally has no all-lead default: omitting it raises `TypeError`, preventing named bad d12 leads from being silently supervised by Huber/PCC after merging or rebasing `main`.
 
 loss 包含：
 
@@ -164,15 +166,15 @@ test:             organizer context + organizer machine-I -> prediction
 
 validation 的 target 只用于：构造模拟可见 anchor、计算 loss、离线 V0 评分；不能作为模型输入的 hidden target。
 
-checkpoint 按 validation **official raw-uV V0** 选择。centered diagnostic 只用于定位形态/基线问题，不能替代 official V0。
+checkpoint selection uses validation raw-uV `r_missing11` (mean Pearson r over II--V6). Lead I and anchor-I replacement are excluded from the primary metric.
 
 每次 validation 必须保留三套 r：
 
 | 指标 | 预测 | 用途 |
 |---|---|---|
 | `r_raw_12` | 模型原始完整 d12 输出 | 检查完整预测和 I 身份保持 |
-| `r_submit_12` | 仅在验证/模拟提交时用输入 anchor 覆盖预测 I | 最接近正式测试的官方成绩；用于 checkpoint 选择 |
-| `r_missing11` | 原始预测的 II、III、aVR、aVL、aVF、V1–V6 | 衡量真正缺失 11 导联的重建能力 |
+| `r_submit_12` | Anchor-I-replaced 12-lead diagnostic | Diagnostic only; never used for checkpoint selection |
+| `r_missing11` | Raw prediction on II, III, aVR, aVL, aVF, V1--V6 | Official `task1_r1` / `task2_r2`; checkpoint selection metric |
 
 `pred_submit` 的 I 覆盖不是训练策略：训练时必须保留模型完整 d12 输出和 I 的监督；只有 validation/test 输出阶段才执行 `pred_submit[:, 0:1] = anchor_i_ecg`。
 

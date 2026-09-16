@@ -53,7 +53,9 @@ validation:
   primary_metric_task2: task2_r2
   task2_bonus_metric: task2_missing_lead_mean_rmse_uV
   morphology_diagnostic_view: centered_per_window_uV
-  checkpoint_selection: best_validation_official_v0
+  checkpoint_selection: maximize_validation_r_missing11
+  checkpoint_metric: r_missing11
   required_metrics: [r_raw_12, r_submit_12, r_missing11]
-  official_prediction_view: submit_anchor_i_replaced
+  official_prediction_view: raw_prediction_scored_on_II_through_V6
+  anchor_i_replacement: diagnostic_only_not_scored
 results: {record_template: docs/experiment-record-template.md, generated_output_dir: results}

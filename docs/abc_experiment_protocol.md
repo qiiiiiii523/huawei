@@ -8,4 +8,6 @@
 
 严格预训练和 joint-anchor 微调都输出、并对完整 d12 计算训练损失；训练时不得将输出 I 硬替换为 anchor。context-target 逐点 Huber/MSE/PCC、raw weak 频谱统计、pair-invariant loss、R 峰伪配对和时间 warp 都不属于该协议。逐点训练监督的合法性来自 anchor-target 严格同步。
 
-P0 是 anchor-only 严格主干；P1 是 context-conditioned，必须加载 P0 权重。train、validation、test 输入同构。前两者以 target I 构造可见输入模拟 anchor；test 由主办方显式传入 machine-I anchor。validation 保留 r_raw_12、r_submit_12、r_missing11；仅 r_submit_12 在输出阶段覆盖 I，作为最接近正式测试的官方成绩。task2 报告需保留 machine/body 分层、subject-macro、V1–V6 RMSE 与 raw-V0 / centered diagnostic 的区别。
+P0 is the strict anchor-only backbone; P1 is context-conditioned and must load compatible P0 weights. Train, validation, and test use the same input contract: train/validation simulate the visible anchor from target I, while test receives organizer-provided machine I.
+
+Validation retains `r_raw_12`, `r_submit_12`, and `r_missing11`. Official `task1_r1` / `task2_r2` and checkpoint selection use raw-uV `r_missing11` over II--V6. Anchor-I replacement is diagnostic only and is not scored.

@@ -31,7 +31,7 @@
 - gate/residual initialization：
 - training budget：epochs / batch size / optimizer / learning rates / seed：
 - body-scale variant（task2）：
-- checkpoint：validation test-like joint-anchor official raw-V0
+- checkpoint: maximize validation raw-uV `r_missing11` (II--V6; lead I excluded)
 - test-like validation result：
 
 ## 结果和诊断

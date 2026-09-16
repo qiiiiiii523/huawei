@@ -53,7 +53,7 @@ training_eligibility:
 
 device_interpretation_qc:
   sidecar_csv: metadata/device_interpretation_qc.csv
-  parser: "MDC_ECG_INTERPRETATION_STATEMENT; only the explicit 信号质量差(...) statement is actionable"
+  parser: "MDC_ECG_INTERPRETATION_STATEMENT; only explicit signal-quality warning statements are actionable"
   source_records: [ecg_machine_d6, ecg_machine_d12]
   d12_target:
     named_bad_leads: "exclude from direct Huber/PCC supervision only"

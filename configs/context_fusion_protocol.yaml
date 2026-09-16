@@ -128,8 +128,8 @@ shared_p1_rules:
   training_stage_i_replacement: forbidden
   output: full_d12_prediction
   same_task_same_architecture_same_budget: required
-  checkpoint_selection: best_validation_official_raw_uV_v0
-  validation_test_submit_i_replacement: required
+  checkpoint_selection: maximize_validation_r_missing11
+  validation_test_submit_i_replacement: diagnostic_only_not_scored
   context_is_conditioning_only: true
 
 fair_comparison:
@@ -148,6 +148,7 @@ reporting:
   required_metrics: [r_raw_12, r_submit_12, r_missing11, RMSE]
   task2_extra_metrics: [machine_body_stratified, subject_macro, V1-V6_diagnostics, shuffled_context]
   checkpoint_metric_view: raw_uV_v0
+  checkpoint_metric: r_missing11
   architecture_fields: [architecture_id, architecture_config_hash]
 
 forbidden:
