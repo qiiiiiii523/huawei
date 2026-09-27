@@ -16,13 +16,17 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     denominator = np.sqrt(np.sum(x * x) * np.sum(y * y))
     return float(np.sum(x * y) / denominator) if denominator > 0 else float("nan")
 
+def _mean_record_pearson(prediction: np.ndarray, target: np.ndarray) -> float:
+    """Average Pearson r over independent [time] records of one lead."""
+    return float(np.nanmean([_pearson(pred, truth) for pred, truth in zip(prediction, target)]))
+
 def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: str,
                          lead_mask: np.ndarray | None = None) -> tuple[dict[str, float | str], list[dict[str, float | str]]]:
     """Run V0 on validation arrays.
 
-    Per-lead measures flatten all validation windows and points. Official r1/r2
-    exclude lead I and are the unweighted mean over II--V6. Twelve-lead metrics
-    remain diagnostic only.
+    Compute Pearson r within each validation record, then average records for
+    each lead. r1/r2 exclude lead I and average the remaining lead scores.
+    Twelve-lead metrics remain diagnostic only.
     """
     prediction, target = np.asarray(prediction), np.asarray(target)
     if prediction.shape != target.shape or prediction.ndim != 3 or prediction.shape[1] != 12 or prediction.shape[2] != 5000:
@@ -42,8 +46,8 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
             raise ContractError("lead_mask must have shape [12] or [N, 12]")
     details: list[dict[str, float | str]] = []
     for lead_index, lead_name in enumerate(D12_LEADS):
-        pred, truth = prediction[:, lead_index, :].reshape(-1), target[:, lead_index, :].reshape(-1)
-        details.append({"lead": lead_name, "pearson_r": _pearson(pred, truth),
+        pred, truth = prediction[:, lead_index, :], target[:, lead_index, :]
+        details.append({"lead": lead_name, "pearson_r": _mean_record_pearson(pred, truth),
                         "rmse_uV": float(np.sqrt(np.mean((pred.astype(np.float64) - truth.astype(np.float64)) ** 2))),
                         "input_present": bool(mask[:, lead_index].all()), "n_validation_points": int(pred.size)})
     correlations = np.asarray([float(row["pearson_r"]) for row in details])
@@ -100,7 +104,7 @@ def _add_quality_strata(details: list[dict[str, float | str]], prediction: np.nd
         for name, selector in (("clean", quality[:, lead_index]), ("warning", ~quality[:, lead_index])):
             row[f"n_{name}_windows"] = int(selector.sum())
             if selector.any():
-                row[f"{name}_pearson_r"] = _pearson(pred[selector].reshape(-1), truth[selector].reshape(-1))
+                row[f"{name}_pearson_r"] = _mean_record_pearson(pred[selector], truth[selector])
                 row[f"{name}_rmse_uV"] = float(np.sqrt(np.mean((pred[selector].astype(np.float64) - truth[selector].astype(np.float64)) ** 2)))
             else:
                 row[f"{name}_pearson_r"] = float("nan")
@@ -170,7 +174,7 @@ def evaluate_task2_diagnostics(prediction: np.ndarray, target: np.ndarray,
                                metadata_rows: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return subject-macro and device-stratified task-2 diagnostic metrics.
 
-    The official V0 result remains point-weighted over all validation windows.
+    The primary V0 result averages per-record correlations across validation records.
     These supplementary rows weight every subject equally and expose V1--V6,
     which are the leads task 2 actually needs to generate.
     """
@@ -204,7 +208,7 @@ def evaluate_task2_diagnostics(prediction: np.ndarray, target: np.ndarray,
     for input_type in sorted({row["input_type"] for row in metadata_rows}):
         indices = [index for index, row in indexed_rows if row["input_type"] == input_type]
         per_subject = [row for row in subject_device_rows if row["input_type"] == input_type]
-        device_rows.append({"scope": "device", "input_type": input_type, "aggregation": "pooled_windows",
+        device_rows.append({"scope": "device", "input_type": input_type, "aggregation": "record_macro",
                             "n_subjects": len(per_subject), "n_windows": len(indices),
                             **_summary_metrics(prediction[indices], target[indices])})
         device_rows.append({"scope": "device", "input_type": input_type, "aggregation": "subject_macro",
@@ -289,7 +293,7 @@ def write_task2_diagnostics(output_dir: str | Path, subject_rows: list[dict[str,
         writer.writerows(device_rows)
     lines = [
         "", "## Task-2 supplementary diagnostics", "",
-        "These rows do not replace the official point-weighted missing-11 `task2_r2`.",
+        "These rows do not replace the primary per-record missing-11 `task2_r2`.",
         "They report subject-macro metrics and V1--V6, the leads task 2 must generate.",
         "", "| Scope | Input device | Aggregation | Subjects | Windows | II--V6 r | 12-lead diagnostic r | V1--V6 r | V1--V6 RMSE (uV) |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|",
