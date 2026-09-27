@@ -1,0 +1,26 @@
+protocol_version: B4-v1
+architecture:
+  architecture_id: B4-I-conditional-ddpm-1d
+  base_channels: 64
+  channel_multipliers: [1, 2, 4]
+  time_embedding_dim: 128
+  dropout: 0.1
+diffusion:
+  training_steps: 200
+  beta_schedule: cosine
+  prediction_type: epsilon
+  sampling_steps: 50
+  eta: 0.0
+training:
+  batch_size: 4
+  epochs: 100
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  checkpoint_metric: r_missing11
+  seed: 42
+data_contract:
+  stage: P0_anchor_only
+  input: same_window_machine_I
+  target: same_window_machine_d12
+  diffused_leads: [II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6]
+  forbidden_modalities: [watch, body_scale, report, diagnosis]

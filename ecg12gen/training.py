@@ -14,7 +14,7 @@ def seed_everything(seed: int = 42, deterministic: bool = True) -> dict[str, Any
     """Set the shared random seed for Python, NumPy, and optionally PyTorch.
 
     The function deliberately does not create a model, data loader, optimizer,
-    or training run. It is the common reproducibility hook for later B models.
+    or training run. It is the shared reproducibility hook for later models.
     """
     if not isinstance(seed, int):
         raise TypeError("seed must be an integer")
@@ -39,11 +39,14 @@ def load_training_protocol(path: str | Path = "configs/training_protocol_v1.yaml
     """Load and minimally validate the fixed shared experiment protocol."""
     with Path(path).open("r", encoding="utf-8") as handle:
         protocol = yaml.safe_load(handle)
-    required = {"protocol_version", "reproducibility", "data", "loader", "optimization_defaults", "validation", "results"}
+    required = {"protocol_version", "reproducibility", "data", "two_stage_protocol", "validation", "results"}
     if not isinstance(protocol, dict) or required - set(protocol):
         raise ValueError("training protocol is missing required protocol sections")
     if protocol["reproducibility"].get("seed") != 42:
         raise ValueError("The initial main protocol fixes seed=42")
     if protocol["data"].get("split_strategy") != "fixed_subject_level":
         raise ValueError("Only fixed subject-level splitting is allowed")
+    joint = protocol["two_stage_protocol"].get("joint_anchor_adaptation", {})
+    if joint.get("context_target_relation") != "same_subject_cross_time" or joint.get("anchor_target_relation") != "same_record_same_window":
+        raise ValueError("Training protocol must use the joint-anchor relation contract")
     return protocol
