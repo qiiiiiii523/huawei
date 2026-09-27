@@ -40,7 +40,15 @@ def main() -> None:
     preprocessor = fit_b4_preprocessor(args.config, args.task_id)
     train_dataset, validation_dataset = build_b4_datasets(args.config, args.task_id, preprocessor)
     model = B4ConditionalUNet1D(architecture)
-    diffusion = B4Diffusion(model, training_steps=int(diffusion_config["training_steps"]))
+    diffusion = B4Diffusion(
+        model,
+        training_steps=int(diffusion_config["training_steps"]),
+        prediction_type=str(diffusion_config["prediction_type"]),
+        clip_denoised=float(diffusion_config["clip_denoised"]),
+        dynamic_threshold_quantile=float(diffusion_config["dynamic_threshold_quantile"]),
+        x0_loss_weight=float(diffusion_config["x0_loss_weight"]),
+        correlation_loss_weight=float(diffusion_config["correlation_loss_weight"]),
+    )
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     scales = {key: value.tolist() for key, value in preprocessor.scale_uV_by_source.items()}
@@ -56,6 +64,7 @@ def main() -> None:
         "uses_body_scale": False,
         "uses_report_or_diagnosis": False,
         "checkpoint_metric": "r_missing11",
+        "diffusion_config": diffusion.diffusion_config,
         "seed": 42,
     }
     (output / "b4_run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
@@ -72,6 +81,8 @@ def main() -> None:
         weight_decay=float(training["weight_decay"]),
         sampling_steps=args.sampling_steps or int(diffusion_config["sampling_steps"]),
         eta=float(diffusion_config["eta"]),
+        ema_decay=float(training["ema_decay"]),
+        gradient_clip_norm=float(training["gradient_clip_norm"]),
         device=args.device,
         max_train_batches=args.max_train_batches,
         max_validation_batches=args.max_validation_batches,

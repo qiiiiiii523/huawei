@@ -11,8 +11,8 @@ from torch import nn
 from torch.nn import functional as F
 
 
-ARCHITECTURE_VERSION = "B4-I-conditional-ddpm-1d-v1"
-ARCHITECTURE_ID = "B4-I-conditional-ddpm-1d"
+ARCHITECTURE_VERSION = "B4-I-conditional-ddpm-1d-v2"
+ARCHITECTURE_ID = "B4-I-conditional-ddpm-1d-v2"
 
 
 def architecture_config_hash(config: dict[str, Any]) -> str:
@@ -35,13 +35,20 @@ class SinusoidalTimeEmbedding(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, time_dim: int, dropout: float) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        time_dim: int,
+        dropout: float,
+        dilation: int = 1,
+    ) -> None:
         super().__init__()
         groups = min(8, out_channels)
         while out_channels % groups:
             groups -= 1
-        self.conv1 = nn.Conv1d(in_channels, out_channels, 3, padding=1)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, 3, padding=1)
+        self.conv1 = nn.Conv1d(in_channels, out_channels, 3, padding=dilation, dilation=dilation)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, 3, padding=dilation, dilation=dilation)
         self.norm1 = nn.GroupNorm(groups, out_channels)
         self.norm2 = nn.GroupNorm(groups, out_channels)
         self.time_projection = nn.Linear(time_dim, out_channels)
@@ -58,7 +65,7 @@ class ResidualBlock(nn.Module):
 
 
 class B4ConditionalUNet1D(nn.Module):
-    """Predict epsilon for II--V6 while conditioning on complete lead I."""
+    """Predict a diffusion target for II--V6 conditioned on complete lead I."""
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__()
@@ -76,13 +83,16 @@ class B4ConditionalUNet1D(nn.Module):
             nn.SiLU(),
             nn.Linear(time_dim * 4, time_dim),
         )
-        self.input_projection = nn.Conv1d(12, channels[0], 3, padding=1)
+        self.noisy_projection = nn.Conv1d(11, channels[0], 3, padding=1)
+        self.anchor_full = nn.Conv1d(1, channels[0], 7, padding=3)
+        self.anchor_half = nn.Conv1d(channels[0], channels[1], 4, stride=2, padding=1)
+        self.anchor_quarter = nn.Conv1d(channels[1], channels[2], 4, stride=2, padding=1)
         self.down1 = ResidualBlock(channels[0], channels[0], time_dim, dropout)
         self.downsample1 = nn.Conv1d(channels[0], channels[1], 4, stride=2, padding=1)
         self.down2 = ResidualBlock(channels[1], channels[1], time_dim, dropout)
         self.downsample2 = nn.Conv1d(channels[1], channels[2], 4, stride=2, padding=1)
-        self.middle1 = ResidualBlock(channels[2], channels[2], time_dim, dropout)
-        self.middle2 = ResidualBlock(channels[2], channels[2], time_dim, dropout)
+        self.middle1 = ResidualBlock(channels[2], channels[2], time_dim, dropout, dilation=2)
+        self.middle2 = ResidualBlock(channels[2], channels[2], time_dim, dropout, dilation=4)
         self.upsample2 = nn.ConvTranspose1d(channels[2], channels[1], 4, stride=2, padding=1)
         self.up2 = ResidualBlock(channels[1] * 2, channels[1], time_dim, dropout)
         self.upsample1 = nn.ConvTranspose1d(channels[1], channels[0], 4, stride=2, padding=1)
@@ -108,10 +118,14 @@ class B4ConditionalUNet1D(nn.Module):
         if timesteps.shape != (noisy_missing.shape[0],):
             raise ValueError("timesteps must have shape [B]")
         time_embedding = self.time_embedding(timesteps)
-        hidden = self.input_projection(torch.cat((anchor_i, noisy_missing), dim=1))
+        condition_full = self.anchor_full(anchor_i)
+        condition_half = self.anchor_half(F.silu(condition_full))
+        condition_quarter = self.anchor_quarter(F.silu(condition_half))
+        hidden = self.noisy_projection(noisy_missing) + condition_full
         skip1 = self.down1(hidden, time_embedding)
-        skip2 = self.down2(self.downsample1(skip1), time_embedding)
-        hidden = self.middle2(self.middle1(self.downsample2(skip2), time_embedding), time_embedding)
+        skip2 = self.down2(self.downsample1(skip1) + condition_half, time_embedding)
+        hidden = self.downsample2(skip2) + condition_quarter
+        hidden = self.middle2(self.middle1(hidden, time_embedding), time_embedding)
         hidden = self.upsample2(hidden)
         if hidden.shape[-1] != skip2.shape[-1]:
             hidden = F.interpolate(hidden, size=skip2.shape[-1], mode="linear", align_corners=False)

@@ -24,7 +24,7 @@ def main() -> None:
     parser.add_argument("--run-dir")
     parser.add_argument("--sampling-steps", type=int)
     parser.add_argument("--eta", type=float)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--output-dir", required=True)
@@ -51,23 +51,39 @@ def main() -> None:
     device = torch.device(args.device)
     model = B4ConditionalUNet1D(architecture)
     model.load_state_dict(checkpoint["model"], strict=True)
-    diffusion = B4Diffusion(model, training_steps=int(checkpoint["training_steps"])).to(device).eval()
-    sampling_steps = args.sampling_steps or int(checkpoint.get("sampling_steps", 50))
+    diffusion_config = checkpoint.get("diffusion_config")
+    if not isinstance(diffusion_config, dict):
+        raise SystemExit("B4 v2 checkpoint is missing diffusion_config")
+    diffusion = B4Diffusion(
+        model,
+        training_steps=int(diffusion_config["training_steps"]),
+        prediction_type=str(diffusion_config["prediction_type"]),
+        clip_denoised=diffusion_config.get("clip_denoised"),
+        dynamic_threshold_quantile=float(diffusion_config["dynamic_threshold_quantile"]),
+        x0_loss_weight=float(diffusion_config.get("x0_loss_weight", 0.0)),
+        correlation_loss_weight=float(diffusion_config.get("correlation_loss_weight", 0.0)),
+    ).to(device).eval()
+    sampling_steps = args.sampling_steps or int(checkpoint.get("sampling_steps", 100))
     eta = float(checkpoint.get("eta", 0.0) if args.eta is None else args.eta)
+    batch_size = args.batch_size or int(checkpoint.get("validation_batch_size", 4))
+    noise_generator = torch.Generator()
+    noise_generator.manual_seed(args.seed)
+    initial_noise = torch.randn((len(anchor_model), 11, 5000), generator=noise_generator)
     generator = torch.Generator(device=device.type)
     generator.manual_seed(args.seed)
     predictions: list[np.ndarray] = []
     with torch.no_grad():
-        for start in range(0, len(anchor_model), args.batch_size):
-            anchor_batch = torch.from_numpy(anchor_model[start:start + args.batch_size]).to(device)
+        for start in range(0, len(anchor_model), batch_size):
+            anchor_batch = torch.from_numpy(anchor_model[start:start + batch_size]).to(device)
             model_prediction = diffusion.sample(
                 anchor_batch,
                 sampling_steps=sampling_steps,
                 eta=eta,
                 generator=generator,
+                initial_noise=initial_noise[start:start + batch_size],
             ).cpu().numpy()
             raw_prediction = model_prediction * np.asarray(scales["d12"], dtype=np.float32)[None, :, None]
-            raw_prediction[:, :1] = anchor_raw[start:start + args.batch_size]
+            raw_prediction[:, :1] = anchor_raw[start:start + batch_size]
             predictions.append(raw_prediction.astype(np.float32))
     prediction = np.concatenate(predictions)
     if prediction.shape != (len(anchor_raw), 12, 5000) or not np.array_equal(prediction[:, :1], anchor_raw):
@@ -85,6 +101,7 @@ def main() -> None:
             "output_shape": list(prediction.shape),
             "hidden_target_argument_used": False,
             "sampling_steps": sampling_steps,
+            "prediction_type": diffusion.prediction_type,
             "eta": eta,
             "seed": args.seed,
         }, indent=2),

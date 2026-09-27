@@ -21,7 +21,15 @@ def main() -> None:
         "time_embedding_dim": 16,
         "dropout": 0.0,
     })
-    diffusion = B4Diffusion(model, training_steps=8)
+    diffusion = B4Diffusion(
+        model,
+        training_steps=8,
+        prediction_type="v",
+        clip_denoised=6.0,
+        dynamic_threshold_quantile=0.995,
+        x0_loss_weight=0.1,
+        correlation_loss_weight=0.1,
+    )
     anchor = torch.randn(2, 1, 64)
     missing_target = torch.randn(2, 11, 64)
     quality = torch.ones(2, 11, dtype=torch.bool)

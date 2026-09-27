@@ -16,6 +16,32 @@ from .evaluate import evaluate_joint_anchor_predictions, write_report
 from .training import seed_everything
 
 
+class ModelEMA:
+    def __init__(self, model: torch.nn.Module, decay: float) -> None:
+        if not 0 < decay < 1:
+            raise ValueError("EMA decay must be in (0,1)")
+        self.decay = decay
+        self.shadow = {
+            name: value.detach().clone()
+            for name, value in model.state_dict().items()
+        }
+
+    @torch.no_grad()
+    def update(self, model: torch.nn.Module) -> None:
+        for name, value in model.state_dict().items():
+            shadow = self.shadow[name]
+            if torch.is_floating_point(shadow):
+                shadow.lerp_(value.detach(), 1.0 - self.decay)
+            else:
+                shadow.copy_(value.detach())
+
+    def state_dict(self) -> dict[str, torch.Tensor]:
+        return {name: value.detach().clone() for name, value in self.shadow.items()}
+
+    def copy_to(self, model: torch.nn.Module) -> None:
+        model.load_state_dict(self.shadow, strict=True)
+
+
 def _loader(dataset: B4PreparedDataset, batch_size: int, shuffle: bool, seed: int) -> DataLoader:
     generator = torch.Generator()
     generator.manual_seed(seed)
@@ -44,6 +70,7 @@ def validate_b4(
     batch_size: int,
     sampling_steps: int,
     eta: float,
+    seed: int = 42,
     max_batches: int | None = None,
 ) -> dict[str, float | str]:
     diffusion.eval()
@@ -51,9 +78,11 @@ def validate_b4(
     targets: list[np.ndarray] = []
     anchors: list[np.ndarray] = []
     quality_masks: list[np.ndarray] = []
-    generator = torch.Generator(device=device.type)
-    generator.manual_seed(42)
-    for batch_index, raw_batch in enumerate(_loader(dataset, batch_size, False, 42)):
+    noise_generator = torch.Generator()
+    noise_generator.manual_seed(seed)
+    initial_noise = torch.randn((len(dataset), 11, 5000), generator=noise_generator)
+    sample_offset = 0
+    for batch_index, raw_batch in enumerate(_loader(dataset, batch_size, False, seed)):
         if max_batches is not None and batch_index >= max_batches:
             break
         batch = _move(raw_batch, device)
@@ -61,8 +90,9 @@ def validate_b4(
             batch["anchor_model"],
             sampling_steps=sampling_steps,
             eta=eta,
-            generator=generator,
+            initial_noise=initial_noise[sample_offset:sample_offset + len(batch["anchor_model"])],
         )
+        sample_offset += len(batch["anchor_model"])
         prediction_uV = model_prediction.cpu().numpy() * d12_scale_uV[None, :, None]
         raw_anchor = raw_batch["raw_anchor_uV"].numpy()
         prediction_uV[:, :1] = raw_anchor
@@ -107,6 +137,8 @@ def fit_b4(
     weight_decay: float,
     sampling_steps: int,
     eta: float,
+    ema_decay: float,
+    gradient_clip_norm: float,
     device: str,
     max_train_batches: int | None = None,
     max_validation_batches: int | None = None,
@@ -117,6 +149,7 @@ def fit_b4(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     optimizer = torch.optim.AdamW(diffusion.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    ema = ModelEMA(diffusion.denoiser, ema_decay)
     train_loader = _loader(train_dataset, batch_size, True, 42)
     best_metric = -float("inf")
     history: list[dict[str, Any]] = []
@@ -136,20 +169,28 @@ def fit_b4(
                 batch["target_quality_mask"],
             )
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(diffusion.parameters(), gradient_clip_norm)
             optimizer.step()
+            ema.update(diffusion.denoiser)
             total_loss += float(loss.detach())
             steps += 1
+        raw_model_state = {
+            name: value.detach().clone()
+            for name, value in diffusion.denoiser.state_dict().items()
+        }
+        ema.copy_to(diffusion.denoiser)
         metrics = validate_b4(
             diffusion,
             validation_dataset,
             d12_scale_uV,
             torch_device,
-            output,
+            output / "_latest_validation",
             batch_size=batch_size,
             sampling_steps=sampling_steps,
             eta=eta,
             max_batches=max_validation_batches,
         )
+        diffusion.denoiser.load_state_dict(raw_model_state, strict=True)
         metric = float(metrics["r_missing11"])
         row = {"epoch": epoch, "train_loss": total_loss / max(steps, 1), "validation": metrics}
         history.append(row)
@@ -158,13 +199,19 @@ def fit_b4(
             best_metric = metric
             checkpoint = {
                 **diffusion.denoiser.architecture_metadata,
-                "model": diffusion.denoiser.state_dict(),
+                "model": ema.state_dict(),
+                "raw_model": raw_model_state,
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
                 "stage": "P0_anchor_only",
                 "training_steps": diffusion.training_steps,
+                "diffusion_config": diffusion.diffusion_config,
                 "sampling_steps": sampling_steps,
                 "eta": eta,
+                "ema_decay": ema_decay,
+                "gradient_clip_norm": gradient_clip_norm,
+                "validation_batch_size": batch_size,
+                "validation_seed": 42,
                 "checkpoint_metric": "r_missing11",
                 "checkpoint_metric_value": metric,
                 "target_d12_scale_uV": np.asarray(d12_scale_uV, dtype=np.float32).tolist(),
@@ -181,4 +228,18 @@ def fit_b4(
             {"epoch": row["epoch"], "train_loss": row["train_loss"], "r_missing11": row["validation"]["r_missing11"]}
             for row in history
         )
+    best_checkpoint = torch.load(checkpoint_path, map_location=torch_device, weights_only=False)
+    diffusion.denoiser.load_state_dict(best_checkpoint["model"], strict=True)
+    validate_b4(
+        diffusion,
+        validation_dataset,
+        d12_scale_uV,
+        torch_device,
+        output,
+        batch_size=batch_size,
+        sampling_steps=sampling_steps,
+        eta=eta,
+        seed=42,
+        max_batches=max_validation_batches,
+    )
     return checkpoint_path
