@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import sys
 
+import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,7 +19,9 @@ from ecg12gen.b3_train import _p1_lr_multiplier, train_b3
 
 
 def _assert_grad(model: B3Model, prediction: torch.Tensor, target: torch.Tensor, anchor: torch.Tensor) -> None:
-    loss = joint_anchor_sync_loss(prediction, target, anchor)
+    loss = joint_anchor_sync_loss(
+        prediction, target, anchor, target_lead_mask=torch.ones((1, 12), dtype=torch.bool),
+        d12_scale_uV=torch.ones(12))
     assert torch.isfinite(loss)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     loss.backward()
@@ -36,7 +39,9 @@ def main() -> None:
     p0 = B3Model(fusion_mode="none")
     output = p0(anchor)
     assert output.shape == (1, 12, 5000)
-    strict = strict_anchor_pretrain_loss(output, target, anchor)
+    strict = strict_anchor_pretrain_loss(
+        output, target, anchor, target_lead_mask=torch.ones((1, 12), dtype=torch.bool),
+        d12_scale_uV=torch.ones(12))
     assert torch.isfinite(strict)
     strict.backward()
     assert any(parameter.grad is not None for parameter in p0.parameters())
@@ -87,9 +92,11 @@ def main() -> None:
 
     # Main V0 submit construction must make lead I exactly equal to raw anchor.
     summary, _, _, submit = evaluate_joint_anchor_predictions(
-        torch.randn(1, 12, 5000).numpy(), target.numpy(), anchor.numpy(), "task1")
+        torch.randn(1, 12, 5000).numpy(), target.numpy(), anchor.numpy(), "task1",
+        [{"pair_id": "synthetic_pair", "target_record_id": "synthetic_target",
+          "start_sample_500hz": "0"}], np.ones((1, 12), dtype=bool))
     assert torch.equal(torch.from_numpy(submit[:, :1]), anchor)
-    assert summary["prediction_view"] == "submit_anchor_i_replaced"
+    assert summary["prediction_view"] == "raw_prediction_official_missing11"
     assert "--target" not in (ROOT / "scripts" / "predict_b3.py").read_text(encoding="utf-8")
 
     try:

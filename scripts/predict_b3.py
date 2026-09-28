@@ -35,14 +35,25 @@ def _indices(value: str | None) -> tuple[int, ...]:
     return result
 
 
+def _baseline_batch(path: str, name: str, rows: int, channels: int) -> np.ndarray:
+    values = np.asarray(np.load(path), dtype=np.float32)
+    if values.shape != (rows, channels) or not np.isfinite(values).all():
+        raise ContractError(f"{name} must have shape [{rows},{channels}]")
+    return values
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--task-id", choices=("task1", "task2"), required=True)
     parser.add_argument("--anchor-npy", required=True, help="Explicit machine-I anchor [N,1,5000]")
+    parser.add_argument("--anchor-record-baseline-npy", required=True,
+                        help="Record median for each anchor window [N,1]")
     parser.add_argument("--watch-npy", default=None, help="Task 1 watch context [N,1,5000]")
     parser.add_argument("--d6-npy", default=None, help="Task 2 one d6 context [N,6/5,5000]")
+    parser.add_argument("--context-record-baseline-npy", required=True,
+                        help="Record median for each context window [N,C]")
     parser.add_argument("--context-source-type", choices=("ecg_machine_d6", "body_scale_d6"), default=None)
     parser.add_argument("--context-lead-indices", default=None)
     parser.add_argument("--output-dir", required=True)
@@ -77,10 +88,16 @@ def main() -> None:
     anchor_raw = _npy_batch(args.anchor_npy, "anchor-npy")
     if anchor_raw.shape[1] != 1:
         raise ContractError("--anchor-npy must contain exactly one machine-I channel")
-    anchor_model = preprocessor.transform_batch(anchor_raw, "ecg_machine_i")[0]
+    anchor_baseline = _baseline_batch(
+        args.anchor_record_baseline_npy, "anchor-record-baseline-npy", len(anchor_raw), 1)
+    anchor_model = preprocessor.transform_batch(
+        anchor_raw, "ecg_machine_i", anchor_baseline)[0]
     if args.task_id == "task1":
         context_raw = _npy_batch(args.watch_npy, "watch-npy")
-        context_model = preprocessor.transform_batch(context_raw, "watch_ecg")[0]
+        context_baseline = _baseline_batch(
+            args.context_record_baseline_npy, "context-record-baseline-npy", len(context_raw), 1)
+        context_model = preprocessor.transform_batch(
+            context_raw, "watch_ecg", context_baseline)[0]
         source = "watch_ecg"
         context_mask = None
         indices = None
@@ -89,10 +106,15 @@ def main() -> None:
         indices = _indices(args.context_lead_indices)
         if context_raw.shape[1] != len(indices):
             raise ContractError("d6-npy channel count does not match context-lead-indices")
+        context_baseline = _baseline_batch(
+            args.context_record_baseline_npy, "context-record-baseline-npy",
+            len(context_raw), context_raw.shape[1])
         context_mask_np = np.zeros((len(context_raw), 6), dtype=bool)
         context_mask_np[:, list(indices)] = True
-        context_model = np.stack([transform_context_window(preprocessor, row, args.context_source_type, context_mask_np[i])
-                                   for i, row in enumerate(context_raw)])
+        context_model = np.stack([
+            transform_context_window(
+                preprocessor, row, args.context_source_type, context_baseline[i], context_mask_np[i])
+            for i, row in enumerate(context_raw)])
         context_mask = torch.from_numpy(context_mask_np)
         source = args.context_source_type
     if context_raw.shape[0] != anchor_raw.shape[0]:

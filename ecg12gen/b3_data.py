@@ -25,18 +25,21 @@ def _source_for_task(task_id: str, source_type: str) -> str:
 
 
 def transform_context_window(preprocessor: ECGPreprocessor, raw_context: np.ndarray,
-                             source_type: str, lead_mask: np.ndarray | None = None) -> np.ndarray:
+                             source_type: str, record_baseline_uV: np.ndarray,
+                             lead_mask: np.ndarray | None = None) -> np.ndarray:
     """Apply the shared transform, also supporting the main 5-of-6 diagnostic."""
     raw = np.asarray(raw_context, dtype=np.float32)
+    baseline = np.asarray(record_baseline_uV, dtype=np.float32)
     expected = preprocessor.config.expected_leads[source_type]
     if raw.shape[0] == expected:
-        return preprocessor.transform_window(raw, source_type).model_signal.copy()
+        return preprocessor.transform_window(raw, source_type, baseline).model_signal.copy()
     if source_type not in {"ecg_machine_d6", "body_scale_d6"} or lead_mask is None:
         raise ValueError(f"{source_type} context has invalid shape {raw.shape}")
     indices = np.flatnonzero(np.asarray(lead_mask, dtype=bool))
     if len(indices) != raw.shape[0] or len(indices) != 5:
         raise ValueError("reduced d6 context must carry a five-lead canonical mask")
-    baseline = np.median(raw, axis=1).astype(np.float32)
+    if baseline.shape != (raw.shape[0],) or not np.isfinite(baseline).all():
+        raise ValueError("reduced d6 context record baseline must match visible channels")
     scale = preprocessor.scale_uV_by_source[source_type][indices]
     model = (raw - baseline[:, None]) / scale[:, None]
     return np.clip(model, -preprocessor.config.clip_model_signal, preprocessor.config.clip_model_signal)
@@ -86,14 +89,18 @@ class B3StrictDataset(Dataset[dict[str, Any]]):
     def __getitem__(self, index: int) -> dict[str, Any]:
         sample = self.source[index]
         target_raw = np.asarray(sample.Y_12lead, dtype=np.float32)
-        target = self.preprocessor.transform_d12_target(target_raw)
-        anchor = self.preprocessor.transform_window(target_raw[:1], "ecg_machine_i")
+        record_baseline = np.asarray(sample.target_record_baseline_uV, dtype=np.float32)
+        target = self.preprocessor.transform_d12_target(target_raw, record_baseline)
+        anchor = self.preprocessor.transform_window(
+            target_raw[:1], "ecg_machine_i", record_baseline[:1])
         return {
             "anchor_i": torch.from_numpy(anchor.model_signal.copy()),
             "target": torch.from_numpy(target.model_signal.copy()),
             "anchor_raw": torch.from_numpy(target_raw[:1].copy()),
             "target_raw": torch.from_numpy(target_raw.copy()),
             "anchor_lead_mask": torch.tensor([True] + [False] * 11),
+            "target_quality_mask": torch.from_numpy(
+                np.asarray(sample.target_quality_mask, dtype=bool).copy()),
             "meta": sample.meta,
         }
 
@@ -119,9 +126,12 @@ class B3JointDataset(Dataset[dict[str, Any]]):
         sample = self.main[self._indices[index]]
         context_source = _source_for_task(self.task_id, sample.context_source_type)
         context = transform_context_window(self.preprocessor, sample.context_ecg, context_source,
+                                             sample.context_record_baseline_uV,
                                             sample.context_lead_mask if self.task_id == "task2" else None)
-        anchor = self.preprocessor.transform_window(sample.anchor_i_ecg, "ecg_machine_i")
-        target = self.preprocessor.transform_d12_target(sample.Y_12lead)
+        anchor = self.preprocessor.transform_window(
+            sample.anchor_i_ecg, "ecg_machine_i", sample.anchor_record_baseline_uV)
+        target = self.preprocessor.transform_d12_target(
+            sample.Y_12lead, sample.target_record_baseline_uV)
         return {
             "anchor_i": torch.from_numpy(anchor.model_signal.copy()),
             "context": torch.from_numpy(context.copy()),
@@ -130,7 +140,12 @@ class B3JointDataset(Dataset[dict[str, Any]]):
             "target": torch.from_numpy(target.model_signal.copy()),
             "anchor_raw": torch.from_numpy(sample.anchor_i_ecg.copy()),
             "target_raw": torch.from_numpy(sample.Y_12lead.copy()),
+            "target_quality_mask": torch.from_numpy(
+                np.asarray(sample.target_quality_mask, dtype=bool).copy()),
             "subject_id": sample.subject_id,
+            "pair_id": sample.pair_id,
+            "target_record_id": sample.target_record_id,
+            "start_sample_500hz": int(sample.meta["anchor_start_sample_500hz"]),
             "meta": sample.meta,
         }
 
@@ -138,12 +153,15 @@ class B3JointDataset(Dataset[dict[str, Any]]):
 def collate_b3(batch: list[dict[str, Any]]) -> dict[str, Any]:
     if not batch:
         raise ValueError("cannot collate an empty B3 batch")
-    tensor_keys = ("anchor_i", "target", "anchor_raw", "target_raw")
+    tensor_keys = ("anchor_i", "target", "anchor_raw", "target_raw", "target_quality_mask")
     output: dict[str, Any] = {key: torch.stack([item[key] for item in batch]) for key in tensor_keys}
     if "context" in batch[0]:
         output["context"] = torch.stack([item["context"] for item in batch])
         output["context_lead_mask"] = torch.stack([item["context_lead_mask"] for item in batch])
         output["context_source_type"] = [item["context_source_type"] for item in batch]
         output["subject_id"] = [item["subject_id"] for item in batch]
+        output["pair_id"] = [item["pair_id"] for item in batch]
+        output["target_record_id"] = [item["target_record_id"] for item in batch]
+        output["start_sample_500hz"] = [item["start_sample_500hz"] for item in batch]
     output["meta"] = [item["meta"] for item in batch]
     return output

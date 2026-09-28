@@ -52,6 +52,8 @@ def validate_v0(model: B3Model, dataset: B3JointDataset, d12_scale: np.ndarray,
     predictions: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     anchors: list[np.ndarray] = []
+    quality_masks: list[np.ndarray] = []
+    metadata_rows: list[dict[str, str]] = []
     shuffled_bank: list[dict[str, Any]] | None = None
     shuffled_indices: np.ndarray | None = None
     shuffle_subject_mismatch = 0.0
@@ -93,21 +95,32 @@ def validate_v0(model: B3Model, dataset: B3JointDataset, d12_scale: np.ndarray,
         predictions.append(_raw_prediction(output.cpu().numpy(), baseline, d12_scale))
         targets.append(batch["target_raw"].numpy())
         anchors.append(batch["anchor_raw"].numpy())
+        quality_masks.append(batch["target_quality_mask"].numpy())
+        metadata_rows.extend({
+            "pair_id": str(pair_id),
+            "target_record_id": str(target_record_id),
+            "start_sample_500hz": str(start_sample),
+            "subject_id": str(subject_id),
+            "input_type": str(context_source),
+        } for pair_id, target_record_id, start_sample, subject_id, context_source in zip(
+            batch["pair_id"], batch["target_record_id"], batch["start_sample_500hz"],
+            batch["subject_id"], batch["context_source_type"]))
     prediction_raw = np.concatenate(predictions).astype(np.float32)
     target_raw = np.concatenate(targets).astype(np.float32)
     anchor_raw = np.concatenate(anchors).astype(np.float32)
+    target_quality_mask = np.concatenate(quality_masks).astype(bool)
     summary, raw_details, submit_details, prediction_submit = evaluate_joint_anchor_predictions(
-        prediction_raw, target_raw, anchor_raw, task_id,
+        prediction_raw, target_raw, anchor_raw, task_id, metadata_rows, target_quality_mask,
     )
     subject_rows: list[dict[str, Any]] = []
     device_rows: list[dict[str, Any]] = []
     if task_id == "task2":
         # Keep the shared evaluator's required metadata names without exposing
         # target arrays to the model.
-        metadata_rows = [{"subject_id": dataset[index]["subject_id"],
-                          "input_type": dataset[index]["context_source_type"]}
-                         for index in range(len(dataset))]
-        subject_rows, device_rows = evaluate_task2_diagnostics(prediction_submit, target_raw, metadata_rows)
+        diagnostic_rows = [{"subject_id": row["subject_id"], "input_type": row["input_type"]}
+                           for row in metadata_rows]
+        subject_rows, device_rows = evaluate_task2_diagnostics(
+            prediction_submit, target_raw, diagnostic_rows)
         summary["task2_subject_macro_r_submit_12"] = float(np.nanmean([r["twelve_lead_mean_pearson_r"] for r in subject_rows]))
         summary["task2_v1_v6_rmse_uV"] = float(np.nanmean([r["generated_v1_v6_mean_rmse_uV"] for r in device_rows]))
     if shuffled_context:
@@ -242,6 +255,7 @@ def train_b3(args: Any) -> Path:
                                         args.context_source_type)
     _save_run_metadata(output_dir, args, preprocessor, model)
     d12_scale = preprocessor.scale_uV_by_source["d12"]
+    d12_scale_tensor = torch.as_tensor(d12_scale, device=args.device)
     if args.stage == "P1-C3":
         # Before the first optimizer step the zero-initialized adapters make
         # this the P0 checkpoint evaluated on the exact P1 validation subset.
@@ -269,16 +283,22 @@ def train_b3(args: Any) -> Path:
             optimizer.zero_grad(set_to_none=True)
             prediction = _forward(model, moved)
             if args.stage == "P0_anchor_only":
-                loss = strict_anchor_pretrain_loss(prediction, moved["target"], moved["anchor_i"])
+                loss = strict_anchor_pretrain_loss(
+                    prediction, moved["target"], moved["anchor_i"],
+                    target_lead_mask=moved["target_quality_mask"],
+                    d12_scale_uV=d12_scale_tensor)
             else:
-                loss = joint_anchor_sync_loss(prediction, moved["target"], moved["anchor_i"])
+                loss = joint_anchor_sync_loss(
+                    prediction, moved["target"], moved["anchor_i"],
+                    target_lead_mask=moved["target_quality_mask"],
+                    d12_scale_uV=d12_scale_tensor)
             loss.backward()
             optimizer.step()
             losses.append(float(loss.detach().cpu()))
         validation = validate_v0(model, validation_dataset, d12_scale,
                                  args.task_id, args.device, batch_size=args.batch_size)
-        metric_name = "task1_r1" if args.task_id == "task1" else "task2_r2"
-        metric = float(validation["summary"]["r_submit_12"])
+        metric_name = "r_missing11"
+        metric = float(validation["summary"][metric_name])
         row = {"epoch": epoch + 1, "train_loss": float(np.mean(losses)), "validation": validation["summary"]}
         if args.stage == "P1-C3":
             diagnostics = _context_diagnostics(model, validation_dataset, d12_scale,
@@ -296,6 +316,7 @@ def train_b3(args: Any) -> Path:
                         "architecture_id": model.architecture_id,
                         "architecture_config_hash": model.architecture_config_hash,
                         "transformer_layers": args.transformer_layers,
+                        "checkpoint_selection_metric": metric_name,
                         "best_metric": metric, "epoch": epoch + 1}, best_checkpoint)
             np.save(output_dir / "prediction_raw.npy", validation["prediction_raw"])
             np.save(output_dir / "prediction_submit.npy", validation["prediction_submit"])

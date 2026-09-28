@@ -19,7 +19,7 @@ training:
   stage1_loss: strict_anchor_pretrain
   stage2_loss: joint_anchor_sync
 validation:
-  checkpoint_metric: r_submit_12
+  checkpoint_metric: r_missing11
   output_raw: prediction_raw.npy
   output_submit: prediction_submit.npy
   shuffled_context: true
