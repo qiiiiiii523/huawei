@@ -1,0 +1,22 @@
+protocol_version: M1-v1
+architecture:
+  architecture_version: M1-axial-lead-time-v1
+  architecture_id: M1-P0-multiscale-cnn-axial-lead-time
+  d_model: 128
+  num_blocks: 4
+  num_heads: 4
+  ffn_dim: 256
+  dropout: 0.10
+  cnn_channels: [64, 128, 256]
+  decoder_channels: [128, 64]
+  time_tokens: 250
+  lead_order: [I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6]
+experiments:
+  M1-P0: {stage: P0_anchor_only, fusion_mode: none, loss: strict_anchor_pretrain}
+  M1-P1-C1: {stage: P1_joint_anchor, fusion_mode: film, loss: joint_anchor_sync}
+  M1-P1-C2: {stage: P1_joint_anchor, fusion_mode: gated_residual, loss: joint_anchor_sync}
+  M1-P1-C3: {stage: P1_joint_anchor, fusion_mode: film_gated_residual, loss: joint_anchor_sync}
+context_sources:
+  task1: [watch_ecg]
+  task2: [ecg_machine_d6, body_scale_d6]
+shuffled_context_diagnostic: anchor_and_target_unchanged_context_subject_assignment_only
