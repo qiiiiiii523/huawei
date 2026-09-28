@@ -33,8 +33,8 @@ class PreprocessingConfig:
             raw = yaml.safe_load(handle)
         if raw.get("raw_data_mutation") is not False:
             raise PreprocessingError("The preprocessing contract must not mutate raw data")
-        if raw["baseline"]["method"] != "per_window_per_lead_median":
-            raise PreprocessingError("Only the proposed robust-median baseline method is supported")
+        if raw["baseline"]["method"] != "per_record_per_lead_median":
+            raise PreprocessingError("Only the record-level per-lead median baseline method is supported")
         if raw["scaling"]["method"] != "train_median_p5_p95_range" or raw["scaling"]["fit_split"] != "train":
             raise PreprocessingError("Scale must be fitted from train with the protocol method")
         return cls(
@@ -95,8 +95,9 @@ class ECGPreprocessor:
         scales["ecg_machine_i"] = scales[config.target_transform][:1].copy()
         return cls(config=config, scale_uV_by_source=scales)
 
-    def transform_window(self, raw_window: np.ndarray, source_type: str) -> ModelSignal:
-        """Return a centered, scaled, clipped model view without mutating input."""
+    def transform_window(self, raw_window: np.ndarray, source_type: str,
+                         record_baseline_uV: np.ndarray) -> ModelSignal:
+        """Center one window with its physical record's fixed per-lead median."""
         if source_type not in self.config.expected_leads:
             raise PreprocessingError(f"Unknown source type: {source_type}")
         raw = np.asarray(raw_window)
@@ -105,7 +106,9 @@ class ECGPreprocessor:
             raise PreprocessingError(f"{source_type} window must have shape [{expected}, T]")
         if not np.isfinite(raw).all():
             raise PreprocessingError("Cannot transform non-finite ECG values")
-        baseline = np.median(raw, axis=1).astype(np.float32)
+        baseline = np.asarray(record_baseline_uV, dtype=np.float32)
+        if baseline.shape != (expected,) or not np.isfinite(baseline).all():
+            raise PreprocessingError(f"{source_type} record_baseline_uV must have shape [{expected}]")
         if source_type not in self.scale_uV_by_source:
             raise PreprocessingError(f"No frozen train scale for source type: {source_type}")
         scale = self.scale_uV_by_source[source_type]
@@ -113,9 +116,23 @@ class ECGPreprocessor:
         transformed = np.clip(transformed, -self.config.clip_model_signal, self.config.clip_model_signal)
         return ModelSignal(model_signal=transformed, baseline_uV=baseline, scale_uV=scale.copy(), source_type=source_type)
 
-    def transform_d12_target(self, raw_d12: np.ndarray) -> ModelSignal:
+    def transform_observed_record(self, raw_record: np.ndarray, source_type: str) -> ModelSignal:
+        """Center a complete *visible input* record before any windowing.
+
+        This is the test-time counterpart of the Dataset baseline index.  It is
+        valid for organizer-provided context/anchor signals, but must never be
+        called on hidden target leads at inference.
+        """
+        raw = np.asarray(raw_record)
+        expected = self.config.expected_leads.get(source_type)
+        if expected is None or raw.ndim != 2 or raw.shape[0] != expected or raw.shape[1] == 0:
+            raise PreprocessingError(f"{source_type} record must have shape [{expected}, T]")
+        baseline = np.median(raw, axis=1).astype(np.float32)
+        return self.transform_window(raw, source_type, baseline)
+
+    def transform_d12_target(self, raw_d12: np.ndarray, record_baseline_uV: np.ndarray) -> ModelSignal:
         """Apply the same canonical d12 transform in every task and pretraining mode."""
-        return self.transform_window(raw_d12, self.config.target_transform)
+        return self.transform_window(raw_d12, self.config.target_transform, record_baseline_uV)
 
     def model_view_to_uV(self, model_window: np.ndarray, source_type: str) -> np.ndarray:
         """Convert a centered/scaled model output to centered morphology in μV.
@@ -153,7 +170,8 @@ class ECGPreprocessor:
         if not np.isfinite(baseline).all():
             raise PreprocessingError("predicted_baseline_uV must be finite")
         return morphology + baseline
-    def transform_batch(self, raw_batch: np.ndarray, source_type: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def transform_batch(self, raw_batch: np.ndarray, source_type: str,
+                        record_baseline_uV: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Vectorized non-destructive transform for [N, C, T] arrays."""
         raw = np.asarray(raw_batch)
         expected = self.config.expected_leads.get(source_type)
@@ -161,7 +179,12 @@ class ECGPreprocessor:
             raise PreprocessingError(f"{source_type} batch must have shape [N, {expected}, T]")
         if not np.isfinite(raw).all():
             raise PreprocessingError("Cannot transform non-finite ECG values")
-        baseline = np.median(raw, axis=2).astype(np.float32)
+        baseline = np.asarray(record_baseline_uV, dtype=np.float32)
+        if baseline.shape == (expected,):
+            baseline = np.broadcast_to(baseline, raw.shape[:2])
+        if baseline.shape != raw.shape[:2] or not np.isfinite(baseline).all():
+            raise PreprocessingError(
+                f"{source_type} record_baseline_uV must have shape [{expected}] or {raw.shape[:2]}")
         if source_type not in self.scale_uV_by_source:
             raise PreprocessingError(f"No frozen train scale for source type: {source_type}")
         scale = self.scale_uV_by_source[source_type]

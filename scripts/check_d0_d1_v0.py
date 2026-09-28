@@ -37,7 +37,10 @@ def main() -> None:
     target = np.linspace(-1, 1, 2 * 12 * 5000, dtype=np.float32).reshape(2,12,5000); overall, details = evaluate_predictions(target, target, "task2")
     assert overall["evaluation_input_contract"] == "joint_anchor_test_like" and all(not row["input_present"] for row in details[1:])
     raw = target.copy(); raw[:, :1] *= -1
-    summary, raw_details, submit_details, submit = evaluate_joint_anchor_predictions(raw, target, target[:, :1], "task2")
+    metadata = [{"pair_id": f"pair_{i}", "target_record_id": f"target_{i}", "start_sample_500hz": "0"}
+                for i in range(len(target))]
+    summary, raw_details, submit_details, submit = evaluate_joint_anchor_predictions(
+        raw, target, target[:, :1], "task2", metadata)
     assert summary["r_submit_12"] > summary["r_raw_12"]
     assert summary["r_missing11"] == np.mean([row["pearson_r"] for row in raw_details[1:]])
     assert summary["task2_r2"] == summary["r_missing11"]

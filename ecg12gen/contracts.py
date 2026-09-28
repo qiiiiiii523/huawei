@@ -38,6 +38,7 @@ class ECGSample:
     pair_status: str
     target_quality_mask: np.ndarray | None = None
     input_quality_mask: np.ndarray | None = None
+    target_record_baseline_uV: np.ndarray | None = None
 
     def validate(self) -> None:
         if self.task_id not in {"task1", "task2"}:
@@ -57,6 +58,8 @@ class ECGSample:
                                            ("input_quality_mask", self.input_quality_mask, (expected_inputs,))):
             if mask is not None and np.asarray(mask, dtype=bool).shape != expected_shape:
                 raise ContractError(f"{name} must have shape {expected_shape}")
+        if self.target_record_baseline_uV is not None and np.asarray(self.target_record_baseline_uV).shape != (12,):
+            raise ContractError("target_record_baseline_uV must have 12 entries")
         if self.split not in {"train", "validation"}:
             raise ContractError(f"Unknown split: {self.split}")
         if self.supervision_mode == SupervisionMode.D12_I_PRETRAIN.value and self.split != "train":
@@ -89,6 +92,8 @@ class JointAnchorSample:
     pair_id: str
     target_record_id: str
     window_id: str
+    target_record_baseline_uV: np.ndarray
+    context_record_baseline_uV: np.ndarray
     meta: dict[str, Any]
     input_type: str | None = None
     context_target_relation: str = "same_subject_cross_time"
@@ -100,6 +105,11 @@ class JointAnchorSample:
     supervision_mode: str = SupervisionMode.JOINT_ANCHOR_ADAPTATION.value
     target_quality_mask: np.ndarray | None = None
     input_quality_mask: np.ndarray | None = None
+
+    @property
+    def anchor_record_baseline_uV(self) -> np.ndarray:
+        """The visible target-time I baseline, derived from the supplied anchor record."""
+        return np.asarray(self.target_record_baseline_uV)[:1]
 
     def validate(self) -> None:
         if self.task_id not in {"task1", "task2"} or self.split not in {"train", "validation"}:
@@ -113,6 +123,8 @@ class JointAnchorSample:
         if self.anchor_lead_mask.shape != (12,) or not (self.anchor_lead_mask[0] and self.anchor_lead_mask.sum() == 1): raise ContractError("only I is observed at target time")
         if self.target_quality_mask is not None and np.asarray(self.target_quality_mask, dtype=bool).shape != (12,): raise ContractError("target_quality_mask must have 12 entries")
         if self.input_quality_mask is not None and np.asarray(self.input_quality_mask, dtype=bool).shape != (expected,): raise ContractError("input_quality_mask must match context channels")
+        if np.asarray(self.target_record_baseline_uV).shape != (12,): raise ContractError("target record baseline must have 12 entries")
+        if np.asarray(self.context_record_baseline_uV).shape != (expected,): raise ContractError("context record baseline must match context channels")
         if self.context_target_relation != "same_subject_cross_time" or self.anchor_target_relation != "same_record_same_window": raise ContractError("wrong relation labels")
         if self.context_target_sync or not self.anchor_target_sync or not self.pointwise_loss_allowed or not self.anchor_available_at_test: raise ContractError("wrong sync/supervision flags")
         if self.supervision_mode != SupervisionMode.JOINT_ANCHOR_ADAPTATION.value: raise ContractError("wrong supervision mode")
@@ -121,7 +133,7 @@ class JointAnchorSample:
 
 @dataclass(frozen=True)
 class JointAnchorInferenceInput:
-    """Public test input; hidden targets are deliberately absent."""
+    """Public full-record test input; hidden targets are deliberately absent."""
     context_ecg: np.ndarray
     context_source_type: str
     anchor_i_ecg: np.ndarray
@@ -129,7 +141,12 @@ class JointAnchorInferenceInput:
     context_channel_indices: tuple[int, ...] | None = None
     def validate(self) -> None:
         expected = 1 if self.task_id == "task1" else len(self.context_channel_indices or tuple(range(6)))
-        if self.task_id not in {"task1", "task2"} or self.context_ecg.shape != (expected, WINDOW_SAMPLES) or self.anchor_i_ecg.shape != (1, WINDOW_SAMPLES): raise ContractError("explicit context and machine-I anchor are required")
+        context = np.asarray(self.context_ecg)
+        anchor = np.asarray(self.anchor_i_ecg)
+        if (self.task_id not in {"task1", "task2"} or context.ndim != 2 or
+                context.shape[0] != expected or context.shape[1] == 0 or
+                anchor.ndim != 2 or anchor.shape[0] != 1 or anchor.shape[1] == 0):
+            raise ContractError("explicit full-record context and machine-I anchor are required")
 
 def prepare_joint_anchor_inference(context_ecg: np.ndarray, *, context_source_type: str, task_id: str, anchor_i_ecg: np.ndarray | None, context_channel_indices: tuple[int, ...] | None = None) -> JointAnchorInferenceInput:
     if anchor_i_ecg is None: raise ContractError("Joint-anchor inference requires an explicit machine-I anchor")

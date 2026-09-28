@@ -10,6 +10,7 @@ import numpy as np
 from .config import load_yaml_config, resolve_config_path
 from .contracts import D12_LEADS, ECG_SAMPLING_RATE_HZ, WINDOW_SAMPLES, ContractError, JointAnchorSample, canonical_lead_mask
 from .device_qc import d12_target_mask, d6_input_mask, load_device_interpretation_qc
+from .record_baseline import build_record_baselines
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -80,6 +81,16 @@ class JointAnchorDataset:
             ablation = self.config.path("task2_body_scale_ablation")
             self._body_b_inputs = np.load(ablation / f"body_scale_{self.split}_input_B_raw_detrended_0p2Hz.npy", mmap_mode="r")
             self._body_b_rows = {int(r["canonical_array_index"]): r for r in _read_csv(self.config.path("task2_body_scale_b_metadata")) if r["split"] == self.split}
+        self._target_record_baselines = build_record_baselines(
+            self._targets, self._rows, record_id_field="target_record_id")
+        baseline_rows = [{**row, "input_type": row.get("input_type") or ("watch_ecg" if self.task_id == "task1" else "")}
+                         for row in self._rows]
+        self._context_record_baselines = build_record_baselines(
+            self._inputs, baseline_rows, record_id_field="input_record_id", source_type_field="input_type")
+        if self._body_b_inputs is not None:
+            body_rows = sorted(self._body_b_rows.values(), key=lambda item: int(item["local_array_index"]))
+            self._context_record_baselines.update(build_record_baselines(
+                self._body_b_inputs, body_rows, record_id_field="input_record_id", source_type_field="input_type"))
         self._indices = [i for i, row in enumerate(self._rows) if self._eligible(row)]
 
     def _target_qc(self, row: dict[str, str]) -> dict[str, str]:
@@ -133,6 +144,8 @@ class JointAnchorDataset:
             context_mask = np.zeros(6, dtype=bool); context_mask[list(self.context_channel_indices)] = True
         else: context_mask = np.ones(1, dtype=bool)
         target = np.asarray(self._targets[array_index], dtype=np.float32)
+        target_record_baseline = self._target_record_baselines[row["target_record_id"]]
+        context_record_baseline = self._context_record_baselines[(input_type, row["input_record_id"])][list(self.context_channel_indices)]
         target_qc = self._target_qc(row)
         target_quality_mask = d12_target_mask(target_qc)
         input_quality_mask = np.ones(context.shape[0], dtype=bool)
@@ -143,5 +156,5 @@ class JointAnchorDataset:
             meta["input_bad_observed_leads"] = input_qc["bad_observed_input_leads"]
         meta["target_device_qc_warning"] = target_qc["has_signal_quality_warning"]
         meta["target_bad_leads"] = target_qc["bad_leads_all"]
-        sample = JointAnchorSample(context_ecg=context, context_source_type=input_type, anchor_i_ecg=target[:1].copy(), anchor_source_type="ecg_machine_i", Y_12lead=target, anchor_lead_mask=canonical_lead_mask(1), context_lead_mask=context_mask, task_id=self.task_id, split=self.split, subject_id=row["subject_id"], pair_id=row["pair_id"], target_record_id=row["target_record_id"], window_id=row["window_id"], meta=meta, input_type=input_type, target_quality_mask=target_quality_mask, input_quality_mask=input_quality_mask)
+        sample = JointAnchorSample(context_ecg=context, context_source_type=input_type, anchor_i_ecg=target[:1].copy(), anchor_source_type="ecg_machine_i", Y_12lead=target, anchor_lead_mask=canonical_lead_mask(1), context_lead_mask=context_mask, task_id=self.task_id, split=self.split, subject_id=row["subject_id"], pair_id=row["pair_id"], target_record_id=row["target_record_id"], window_id=row["window_id"], target_record_baseline_uV=target_record_baseline.copy(), context_record_baseline_uV=context_record_baseline.copy(), meta=meta, input_type=input_type, target_quality_mask=target_quality_mask, input_quality_mask=input_quality_mask)
         sample.validate(); return sample

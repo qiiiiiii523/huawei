@@ -10,6 +10,7 @@ import numpy as np
 from .contracts import ContractError, ECGSample, SupervisionMode, canonical_lead_mask
 from .dataset import ECGDataConfig
 from .device_qc import d12_target_mask, load_device_interpretation_qc
+from .record_baseline import build_record_baselines
 
 
 class StrictD12PretrainDataset:
@@ -31,6 +32,14 @@ class StrictD12PretrainDataset:
             task: np.load(self.config.path(f"{task}_output") / f"{task}_train_target.npy", mmap_mode="r")
             for task in {row["source_task_id"] for row in self.rows}
         }
+        self._record_baselines: dict[str, np.ndarray] = {}
+        for task, targets in self.targets.items():
+            task_rows = [row for row in self.rows if row["source_task_id"] == task]
+            task_windows = np.asarray(targets[[int(row["source_array_index"]) for row in task_rows]])
+            normalized_rows = [{**row, "start_sample_500hz": row.get("start_sample_500hz") or
+                                str(int(row.get("window_index", "0")) * 5000)} for row in task_rows]
+            self._record_baselines.update(build_record_baselines(
+                task_windows, normalized_rows, record_id_field="target_record_id"))
 
     def _direct_supervision_eligible(self, row: dict[str, str]) -> bool:
         qc = self._device_qc.get(row["target_record_id"])
@@ -53,6 +62,7 @@ class StrictD12PretrainDataset:
             modality_mask={"ppg": False, "acc": False}, split="train", supervision_mode=self.mode.value,
             pairing_type="within_d12_sync", alignment_mode="same_window", pair_confidence="not_applicable", pair_status="paired",
             target_quality_mask=d12_target_mask(target_qc), input_quality_mask=np.ones(channels, dtype=bool),
+            target_record_baseline_uV=self._record_baselines[row["target_record_id"]].copy(),
         )
         sample.validate()
         return sample

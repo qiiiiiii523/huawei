@@ -23,9 +23,9 @@ task2: d6 context    + machine-I anchor -> d12 target
 | joint 数据 | `ecg12gen/dataset.py` | 读取 `context_ecg`、`anchor_i_ecg`、`Y_12lead` 和独立 masks |
 | task2 A/B | `ecg12gen/body_scale.py` | body-scale A/B、五导联 context 消融 |
 | 推理输入检查 | `prepare_joint_anchor_inference()` | 测试必须显式传入 machine-I anchor；没有 target 参数 |
-| 预处理 | `ecg12gen/preprocessing.py` | train-only frozen scale、per-window median baseline |
+| 预处理 | `ecg12gen/preprocessing.py` | train-only frozen scale、per-record/per-lead median baseline |
 | loss | `ecg12gen/losses.py` | `joint_anchor_sync_loss()`、`replace_output_i_with_anchor()` |
-| V0 评估 | `ecg12gen/evaluate.py` | raw-uV official V0、task2 分设备/subject/V1–V6 诊断 |
+| V0 评估 | `ecg12gen/evaluate.py` | 按 `pair_id` 拼接的 record-level r、task2 分设备/subject/V1–V6 诊断 |
 | 配置与检查 | `configs/`、`scripts/` | 统一实验契约与提交前 smoke check |
 
 ## 3. baseline 分支必须实现的网络模块
@@ -140,10 +140,14 @@ loss 包含：
 
 1. 使用 `ECGPreprocessor`；不要自己重新定义归一化。
 2. 固定 μV、500 Hz、10 秒、5000 点和 canonical d12 顺序。
-3. 每窗每导联减 median baseline。
+3. 每条物理记录、每导联只计算一个 median；该记录的所有窗口减同一个 baseline。
 4. scale 只在 train 拟合，validation/test 必须复用冻结实例。
 5. watch、machine d6、body-scale d6、machine-I、d12 使用各自 source scale；machine-I scale 只能来自 train d12 的 I。
-6. raw-uV 其他导联只能用模型预测 baseline 合成，绝不能读取真实 target baseline。
+6. 当前无 baseline head 阶段只正式比较完整记录相关系数；raw-uV RMSE 仅作未恢复 baseline 的诊断。以后恢复 raw-uV 时，其他导联只能使用模型预测 baseline，绝不能读取真实 target baseline。
+
+`subject_id` 表示患者，`record_id` 表示一次设备采集，`window_id` 表示该次采集切出的窗口。一个患者可有多次记录；一条 d12 记录有 12 个 median（每导联一个）。target/anchor 按 `target_record_id` 取 baseline，context 按 `input_record_id` 取 baseline。验证拼接按 `pair_id`，避免同一 target 与不同 context 的预测被错误混合。
+
+测试输入是完整记录时，先调用 `transform_observed_record()` 对每个可见输入记录计算一次逐导联 median 并中心化，再把 `model_signal` 切成模型窗口；禁止先切窗后分别计算 median。
 
 ```python
 from ecg12gen.preprocessing import ECGPreprocessor, PreprocessingConfig
@@ -166,7 +170,9 @@ test:             organizer context + organizer machine-I -> prediction
 
 validation 的 target 只用于：构造模拟可见 anchor、计算 loss、离线 V0 评分；不能作为模型输入的 hidden target。
 
-checkpoint selection uses validation raw-uV `r_missing11` (mean Pearson r over II--V6). Lead I and anchor-I replacement are excluded from the primary metric.
+checkpoint selection uses validation record-level `r_missing11` (mean Pearson r over II--V6 after windows are stitched by `pair_id`). Lead I and anchor-I replacement are excluded from the primary metric.
+
+正式 record evaluator 会验证窗口从 0 开始并以 5000 点连续递增；缺窗缓存会直接报错，不能伪装成完整记录分数。当前旧 `task1_validation` 缓存有 6 个 pair 存在缺窗，需要后续补齐这些验证窗口后才能报告严格完整记录 r；`task2_validation` 的 25 个 pair 均连续。
 
 每次 validation 必须保留三套 r：
 

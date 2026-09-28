@@ -16,21 +16,20 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     denominator = np.sqrt(np.sum(x * x) * np.sum(y * y))
     return float(np.sum(x * y) / denominator) if denominator > 0 else float("nan")
 
-def _mean_record_pearson(prediction: np.ndarray, target: np.ndarray) -> float:
-    """Average Pearson r over independent [time] records of one lead."""
+def _mean_item_pearson(prediction: np.ndarray, target: np.ndarray) -> float:
+    """Average Pearson r over independent rows without stitching them."""
     return float(np.nanmean([_pearson(pred, truth) for pred, truth in zip(prediction, target)]))
 
 def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: str,
                          lead_mask: np.ndarray | None = None) -> tuple[dict[str, float | str], list[dict[str, float | str]]]:
-    """Run V0 on validation arrays.
+    """Evaluate independent array rows without record stitching.
 
-    Compute Pearson r within each validation record, then average records for
-    each lead. r1/r2 exclude lead I and average the remaining lead scores.
-    Twelve-lead metrics remain diagnostic only.
+    For window caches, this is a window-level diagnostic.  Official full-record
+    validation must use :func:`evaluate_record_predictions` with metadata.
     """
     prediction, target = np.asarray(prediction), np.asarray(target)
-    if prediction.shape != target.shape or prediction.ndim != 3 or prediction.shape[1] != 12 or prediction.shape[2] != 5000:
-        raise ContractError("prediction and target must both have shape [N, 12, 5000]")
+    if prediction.shape != target.shape or prediction.ndim != 3 or prediction.shape[1] != 12 or prediction.shape[2] == 0:
+        raise ContractError("prediction and target must both have shape [N, 12, T]")
     if task_id not in {"task1", "task2"}:
         raise ContractError("task_id must be task1 or task2")
     if not np.isfinite(prediction).all() or not np.isfinite(target).all():
@@ -47,7 +46,7 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
     details: list[dict[str, float | str]] = []
     for lead_index, lead_name in enumerate(D12_LEADS):
         pred, truth = prediction[:, lead_index, :], target[:, lead_index, :]
-        details.append({"lead": lead_name, "pearson_r": _mean_record_pearson(pred, truth),
+        details.append({"lead": lead_name, "pearson_r": _mean_item_pearson(pred, truth),
                         "rmse_uV": float(np.sqrt(np.mean((pred.astype(np.float64) - truth.astype(np.float64)) ** 2))),
                         "input_present": bool(mask[:, lead_index].all()), "n_validation_points": int(pred.size)})
     correlations = np.asarray([float(row["pearson_r"]) for row in details])
@@ -57,6 +56,7 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
     missing11_rmse = float(np.mean(rmses[MISSING_11_LEAD_INDICES]))
     overall: dict[str, float | str] = {
         "split": "validation", "task_id": task_id, "n_windows": int(prediction.shape[0]),
+        "evaluation_aggregation": "independent_item_macro_no_stitch",
         "evaluation_input_contract": "joint_anchor_test_like",
         "context_target_relation": "same_subject_cross_time",
         "anchor_target_relation": "same_record_same_window",
@@ -64,6 +64,91 @@ def evaluate_predictions(prediction: np.ndarray, target: np.ndarray, task_id: st
         "official_scored_leads": ",".join(D12_LEADS[index] for index in MISSING_11_LEAD_INDICES),
         "official_metric_excludes_lead_i": True,
         "twelve_lead_mean_pearson_r": mean_r, "twelve_lead_mean_rmse_uV": float(np.mean(rmses)),
+        "missing11_mean_pearson_r": missing11_r, "missing11_mean_rmse_uV": missing11_rmse,
+        "task1_r1": missing11_r if task_id == "task1" else float("nan"),
+        "task2_r2": missing11_r if task_id == "task2" else float("nan"),
+        "task2_missing_lead_mean_rmse_uV": missing11_rmse if task_id == "task2" else float("nan")}
+    return overall, details
+
+
+def _record_groups(metadata_rows: list[dict[str, str]], expected_n: int,
+                   *, require_contiguous: bool = True) -> list[list[int]]:
+    """Group chronological windows by one validation sample/pair.
+
+    ``pair_id`` is the sample identity because one physical target recording can
+    legitimately be paired with more than one context recording.  Falling back
+    to ``target_record_id`` supports strict anchor-only datasets.
+    """
+    if len(metadata_rows) != expected_n:
+        raise ContractError("Record evaluation metadata count does not match prediction rows")
+    grouped: dict[str, list[tuple[int, int]]] = {}
+    for index, row in enumerate(metadata_rows):
+        sample_id = row.get("pair_id") or row.get("target_record_id")
+        if not sample_id:
+            raise ContractError("Record evaluation requires pair_id or target_record_id")
+        try:
+            start = int(row["start_sample_500hz"])
+        except (KeyError, ValueError) as error:
+            raise ContractError("Record evaluation requires integer start_sample_500hz") from error
+        grouped.setdefault(sample_id, []).append((start, index))
+    groups: list[list[int]] = []
+    for sample_id in sorted(grouped):
+        ordered = sorted(grouped[sample_id])
+        starts = [start for start, _ in ordered]
+        if len(starts) != len(set(starts)):
+            raise ContractError(f"Duplicate window start within validation sample {sample_id}")
+        if require_contiguous and (starts[0] != 0 or any(right - left != 5000 for left, right in zip(starts, starts[1:]))):
+            raise ContractError(
+                f"Validation sample {sample_id} is not a contiguous full-record cache; "
+                "official record-level evaluation requires starts 0,5000,10000,...")
+        groups.append([index for _, index in ordered])
+    return groups
+
+
+def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task_id: str,
+                                metadata_rows: list[dict[str, str]],
+                                lead_mask: np.ndarray | None = None) -> tuple[dict[str, float | str], list[dict[str, float | str]]]:
+    """Stitch windows per sample, compute one Pearson r per complete record."""
+    prediction, target = np.asarray(prediction), np.asarray(target)
+    if prediction.shape != target.shape or prediction.ndim != 3 or prediction.shape[1:] != (12, 5000):
+        raise ContractError("Record evaluation requires matching [N,12,5000] arrays")
+    if task_id not in {"task1", "task2"}:
+        raise ContractError("task_id must be task1 or task2")
+    if not np.isfinite(prediction).all() or not np.isfinite(target).all():
+        raise ContractError("Record evaluation requires finite prediction and target values")
+    groups = _record_groups(metadata_rows, len(prediction))
+    record_prediction = [np.concatenate([prediction[i] for i in indices], axis=1) for indices in groups]
+    record_target = [np.concatenate([target[i] for i in indices], axis=1) for indices in groups]
+    if lead_mask is None:
+        mask = canonical_lead_mask(1)
+    else:
+        supplied = np.asarray(lead_mask, dtype=bool)
+        mask = supplied if supplied.shape == (12,) else np.all(supplied, axis=0)
+        if mask.shape != (12,):
+            raise ContractError("lead_mask must have shape [12] or [N,12]")
+    details: list[dict[str, float | str]] = []
+    for lead_index, lead_name in enumerate(D12_LEADS):
+        correlations = [_pearson(pred[lead_index], truth[lead_index])
+                        for pred, truth in zip(record_prediction, record_target)]
+        squared_error = sum(float(np.sum((pred[lead_index].astype(np.float64) - truth[lead_index].astype(np.float64)) ** 2))
+                            for pred, truth in zip(record_prediction, record_target))
+        point_count = sum(pred.shape[1] for pred in record_prediction)
+        details.append({"lead": lead_name, "pearson_r": float(np.nanmean(correlations)),
+                        "rmse_uV": float(np.sqrt(squared_error / point_count)),
+                        "input_present": bool(mask[lead_index]), "n_validation_points": int(point_count)})
+    correlations = np.asarray([float(row["pearson_r"]) for row in details])
+    rmses = np.asarray([float(row["rmse_uV"]) for row in details])
+    missing11_r = float(np.nanmean(correlations[MISSING_11_LEAD_INDICES]))
+    missing11_rmse = float(np.mean(rmses[MISSING_11_LEAD_INDICES]))
+    overall: dict[str, float | str] = {
+        "split": "validation", "task_id": task_id, "n_windows": int(len(prediction)),
+        "n_records": int(len(groups)), "evaluation_aggregation": "record_macro_after_chronological_window_stitch",
+        "evaluation_input_contract": "joint_anchor_test_like", "context_target_relation": "same_subject_cross_time",
+        "anchor_target_relation": "same_record_same_window", "anchor_available_at_test": True,
+        "official_scored_leads": ",".join(D12_LEADS[index] for index in MISSING_11_LEAD_INDICES),
+        "official_metric_excludes_lead_i": True,
+        "twelve_lead_mean_pearson_r": float(np.nanmean(correlations)),
+        "twelve_lead_mean_rmse_uV": float(np.mean(rmses)),
         "missing11_mean_pearson_r": missing11_r, "missing11_mean_rmse_uV": missing11_rmse,
         "task1_r1": missing11_r if task_id == "task1" else float("nan"),
         "task2_r2": missing11_r if task_id == "task2" else float("nan"),
@@ -77,18 +162,35 @@ def _center_per_window_uV(values: np.ndarray) -> np.ndarray:
     return array - np.median(array, axis=2, keepdims=True)
 
 
+def _center_per_record_uV(values: np.ndarray, metadata_rows: list[dict[str, str]]) -> np.ndarray:
+    """Remove one fixed per-lead median from every window of each sample."""
+    centered = np.asarray(values, dtype=np.float32).copy()
+    for indices in _record_groups(metadata_rows, len(centered)):
+        baseline = np.median(centered[indices], axis=(0, 2))
+        centered[indices] -= baseline[None, :, None]
+    return centered
+
+
 def evaluate_centered_diagnostic(prediction_uV: np.ndarray, target_uV: np.ndarray, task_id: str,
-                                 lead_mask: np.ndarray | None = None) -> tuple[dict[str, float | str], list[dict[str, float | str]]]:
-    """Evaluate morphology after independent per-window median centering.
+                                 lead_mask: np.ndarray | None = None,
+                                 metadata_rows: list[dict[str, str]] | None = None) -> tuple[dict[str, float | str], list[dict[str, float | str]]]:
+    """Evaluate morphology with record centering when metadata is available.
 
     This is a diagnostic view only. Official r1/r2/RMSE must always be
     computed by ``evaluate_predictions`` on raw-μV predictions and raw-μV
     targets. Callers must invert the frozen d12 scale before using it.
     """
-    centered_prediction = _center_per_window_uV(prediction_uV)
-    centered_target = _center_per_window_uV(target_uV)
-    overall, details = evaluate_predictions(centered_prediction, centered_target, task_id, lead_mask)
-    overall = {**overall, "evaluation_view": "centered_diagnostic_not_official"}
+    if metadata_rows is None:
+        centered_prediction = _center_per_window_uV(prediction_uV)
+        centered_target = _center_per_window_uV(target_uV)
+        overall, details = evaluate_predictions(centered_prediction, centered_target, task_id, lead_mask)
+        centered_view = "centered_per_window_diagnostic_not_official"
+    else:
+        centered_prediction = _center_per_record_uV(prediction_uV, metadata_rows)
+        centered_target = _center_per_record_uV(target_uV, metadata_rows)
+        overall, details = evaluate_record_predictions(centered_prediction, centered_target, task_id, metadata_rows, lead_mask)
+        centered_view = "centered_per_record_diagnostic_not_official"
+    overall = {**overall, "evaluation_view": centered_view}
     return overall, details
 
 
@@ -104,7 +206,7 @@ def _add_quality_strata(details: list[dict[str, float | str]], prediction: np.nd
         for name, selector in (("clean", quality[:, lead_index]), ("warning", ~quality[:, lead_index])):
             row[f"n_{name}_windows"] = int(selector.sum())
             if selector.any():
-                row[f"{name}_pearson_r"] = _mean_record_pearson(pred[selector], truth[selector])
+                row[f"{name}_pearson_r"] = _mean_item_pearson(pred[selector], truth[selector])
                 row[f"{name}_rmse_uV"] = float(np.sqrt(np.mean((pred[selector].astype(np.float64) - truth[selector].astype(np.float64)) ** 2)))
             else:
                 row[f"{name}_pearson_r"] = float("nan")
@@ -113,6 +215,7 @@ def _add_quality_strata(details: list[dict[str, float | str]], prediction: np.nd
 
 def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray,
                                       anchor_i_ecg: np.ndarray, task_id: str,
+                                      metadata_rows: list[dict[str, str]],
                                       target_quality_mask: np.ndarray | None = None) -> tuple[dict[str, float | str], list[dict[str, float | str]], list[dict[str, float | str]], np.ndarray]:
     """Evaluate P0/P1 validation with raw, submit-like, and missing-11 views.
 
@@ -127,10 +230,12 @@ def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.nda
     if anchor.shape != (raw.shape[0], 1, 5000):
         raise ContractError("anchor_i_ecg must have shape [N,1,5000]")
     observed_mask = np.broadcast_to(canonical_lead_mask(1), (raw.shape[0], 12))
-    raw_overall, raw_details = evaluate_predictions(raw, target, task_id, observed_mask)
+    raw_overall, raw_details = evaluate_record_predictions(
+        raw, target, task_id, metadata_rows, observed_mask)
     submit = raw.copy()
     submit[:, :1] = anchor
-    submit_overall, submit_details = evaluate_predictions(submit, target, task_id, observed_mask)
+    submit_overall, submit_details = evaluate_record_predictions(
+        submit, target, task_id, metadata_rows, observed_mask)
     if target_quality_mask is not None:
         _add_quality_strata(raw_details, raw, target, target_quality_mask)
         _add_quality_strata(submit_details, submit, target, target_quality_mask)
@@ -342,25 +447,26 @@ def main() -> None:
     parser.add_argument("--task-id", required=True, choices=("task1", "task2"))
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--device-qc-csv", help="Optional device_interpretation_qc.csv; adds clean/warning per-lead diagnostics without changing official metrics.")
-    parser.add_argument("--write-centered-diagnostic", action="store_true", help="Also write a non-official per-window-centered morphology report.")
+    parser.add_argument("--write-centered-diagnostic", action="store_true", help="Also write a record-centered morphology report.")
     args = parser.parse_args()
     prediction, target, anchor = (np.load(args.prediction, mmap_mode="r"), np.load(args.target, mmap_mode="r"),
                                   np.load(args.anchor, mmap_mode="r"))
     metadata_rows = _validation_metadata_rows(Path(args.metadata), len(prediction))
     target_quality_mask = _target_quality_masks(metadata_rows, Path(args.device_qc_csv)) if args.device_qc_csv else None
-    overall, raw_details, submit_details, prediction_submit = evaluate_joint_anchor_predictions(prediction, target, anchor, args.task_id, target_quality_mask)
+    overall, raw_details, submit_details, prediction_submit = evaluate_joint_anchor_predictions(
+        prediction, target, anchor, args.task_id, metadata_rows, target_quality_mask)
     paths = list(write_report(args.output_dir, overall, raw_details, title="Official missing-11 raw-uV validation report"))
     primary_report = paths[-1]
-    submit_overall, _ = evaluate_predictions(prediction_submit, target, args.task_id)
+    submit_overall, _ = evaluate_record_predictions(prediction_submit, target, args.task_id, metadata_rows)
     submit_overall = {**submit_overall, "prediction_view": "anchor_i_replaced_diagnostic_only"}
     paths.extend(write_report(Path(args.output_dir) / "anchor_i_replaced_diagnostic", submit_overall, submit_details, title="Anchor-I-replaced diagnostic (not scored)"))
     if args.task_id == "task2":
         subject_rows, device_rows = evaluate_task2_diagnostics(prediction, target, metadata_rows)
         paths.extend(write_task2_diagnostics(args.output_dir, subject_rows, device_rows, primary_report))
     if args.write_centered_diagnostic:
-        centered_prediction = _center_per_window_uV(prediction)
-        centered_target = _center_per_window_uV(target)
-        centered_overall, centered_details = evaluate_centered_diagnostic(centered_prediction, centered_target, args.task_id)
+        centered_prediction = _center_per_record_uV(prediction, metadata_rows)
+        centered_target = _center_per_record_uV(target, metadata_rows)
+        centered_overall, centered_details = evaluate_centered_diagnostic(prediction, target, args.task_id, metadata_rows=metadata_rows)
         if target_quality_mask is not None:
             _add_quality_strata(centered_details, centered_prediction, centered_target, target_quality_mask)
         centered_dir = Path(args.output_dir) / "centered_diagnostic"

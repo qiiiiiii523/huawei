@@ -52,7 +52,7 @@ validation:
   primary_metric_task1: task1_r1
   primary_metric_task2: task2_r2
   task2_bonus_metric: task2_missing_lead_mean_rmse_uV
-  morphology_diagnostic_view: centered_per_window_uV
+  morphology_diagnostic_view: centered_per_record_uV
   checkpoint_selection: maximize_validation_r_missing11
   checkpoint_metric: r_missing11
   required_metrics: [r_raw_12, r_submit_12, r_missing11]

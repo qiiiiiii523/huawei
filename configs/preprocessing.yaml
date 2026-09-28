@@ -1,7 +1,7 @@
 protocol_version: "v2.0-joint-anchor-preprocessing"
 protocol_status: frozen_joint_anchor
 raw_data_mutation: false
-baseline: {method: per_window_per_lead_median}
+baseline: {method: per_record_per_lead_median}
 scaling:
   method: train_median_p5_p95_range
   fit_split: train
@@ -20,4 +20,4 @@ output_contract:
   morphology_uV: "model_output_view * frozen_d12_scale_uV"
   raw_uV: "morphology_uV + model_predicted_d12_baseline_uV"
   prohibited_at_inference: using_true_target_baseline_uV
-evaluation_views: {official: raw_uV, morphology_diagnostic: centered_per_window_uV}
+evaluation_views: {official: raw_uV, morphology_diagnostic: centered_per_record_uV}
