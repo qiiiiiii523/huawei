@@ -1,0 +1,132 @@
+"""B1 lightweight residual-dilated U-Net with the frozen C3 interface."""
+from __future__ import annotations
+import hashlib, json
+from collections.abc import Sequence
+import torch
+from torch import nn
+from torch.nn import functional as F
+from .contracts import ContractError, WINDOW_SAMPLES
+
+N12, N6, CCTX = 12, 6, 64
+
+class ResBlock(nn.Module):
+    def __init__(self, cin, cout, dilation=1):
+        super().__init__(); g=max(1,min(8,cout//4))
+        self.conv1=nn.Conv1d(cin,cout,5,padding=2*dilation,dilation=dilation); self.n1=nn.GroupNorm(g,cout)
+        self.conv2=nn.Conv1d(cout,cout,5,padding=2*dilation,dilation=dilation); self.n2=nn.GroupNorm(g,cout)
+        self.skip=nn.Conv1d(cin,cout,1) if cin!=cout else nn.Identity()
+    def forward(self,x):
+        y=F.silu(self.n1(self.conv1(x))); y=self.n2(self.conv2(y)); return F.silu(y+self.skip(x))
+
+class ContextEncoder(nn.Module):
+    def __init__(self, channels, d6=False):
+        super().__init__(); self.d6=d6; self.channels=channels
+        self.net=nn.Sequential(nn.Conv1d(1,32,9,padding=4),nn.GroupNorm(4,32),nn.SiLU(),
+                               nn.Conv1d(32,CCTX,9,padding=4),nn.GroupNorm(8,CCTX),nn.SiLU())
+        self.proj=nn.Sequential(nn.LayerNorm(CCTX),nn.Linear(CCTX,CCTX),nn.SiLU(),nn.LayerNorm(CCTX))
+        self.lead=nn.Parameter(torch.zeros(N6,CCTX)) if d6 else None
+        nn.init.normal_(self.lead,std=.02) if self.lead is not None else None
+    def forward(self,x,mask=None):
+        if x.ndim!=3 or x.shape[-1]!=WINDOW_SAMPLES: raise ContractError("invalid context shape")
+        z=self.net(x.reshape(-1,1,WINDOW_SAMPLES)); z=F.adaptive_avg_pool1d(z,1).reshape(x.shape[0],x.shape[1],CCTX)
+        if self.d6:
+            if mask is None or mask.shape!=(x.shape[0],N6): raise ContractError("d6 mask required")
+            idx=torch.argsort(mask.to(torch.int64),dim=1)[:,-x.shape[1]:]; idx=torch.sort(idx,dim=1).values
+            z=z+self.lead[idx]
+        return self.proj(z.mean(1))
+
+class TemporalAttention(nn.Module):
+    def __init__(self, channels, tokens=625, model_dim=128):
+        super().__init__(); self.to_tokens=nn.Conv1d(channels,model_dim,1); self.to_channels=nn.Conv1d(model_dim,channels,1)
+        layer=nn.TransformerEncoderLayer(model_dim,4,512,.1,activation="gelu",batch_first=True,norm_first=True)
+        self.encoder=nn.TransformerEncoder(layer,2); self.position=nn.Parameter(torch.zeros(1,tokens,model_dim)); nn.init.normal_(self.position,std=.01)
+    def forward(self,x):
+        z=self.to_tokens(x).transpose(1,2)+self.position[:,:x.shape[-1]]; z=self.encoder(z).transpose(1,2); return x+self.to_channels(z)
+
+class B1Model(nn.Module):
+    def __init__(self, fusion_mode="none", dropout=.1, variant="base", d12_scale=None):
+        super().__init__();
+        if fusion_mode not in {"none","film_gated_residual"}: raise ContractError("unsupported fusion_mode")
+        if variant not in {"base","wide","dilated","core7","softcore","attention"}: raise ContractError("unknown B1 variant")
+        self.fusion_mode=fusion_mode; self.variant=variant; w=(32,64,128,256) if variant in {"wide","softcore","attention"} else (24,48,96,192)
+        self.widths=w; self.register_buffer("d12_scale",torch.ones(12) if d12_scale is None else torch.as_tensor(d12_scale,dtype=torch.float32))
+        self.enc=nn.ModuleList([ResBlock(a,b,1 if i<2 else 2) for i,(a,b) in enumerate(zip((1,)+w[:-1],w))])
+        self.bottleneck_extra=(nn.Sequential(ResBlock(w[-1],w[-1],4),ResBlock(w[-1],w[-1],8)) if variant=="dilated" else TemporalAttention(w[-1]) if variant=="attention" else nn.Identity())
+        self.down=nn.ModuleList([nn.Conv1d(w[i],w[i],4,stride=2,padding=1) for i in range(3)])
+        self.dec=nn.ModuleList([ResBlock(w[i+1]+w[i],w[i],1) for i in (2,1,0)])
+        self.out=nn.Conv1d(w[0],7 if variant=="core7" else N12,1); self.dropout=nn.Dropout(dropout)
+        self.watch_context_encoder=ContextEncoder(1,False); self.machine_d6_context_encoder=ContextEncoder(6,True); self.body_d6_context_encoder=ContextEncoder(6,True)
+        self.film=nn.Linear(CCTX,2*w[-1]); self.gate=nn.Linear(CCTX,N12)
+        self.residual_adapter=nn.Sequential(nn.Conv1d(w[0]+CCTX,w[0],3,padding=1),nn.GroupNorm(max(1,min(8,w[0]//4)),w[0]),nn.SiLU(),nn.Conv1d(w[0],1,3,padding=1))
+        self.baseline_head=nn.Sequential(nn.Linear(w[-1]+1,64),nn.SiLU(),nn.Linear(64,N12)); self._init_adapters()
+        self.analytic_gate_logits=nn.Parameter(torch.full((4,),-1.3862944)) if variant=="softcore" else None
+    def _init_adapters(self):
+        nn.init.zeros_(self.film.weight); nn.init.zeros_(self.film.bias); nn.init.zeros_(self.gate.weight); nn.init.constant_(self.gate.bias,-2.944439)
+        nn.init.zeros_(self.residual_adapter[-1].weight); nn.init.zeros_(self.residual_adapter[-1].bias); nn.init.zeros_(self.baseline_head[-1].weight); nn.init.zeros_(self.baseline_head[-1].bias)
+    @property
+    def parameter_count(self): return sum(p.numel() for p in self.parameters())
+    @property
+    def architecture_id(self): return f"B1_residual_dilated_unet_feature_c3_{self.variant}_v2"
+    @property
+    def architecture_config(self): return {"architecture_id":self.architecture_id,"widths":list(self.widths),"output_parameterization":"core7_analytic_limb" if self.variant=="core7" else "full12_soft_analytic" if self.variant=="softcore" else "full12","bottleneck_extra":self.variant if self.variant in {"dilated","attention"} else "none","downsample":"stride2_x3","norm":"GroupNorm","c3":"feature_film_then_gated_residual","context_dim":CCTX}
+    @property
+    def architecture_config_hash(self): return hashlib.sha256(json.dumps(self.architecture_config,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    @property
+    def anchor_parameter_names(self):
+        p=("watch_context_encoder.","machine_d6_context_encoder.","body_d6_context_encoder.","film.","gate.","residual_adapter.")
+        return tuple(n for n,_ in self.named_parameters() if not n.startswith(p))
+    def _anchor(self,x):
+        if x.ndim!=3 or x.shape[1:]!=(1,WINDOW_SAMPLES): raise ContractError("anchor_i must be [B,1,5000]")
+        skips=[]; z=x
+        for i,e in enumerate(self.enc):
+            z=e(z); skips.append(z)
+            if i<3: z=self.down[i](z)
+        bottleneck=self.bottleneck_extra(z)
+        for d,s in zip(self.dec,reversed(skips[:-1])):
+            z=d(torch.cat((F.interpolate(z,size=s.shape[-1],mode='linear',align_corners=False),s),1))
+        return self.dropout(z),bottleneck
+    def _ctx(self,c,src,mask):
+        srcs=[src]*c.shape[0] if isinstance(src,str) else list(src)
+        if any(s not in {"watch_ecg","ecg_machine_d6","body_scale_d6"} for s in srcs): raise ContractError("invalid context source")
+        if all(s=="watch_ecg" for s in srcs): return self.watch_context_encoder(c)
+        if any(s=="watch_ecg" for s in srcs): raise ContractError("mixed context sources")
+        out=[]
+        for i,s in enumerate(srcs): out.append((self.machine_d6_context_encoder if s=="ecg_machine_d6" else self.body_d6_context_encoder)(c[i:i+1],mask[i:i+1])[0])
+        return torch.stack(out)
+    def _compose_core7(self, anchor_i, core):
+        """Compose full centered-scaled d12 from II+V1-V6 core outputs."""
+        if core.ndim != 3 or core.shape[1] != 7: raise ContractError("core7 head must output [B,7,T]")
+        sc=self.d12_scale.to(dtype=core.dtype,device=core.device)
+        morphology=core.new_zeros((core.shape[0],N12,core.shape[-1]))
+        morphology[:,0]=anchor_i[:,0]*sc[0]
+        morphology[:,1]=core[:,0]*sc[1]
+        morphology[:,6:12]=core[:,1:7]*sc[6:12,None]
+        i,ii=morphology[:,0],morphology[:,1]
+        morphology[:,2]=ii-i; morphology[:,3]=-(i+ii)/2; morphology[:,4]=i-ii/2; morphology[:,5]=ii-i/2
+        med=morphology.median(dim=-1,keepdim=True).values
+        return (morphology-med)/sc.view(1,N12,1)
+    def _soft_analytic(self, full):
+        sc=self.d12_scale.to(dtype=full.dtype,device=full.device); morphology=full*sc.view(1,N12,1); i,ii=morphology[:,0],morphology[:,1]
+        derived=torch.stack((ii-i,-(i+ii)/2,i-ii/2,ii-i/2),1); derived=derived-derived.median(dim=-1,keepdim=True).values; derived=derived/sc[2:6].view(1,4,1)
+        gate=torch.sigmoid(self.analytic_gate_logits).view(1,4,1); output=full.clone(); output[:,2:6]=(1-gate)*full[:,2:6]+gate*derived; return output
+    def forward(self,anchor_i,*,context_ecg=None,context_source_type=None,context_lead_mask=None):
+        high,bottleneck=self._anchor(anchor_i)
+        if self.fusion_mode=="none":
+            raw=self.out(high); return self._compose_core7(anchor_i,raw) if self.variant=="core7" else self._soft_analytic(raw) if self.variant=="softcore" else raw
+        if context_ecg is None or context_source_type is None: raise ContractError("context required")
+        c=self._ctx(context_ecg,context_source_type,context_lead_mask); gam,bet=self.film(c).chunk(2,1); bottleneck=bottleneck*(1+gam[:,:,None])+bet[:,:,None]
+        # C3 FiLM is applied before the decoder; decode once more from conditioned bottleneck.
+        skips=[]; z=anchor_i
+        for i,e in enumerate(self.enc):
+            z=e(z); skips.append(z)
+            if i<3: z=self.down[i](z)
+        z=bottleneck
+        for d,s in zip(self.dec,reversed(skips[:-1])): z=d(torch.cat((F.interpolate(z,size=s.shape[-1],mode='linear',align_corners=False),s),1))
+        if self.variant=="core7": raise ContractError("core7 P1 is not enabled in this P0-only experiment")
+        pred=self.out(z); bsz=anchor_i.shape[0]; cmap=c[:,None,:,None].expand(bsz,N12,CCTX,WINDOW_SAMPLES); h=z[:,None].expand(bsz,N12,z.shape[1],WINDOW_SAMPLES); din=torch.cat((h,cmap),2).reshape(bsz*N12,z.shape[1]+CCTX,WINDOW_SAMPLES); delta=self.residual_adapter(din).reshape(bsz,N12,WINDOW_SAMPLES); return pred+torch.sigmoid(self.gate(c))[:,:,None]*delta
+    @torch.no_grad()
+    def predict_baseline(self,anchor_i,anchor_baseline=None):
+        b=self._anchor(anchor_i)[1].mean(-1)
+        if anchor_baseline is None: anchor_baseline=anchor_i.new_zeros((anchor_i.shape[0],1))
+        if anchor_baseline.ndim==1: anchor_baseline=anchor_baseline[:,None]
+        return self.baseline_head(torch.cat((b,anchor_baseline.to(b.dtype)),1))*self.d12_scale.to(b.dtype)
