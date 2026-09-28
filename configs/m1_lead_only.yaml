@@ -1,0 +1,14 @@
+protocol_version: M1-v1-attention-ablation
+architecture:
+  architecture_version: M1-axial-lead-time-v1
+  architecture_id: M1-P0-multiscale-cnn-axial-lead-time
+  attention_axes: lead_only
+  d_model: 128
+  num_blocks: 4
+  num_heads: 4
+  ffn_dim: 256
+  dropout: 0.10
+  cnn_channels: [64, 128, 256]
+  decoder_channels: [128, 64]
+  time_tokens: 250
+  lead_order: [I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6]
