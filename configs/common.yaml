@@ -1,6 +1,6 @@
 paths:
   data_root: ".."
-  task1_output: "${data_root}/task1_output"
+  task1_output: "${data_root}/task1_output_v2"
   task2_output: "${data_root}/task2_output"
   task2_body_scale_ablation: "${data_root}/task2_body_scale_ablation"
   task2_body_scale_b_metadata: "${data_root}/task2_body_scale_ablation/window_metadata_B_raw.csv"

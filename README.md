@@ -138,6 +138,25 @@ loss 包含：
 
 ## 6. 预处理：模型分支必须遵守
 
+Task 1 使用 record-complete V2 缓存。首次使用或原始数据更新后运行：
+
+```powershell
+python scripts/build_task1_record_windows.py `
+  --data-root .. `
+  --output-dir ../task1_output_v2
+
+python scripts/build_d12_strict_pretrain_index.py
+```
+
+V2 严格复用 `metadata/subject_split.csv`，不会重新划分患者。手表时间戳
+缺口只影响 context：所有缺失位置均填该物理记录 median（逐记录中心化后为 0），不插值伪造 ECG 波形，并在
+`task1_*_context_valid_mask.npy` 和 metadata 中留痕；对应 d12 target/anchor
+窗口始终保留。含填补缺口的 context 窗口不用于 joint 训练，但 validation
+必须保留，以便完整记录评估。Dataset 通过 `sample.context_time_mask`
+暴露逐点有效性；模型应屏蔽无效 context token，不能把填充值当成真实 ECG。
+不支持时间 mask 的模型应在该窗口退化为 anchor-only。原始 ZIP/XML 和旧
+`task1_output` 均不修改。
+
 1. 使用 `ECGPreprocessor`；不要自己重新定义归一化。
 2. 固定 μV、500 Hz、10 秒、5000 点和 canonical d12 顺序。
 3. 每条物理记录、每导联只计算一个 median；该记录的所有窗口减同一个 baseline。
@@ -172,7 +191,10 @@ validation 的 target 只用于：构造模拟可见 anchor、计算 loss、离�
 
 checkpoint selection uses validation record-level `r_missing11` (mean Pearson r over II--V6 after windows are stitched by `pair_id`). Lead I and anchor-I replacement are excluded from the primary metric.
 
-正式 record evaluator 会验证窗口从 0 开始并以 5000 点连续递增；缺窗缓存会直接报错，不能伪装成完整记录分数。当前旧 `task1_validation` 缓存有 6 个 pair 存在缺窗，需要后续补齐这些验证窗口后才能报告严格完整记录 r；`task2_validation` 的 25 个 pair 均连续。
+正式 record evaluator 会验证窗口从 0 开始、以 5000 点连续递增，并与
+`expected_window_count` 一致；缺窗缓存会直接报错，不能伪装成完整记录分数。
+`task1_output_v2` 的 21 个 validation pair 均为完整记录；`task2_validation`
+的 25 个 pair 也连续。
 
 每次 validation 必须保留三套 r：
 
@@ -188,8 +210,8 @@ checkpoint selection uses validation record-level `r_missing11` (mean Pearson r 
 python -m ecg12gen.evaluate `
   --prediction results/task1_validation_prediction.npy `
   --anchor results/task1_validation_anchor_i.npy `
-  --target ../task1_output/task1_validation_target.npy `
-  --metadata ../task1_output/task1_window_metadata.csv `
+  --target ../task1_output_v2/task1_validation_target.npy `
+  --metadata ../task1_output_v2/task1_window_metadata.csv `
   --task-id task1 `
   --output-dir results/task1 `
   --write-centered-diagnostic
@@ -214,6 +236,7 @@ task2 必须额外保留 machine/body 分层、subject-macro 和 V1–V6 RMSE。
 
 ```powershell
 python scripts/check_d0_d1_v0.py
+python scripts/check_task1_record_cache.py
 python scripts/check_experiment_protocol.py
 python scripts/check_preprocessing_protocol.py
 python scripts/check_body_scale_variants.py

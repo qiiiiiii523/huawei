@@ -105,6 +105,7 @@ class JointAnchorSample:
     supervision_mode: str = SupervisionMode.JOINT_ANCHOR_ADAPTATION.value
     target_quality_mask: np.ndarray | None = None
     input_quality_mask: np.ndarray | None = None
+    context_time_mask: np.ndarray | None = None
 
     @property
     def anchor_record_baseline_uV(self) -> np.ndarray:
@@ -123,6 +124,7 @@ class JointAnchorSample:
         if self.anchor_lead_mask.shape != (12,) or not (self.anchor_lead_mask[0] and self.anchor_lead_mask.sum() == 1): raise ContractError("only I is observed at target time")
         if self.target_quality_mask is not None and np.asarray(self.target_quality_mask, dtype=bool).shape != (12,): raise ContractError("target_quality_mask must have 12 entries")
         if self.input_quality_mask is not None and np.asarray(self.input_quality_mask, dtype=bool).shape != (expected,): raise ContractError("input_quality_mask must match context channels")
+        if self.context_time_mask is not None and np.asarray(self.context_time_mask, dtype=bool).shape != (expected, WINDOW_SAMPLES): raise ContractError("context_time_mask must match [context_channels, time]")
         if np.asarray(self.target_record_baseline_uV).shape != (12,): raise ContractError("target record baseline must have 12 entries")
         if np.asarray(self.context_record_baseline_uV).shape != (expected,): raise ContractError("context record baseline must match context channels")
         if self.context_target_relation != "same_subject_cross_time" or self.anchor_target_relation != "same_record_same_window": raise ContractError("wrong relation labels")

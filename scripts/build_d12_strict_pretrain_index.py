@@ -10,11 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecg12gen.dataset import ECGDataConfig
+from ecg12gen.device_qc import load_device_interpretation_qc
 
 FIELDS = [
     "strict_id", "source_task_id", "source_split", "source_array_index", "subject_id",
     "target_record_id", "window_id", "window_index", "start_sample_500hz",
-    "end_sample_500hz_exclusive", "dedup_key",
+    "end_sample_500hz_exclusive", "target_record_baseline_uV", "dedup_key",
 ]
 
 
@@ -42,6 +43,7 @@ def rows_for_task(config: ECGDataConfig, task_id: str) -> list[dict[str, str]]:
             "window_index": row["window_index"],
             "start_sample_500hz": start,
             "end_sample_500hz_exclusive": end,
+            "target_record_baseline_uV": row.get("target_record_baseline_uV", ""),
             "dedup_key": f"{target_id}:{start}:{end}",
         })
     return result
@@ -53,6 +55,9 @@ def build(config_path: str | Path, output_path: str | Path) -> list[dict[str, st
     with split_path.open(encoding="utf-8-sig", newline="") as handle:
         subject_split = {row["subject_id"]: row["split"] for row in csv.DictReader(handle)}
     candidates = rows_for_task(config, "task1") + rows_for_task(config, "task2")
+    device_qc = load_device_interpretation_qc(config.path("device_interpretation_qc_csv"))
+    candidates = [row for row in candidates
+                  if device_qc[row["target_record_id"]]["d12_direct_supervision_eligible"] == "true"]
     selected: dict[str, dict[str, str]] = {}
     # Deterministic preference avoids duplicate d12 windows while keeping one readable source array.
     for row in sorted(candidates, key=lambda item: (item["dedup_key"], item["source_task_id"], int(item["source_array_index"]))):

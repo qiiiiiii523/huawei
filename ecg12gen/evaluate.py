@@ -101,6 +101,16 @@ def _record_groups(metadata_rows: list[dict[str, str]], expected_n: int,
             raise ContractError(
                 f"Validation sample {sample_id} is not a contiguous full-record cache; "
                 "official record-level evaluation requires starts 0,5000,10000,...")
+        expected_values = {
+            int(metadata_rows[index]["expected_window_count"])
+            for _, index in ordered if metadata_rows[index].get("expected_window_count")
+        }
+        if len(expected_values) > 1:
+            raise ContractError(f"Validation sample {sample_id} has inconsistent expected_window_count")
+        if require_contiguous and expected_values and len(ordered) != next(iter(expected_values)):
+            raise ContractError(
+                f"Validation sample {sample_id} has {len(ordered)} windows but "
+                f"expected {next(iter(expected_values))}; trailing windows may be missing")
         groups.append([index for _, index in ordered])
     return groups
 

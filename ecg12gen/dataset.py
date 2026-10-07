@@ -16,6 +16,12 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
 
+def _baseline_from_text(value: str, expected_leads: int, *, field: str) -> np.ndarray:
+    values = np.fromstring(value, sep="|", dtype=np.float32)
+    if values.shape != (expected_leads,) or not np.isfinite(values).all():
+        raise ContractError(f"{field} must contain {expected_leads} finite record-baseline values")
+    return values
+
 @dataclass(frozen=True)
 class ECGDataConfig:
     raw: dict[str, Any]
@@ -65,9 +71,14 @@ class JointAnchorDataset:
         task_dir, prefix = self.config.path(f"{self.task_id}_output"), self.task_id
         self._inputs = np.load(task_dir / f"{prefix}_{self.split}_input.npy", mmap_mode="r")
         self._targets = np.load(task_dir / f"{prefix}_{self.split}_target.npy", mmap_mode="r")
+        context_time_mask_path = task_dir / f"{prefix}_{self.split}_context_valid_mask.npy"
+        self._context_time_masks = (np.load(context_time_mask_path, mmap_mode="r")
+                                    if context_time_mask_path.is_file() else None)
         channels = 1 if self.task_id == "task1" else 6
         if self._inputs.ndim != 3 or self._inputs.shape[1:] != (channels, WINDOW_SAMPLES) or self._targets.ndim != 3 or self._targets.shape[1:] != (12, WINDOW_SAMPLES):
             raise ContractError("Existing task arrays violate joint-anchor shapes")
+        if self._context_time_masks is not None and self._context_time_masks.shape != (len(self._inputs), WINDOW_SAMPLES):
+            raise ContractError("Context validity mask must have shape [N,5000]")
         self._rows = sorted((r for r in _read_csv(task_dir / f"{prefix}_window_metadata.csv") if r["split"] == self.split), key=lambda r: int(r["array_index"]))
         if len(self._rows) != len(self._inputs) or len(self._rows) != len(self._targets) or [int(r["array_index"]) for r in self._rows] != list(range(len(self._rows))):
             raise ContractError("Array rows and split metadata do not agree")
@@ -81,12 +92,28 @@ class JointAnchorDataset:
             ablation = self.config.path("task2_body_scale_ablation")
             self._body_b_inputs = np.load(ablation / f"body_scale_{self.split}_input_B_raw_detrended_0p2Hz.npy", mmap_mode="r")
             self._body_b_rows = {int(r["canonical_array_index"]): r for r in _read_csv(self.config.path("task2_body_scale_b_metadata")) if r["split"] == self.split}
-        self._target_record_baselines = build_record_baselines(
-            self._targets, self._rows, record_id_field="target_record_id")
         baseline_rows = [{**row, "input_type": row.get("input_type") or ("watch_ecg" if self.task_id == "task1" else "")}
                          for row in self._rows]
-        self._context_record_baselines = build_record_baselines(
-            self._inputs, baseline_rows, record_id_field="input_record_id", source_type_field="input_type")
+        if self._rows and all(row.get("target_record_baseline_uV") for row in self._rows):
+            self._target_record_baselines = {}
+            self._context_record_baselines = {}
+            for row in baseline_rows:
+                target_baseline = _baseline_from_text(
+                    row["target_record_baseline_uV"], 12, field="target_record_baseline_uV")
+                context_baseline = _baseline_from_text(
+                    row["input_record_baseline_uV"], channels, field="input_record_baseline_uV")
+                previous_target = self._target_record_baselines.setdefault(
+                    row["target_record_id"], target_baseline)
+                context_key = (row["input_type"], row["input_record_id"])
+                previous_context = self._context_record_baselines.setdefault(
+                    context_key, context_baseline)
+                if not np.array_equal(previous_target, target_baseline) or not np.array_equal(previous_context, context_baseline):
+                    raise ContractError("One physical record has inconsistent stored baselines")
+        else:
+            self._target_record_baselines = build_record_baselines(
+                self._targets, self._rows, record_id_field="target_record_id")
+            self._context_record_baselines = build_record_baselines(
+                self._inputs, baseline_rows, record_id_field="input_record_id", source_type_field="input_type")
         if self._body_b_inputs is not None:
             body_rows = sorted(self._body_b_rows.values(), key=lambda item: int(item["local_array_index"]))
             self._context_record_baselines.update(build_record_baselines(
@@ -109,6 +136,11 @@ class JointAnchorDataset:
             raise ContractError("Context and target must retain the same subject/split target pair identity")
         target_qc = self._target_qc(row)
         if self.split == "train" and target_qc["d12_direct_supervision_eligible"] != "true":
+            return False
+        # Record-complete caches retain validation windows whose optional
+        # context contains a filled timestamp gap.  Do not teach the context
+        # encoder from those synthetic spans, but keep validation complete.
+        if self.split == "train" and row.get("context_quality_status", "usable") != "usable":
             return False
         if self.task_id == "task2" and row.get("input_type") == "ecg_machine_d6":
             input_qc = self._device_qc.get(row["input_record_id"])
@@ -134,6 +166,10 @@ class JointAnchorDataset:
             "anchor_start_sample_500hz": row["start_sample_500hz"], "anchor_end_sample_500hz_exclusive": row["end_sample_500hz_exclusive"],
             "context_record_id": row["input_record_id"], "context_window_id": row["window_id"],
             "context_window_relation": "pair_row_window_index_only_not_time_sync"}
+        if row.get("expected_window_count"):
+            meta["expected_window_count"] = int(row["expected_window_count"])
+        if row.get("context_valid_fraction"):
+            meta["context_valid_fraction"] = float(row["context_valid_fraction"])
         if self.task_id == "task2" and input_type == "body_scale_d6" and self.body_scale_variant == "B_detrend_0p2Hz_then_window":
             b_row = self._body_b_rows[array_index]
             context = np.asarray(self._body_b_inputs[int(b_row["local_array_index"])], dtype=np.float32)
@@ -144,6 +180,9 @@ class JointAnchorDataset:
             context_mask = np.zeros(6, dtype=bool); context_mask[list(self.context_channel_indices)] = True
         else: context_mask = np.ones(1, dtype=bool)
         target = np.asarray(self._targets[array_index], dtype=np.float32)
+        context_time_mask = (np.asarray(self._context_time_masks[array_index], dtype=bool)[None, :]
+                             if self._context_time_masks is not None
+                             else np.ones(context.shape, dtype=bool))
         target_record_baseline = self._target_record_baselines[row["target_record_id"]]
         context_record_baseline = self._context_record_baselines[(input_type, row["input_record_id"])][list(self.context_channel_indices)]
         target_qc = self._target_qc(row)
@@ -156,5 +195,5 @@ class JointAnchorDataset:
             meta["input_bad_observed_leads"] = input_qc["bad_observed_input_leads"]
         meta["target_device_qc_warning"] = target_qc["has_signal_quality_warning"]
         meta["target_bad_leads"] = target_qc["bad_leads_all"]
-        sample = JointAnchorSample(context_ecg=context, context_source_type=input_type, anchor_i_ecg=target[:1].copy(), anchor_source_type="ecg_machine_i", Y_12lead=target, anchor_lead_mask=canonical_lead_mask(1), context_lead_mask=context_mask, task_id=self.task_id, split=self.split, subject_id=row["subject_id"], pair_id=row["pair_id"], target_record_id=row["target_record_id"], window_id=row["window_id"], target_record_baseline_uV=target_record_baseline.copy(), context_record_baseline_uV=context_record_baseline.copy(), meta=meta, input_type=input_type, target_quality_mask=target_quality_mask, input_quality_mask=input_quality_mask)
+        sample = JointAnchorSample(context_ecg=context, context_source_type=input_type, anchor_i_ecg=target[:1].copy(), anchor_source_type="ecg_machine_i", Y_12lead=target, anchor_lead_mask=canonical_lead_mask(1), context_lead_mask=context_mask, task_id=self.task_id, split=self.split, subject_id=row["subject_id"], pair_id=row["pair_id"], target_record_id=row["target_record_id"], window_id=row["window_id"], target_record_baseline_uV=target_record_baseline.copy(), context_record_baseline_uV=context_record_baseline.copy(), meta=meta, input_type=input_type, target_quality_mask=target_quality_mask, input_quality_mask=input_quality_mask, context_time_mask=context_time_mask)
         sample.validate(); return sample

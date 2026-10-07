@@ -71,5 +71,5 @@ device_interpretation_qc:
 protection:
   raw_data_must_not_be_modified: true
   final_windowing_in_this_stage: true
-  final_windowing_note: "v0.1 D0 consumes the team-generated 10-second window products; this repository does not recreate them."
+  final_windowing_note: "Task 1 record-complete windows are reproducibly built by scripts/build_task1_record_windows.py; Task 2 continues to consume the audited team-generated products."
   model_training_in_this_stage: false

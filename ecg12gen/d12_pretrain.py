@@ -33,8 +33,21 @@ class StrictD12PretrainDataset:
             for task in {row["source_task_id"] for row in self.rows}
         }
         self._record_baselines: dict[str, np.ndarray] = {}
+        for row in self.rows:
+            text = row.get("target_record_baseline_uV", "")
+            if not text:
+                continue
+            baseline = np.fromstring(text, sep="|", dtype=np.float32)
+            if baseline.shape != (12,) or not np.isfinite(baseline).all():
+                raise ContractError("Strict index contains an invalid stored target baseline")
+            previous = self._record_baselines.setdefault(row["target_record_id"], baseline)
+            if not np.array_equal(previous, baseline):
+                raise ContractError("Strict index contains inconsistent physical-record baselines")
         for task, targets in self.targets.items():
-            task_rows = [row for row in self.rows if row["source_task_id"] == task]
+            task_rows = [row for row in self.rows if row["source_task_id"] == task and
+                         row["target_record_id"] not in self._record_baselines]
+            if not task_rows:
+                continue
             task_windows = np.asarray(targets[[int(row["source_array_index"]) for row in task_rows]])
             normalized_rows = [{**row, "start_sample_500hz": row.get("start_sample_500hz") or
                                 str(int(row.get("window_index", "0")) * 5000)} for row in task_rows]
