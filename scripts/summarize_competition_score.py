@@ -31,8 +31,8 @@ def main() -> None:
     if task1.get("task_id") != "task1" or task2.get("task_id") != "task2":
         raise ValueError("Input reports must be task1 and task2 V0 overall reports respectively")
     summary = competition_score(
-        r1=float(task1["task1_r1"]),
-        r2=float(task2["task2_r2"]),
+        r1=float(task1["r_missing11"]),
+        r2=float(task2["r_missing11"]),
         missing_lead_rmse_uV=float(task2["task2_missing_lead_mean_rmse_uV"]),
     )
     csv_path, markdown_path = write_competition_score(args.output_dir, summary)

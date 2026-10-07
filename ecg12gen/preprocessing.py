@@ -23,7 +23,7 @@ class PreprocessingConfig:
     baseline_method: str
     scaling_method: str
     minimum_scale_uV: float
-    clip_model_signal: float
+    clip_model_signal: float | None
     expected_leads: dict[str, int]
     target_transform: str = "d12"
 
@@ -33,15 +33,19 @@ class PreprocessingConfig:
             raw = yaml.safe_load(handle)
         if raw.get("raw_data_mutation") is not False:
             raise PreprocessingError("The preprocessing contract must not mutate raw data")
-        if raw["baseline"]["method"] != "per_record_per_lead_median":
-            raise PreprocessingError("Only the record-level per-lead median baseline method is supported")
+        if raw["baseline"]["method"] != "context_only_per_record_per_lead_median":
+            raise PreprocessingError("Expected v3 context-only record centering; old centered-target checkpoints are incompatible")
+        if set(raw["baseline"].get("scale_only_sources", [])) != {"ecg_machine_i", "d12"}:
+            raise PreprocessingError("Anchor I and d12 must preserve raw voltage")
+        if raw["scaling"].get("clip_model_signal") is not None:
+            raise PreprocessingError("The reversible raw-voltage protocol forbids amplitude clipping")
         if raw["scaling"]["method"] != "train_median_p5_p95_range" or raw["scaling"]["fit_split"] != "train":
             raise PreprocessingError("Scale must be fitted from train with the protocol method")
         return cls(
             baseline_method=raw["baseline"]["method"],
             scaling_method=raw["scaling"]["method"],
             minimum_scale_uV=float(raw["scaling"]["minimum_scale_uV"]),
-            clip_model_signal=float(raw["scaling"]["clip_model_signal"]),
+            clip_model_signal=None,
             expected_leads={name: int(spec["expected_leads"]) for name, spec in raw["sources"].items()},
             target_transform=str(raw.get("target_transform", "d12")),
         )
@@ -67,6 +71,31 @@ class ECGPreprocessor:
 
     config: PreprocessingConfig
     scale_uV_by_source: dict[str, np.ndarray]
+
+    def save(self, path: str | Path) -> None:
+        """Persist train-fitted scales with the output protocol for inference."""
+        with Path(path).open("wb") as handle:
+            np.savez(handle, protocol=np.asarray("v3-raw-target-record-context"),
+                     **self.scale_uV_by_source)
+
+    @classmethod
+    def load(cls, config: PreprocessingConfig, path: str | Path) -> "ECGPreprocessor":
+        """Load frozen scales; never fit on validation/test records."""
+        with np.load(path, allow_pickle=False) as archive:
+            if "protocol" not in archive or str(archive["protocol"].item()) != "v3-raw-target-record-context":
+                raise PreprocessingError("Incompatible preprocessing artifact; v3 raw-target scales required")
+            scales = {key: archive[key].astype(np.float32).copy()
+                      for key in archive.files if key != "protocol"}
+        for source, scale in scales.items():
+            if source not in config.expected_leads or scale.shape != (config.expected_leads[source],):
+                raise PreprocessingError(f"Invalid frozen scale shape for {source}")
+            if not np.isfinite(scale).all() or np.any(scale <= 0):
+                raise PreprocessingError(f"Invalid frozen scale values for {source}")
+        if config.target_transform not in scales or "ecg_machine_i" not in scales:
+            raise PreprocessingError("Frozen artifact must include d12 and anchor scales")
+        if not np.array_equal(scales["ecg_machine_i"], scales[config.target_transform][:1]):
+            raise PreprocessingError("Anchor scale must match d12 I")
+        return cls(config=config, scale_uV_by_source=scales)
 
     @classmethod
     def fit(cls, config: PreprocessingConfig, train_signals: Mapping[str, np.ndarray]) -> "ECGPreprocessor":
@@ -96,8 +125,12 @@ class ECGPreprocessor:
         return cls(config=config, scale_uV_by_source=scales)
 
     def transform_window(self, raw_window: np.ndarray, source_type: str,
-                         record_baseline_uV: np.ndarray) -> ModelSignal:
-        """Center one window with its physical record's fixed per-lead median."""
+                         record_baseline_uV: np.ndarray | None = None) -> ModelSignal:
+        """Scale raw anchor/target; center context using its complete record.
+
+        For d12/anchor, a legacy supplied baseline is intentionally ignored.
+        ModelSignal.baseline_uV is the offset actually subtracted (zero there).
+        """
         if source_type not in self.config.expected_leads:
             raise PreprocessingError(f"Unknown source type: {source_type}")
         raw = np.asarray(raw_window)
@@ -106,18 +139,22 @@ class ECGPreprocessor:
             raise PreprocessingError(f"{source_type} window must have shape [{expected}, T]")
         if not np.isfinite(raw).all():
             raise PreprocessingError("Cannot transform non-finite ECG values")
-        baseline = np.asarray(record_baseline_uV, dtype=np.float32)
+        if source_type in {"ecg_machine_i", self.config.target_transform}:
+            baseline = np.zeros(expected, dtype=np.float32)
+        elif record_baseline_uV is None:
+            raise PreprocessingError("Context windows require a complete-record baseline; do not center per window")
+        else:
+            baseline = np.asarray(record_baseline_uV, dtype=np.float32)
         if baseline.shape != (expected,) or not np.isfinite(baseline).all():
             raise PreprocessingError(f"{source_type} record_baseline_uV must have shape [{expected}]")
         if source_type not in self.scale_uV_by_source:
             raise PreprocessingError(f"No frozen train scale for source type: {source_type}")
         scale = self.scale_uV_by_source[source_type]
         transformed = (raw.astype(np.float32, copy=False) - baseline[:, None]) / scale[:, None]
-        transformed = np.clip(transformed, -self.config.clip_model_signal, self.config.clip_model_signal)
         return ModelSignal(model_signal=transformed, baseline_uV=baseline, scale_uV=scale.copy(), source_type=source_type)
 
     def transform_observed_record(self, raw_record: np.ndarray, source_type: str) -> ModelSignal:
-        """Center a complete *visible input* record before any windowing.
+        """Transform a complete visible input before any windowing.
 
         This is the test-time counterpart of the Dataset baseline index.  It is
         valid for organizer-provided context/anchor signals, but must never be
@@ -127,20 +164,16 @@ class ECGPreprocessor:
         expected = self.config.expected_leads.get(source_type)
         if expected is None or raw.ndim != 2 or raw.shape[0] != expected or raw.shape[1] == 0:
             raise PreprocessingError(f"{source_type} record must have shape [{expected}, T]")
-        baseline = np.median(raw, axis=1).astype(np.float32)
+        baseline = (np.zeros(expected, dtype=np.float32) if source_type == "ecg_machine_i"
+                    else np.median(raw, axis=1).astype(np.float32))
         return self.transform_window(raw, source_type, baseline)
 
-    def transform_d12_target(self, raw_d12: np.ndarray, record_baseline_uV: np.ndarray) -> ModelSignal:
-        """Apply the same canonical d12 transform in every task and pretraining mode."""
+    def transform_d12_target(self, raw_d12: np.ndarray, record_baseline_uV: np.ndarray | None = None) -> ModelSignal:
+        """Scale raw d12 without subtracting target medians, in P0 and P1."""
         return self.transform_window(raw_d12, self.config.target_transform, record_baseline_uV)
 
     def model_view_to_uV(self, model_window: np.ndarray, source_type: str) -> np.ndarray:
-        """Convert a centered/scaled model output to centered morphology in μV.
-
-        This inverts only the frozen train-fitted scale. It deliberately does
-        not add a window baseline, because the true target baseline is unknown
-        at inference.
-        """
+        """Invert scale: d12/anchor return raw μV; context returns centered μV."""
         model = np.asarray(model_window, dtype=np.float32)
         expected = self.config.expected_leads.get(source_type)
         if expected is None or model.ndim != 2 or model.shape[0] != expected:
@@ -150,28 +183,22 @@ class ECGPreprocessor:
         return model * self.scale_uV_by_source[source_type][:, None]
 
     def d12_model_view_to_morphology_uV(self, d12_model_window: np.ndarray) -> np.ndarray:
-        """Return a d12 centered morphology output in μV, without a baseline."""
+        """Legacy name: v3 returns raw μV. Prefer d12_model_view_to_raw_uV."""
+        return self.model_view_to_uV(d12_model_window, self.config.target_transform)
+
+    def d12_model_view_to_raw_uV(self, d12_model_window: np.ndarray) -> np.ndarray:
+        """Restore raw target voltage without access to hidden target medians."""
         return self.model_view_to_uV(d12_model_window, self.config.target_transform)
 
     def compose_raw_d12_prediction(self, d12_model_window: np.ndarray,
-                                   predicted_baseline_uV: np.ndarray) -> np.ndarray:
-        """Compose a raw-μV d12 prediction using a model-predicted baseline.
+                                   predicted_baseline_uV: np.ndarray | None = None) -> np.ndarray:
+        """Restore v3 raw voltage; adding a baseline again is a protocol error."""
+        if predicted_baseline_uV is not None:
+            raise PreprocessingError("v3 predicts raw voltage: do not add any target baseline")
+        return self.d12_model_view_to_raw_uV(d12_model_window)
 
-        ``predicted_baseline_uV`` must be shape ``[12]`` or ``[12, 1]`` and
-        originate from the model (for example a baseline head), never from the
-        held-out target window.
-        """
-        morphology = self.d12_model_view_to_morphology_uV(d12_model_window)
-        baseline = np.asarray(predicted_baseline_uV, dtype=np.float32)
-        if baseline.shape == (12,):
-            baseline = baseline[:, None]
-        if baseline.shape != (12, 1):
-            raise PreprocessingError("predicted_baseline_uV must have shape [12] or [12, 1]")
-        if not np.isfinite(baseline).all():
-            raise PreprocessingError("predicted_baseline_uV must be finite")
-        return morphology + baseline
     def transform_batch(self, raw_batch: np.ndarray, source_type: str,
-                        record_baseline_uV: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                        record_baseline_uV: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Vectorized non-destructive transform for [N, C, T] arrays."""
         raw = np.asarray(raw_batch)
         expected = self.config.expected_leads.get(source_type)
@@ -179,7 +206,12 @@ class ECGPreprocessor:
             raise PreprocessingError(f"{source_type} batch must have shape [N, {expected}, T]")
         if not np.isfinite(raw).all():
             raise PreprocessingError("Cannot transform non-finite ECG values")
-        baseline = np.asarray(record_baseline_uV, dtype=np.float32)
+        if source_type in {"ecg_machine_i", self.config.target_transform}:
+            baseline = np.zeros(raw.shape[:2], dtype=np.float32)
+        elif record_baseline_uV is None:
+            raise PreprocessingError("Context batches require complete-record baselines")
+        else:
+            baseline = np.asarray(record_baseline_uV, dtype=np.float32)
         if baseline.shape == (expected,):
             baseline = np.broadcast_to(baseline, raw.shape[:2])
         if baseline.shape != raw.shape[:2] or not np.isfinite(baseline).all():
@@ -189,4 +221,4 @@ class ECGPreprocessor:
             raise PreprocessingError(f"No frozen train scale for source type: {source_type}")
         scale = self.scale_uV_by_source[source_type]
         model = (raw.astype(np.float32, copy=False) - baseline[:, :, None]) / scale[None, :, None]
-        return np.clip(model, -self.config.clip_model_signal, self.config.clip_model_signal), baseline, np.broadcast_to(scale, baseline.shape).copy()
+        return model, baseline, np.broadcast_to(scale, baseline.shape).copy()

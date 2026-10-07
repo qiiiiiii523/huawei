@@ -39,14 +39,18 @@ def main() -> None:
 
     assert preprocessing["protocol_status"] == "frozen_joint_anchor"
     assert preprocessing["raw_data_mutation"] is False
-    assert preprocessing["target_baseline_policy"] == "train_label_only_predict_at_inference"
+    assert preprocessing["target_baseline_policy"] == "preserve_raw_voltage_no_subtraction"
+    assert preprocessing["baseline"]["method"] == "context_only_per_record_per_lead_median"
+    assert preprocessing["scaling"]["clip_model_signal"] is None
+    assert protocol["model_input_output"]["target_view"] == "raw_scaled_d12"
+    assert protocol["validation"]["aggregation"] == "record_macro_after_chronological_window_stitch"
     assert preprocessing["output_contract"]["prohibited_at_inference"] == "using_true_target_baseline_uV"
     assert protocol["two_stage_protocol"]["joint_anchor_adaptation"]["context_target_relation"] == "same_subject_cross_time"
     assert protocol["two_stage_protocol"]["joint_anchor_adaptation"]["anchor_target_relation"] == "same_record_same_window"
     assert protocol["validation"]["official_view"] == "raw_uV"
     assert protocol["two_stage_protocol"]["joint_anchor_adaptation"]["initialization"] == "required_P0_strict_pretrained_weights"
     assert protocol["two_stage_protocol"]["joint_anchor_adaptation"]["experiments"] == ["P1-C1", "P1-C2", "P1-C3"]
-    assert protocol["validation"]["required_metrics"] == ["r_raw_12", "r_submit_12", "r_missing11"]
+    assert protocol["validation"]["required_metrics"] == ["r_missing11"]
     for task in ("task1", "task2"):
         with (ROOT / "configs" / "experiments" / f"{task}_joint_anchor.yaml").open(encoding="utf-8") as handle:
             experiment = yaml.safe_load(handle)

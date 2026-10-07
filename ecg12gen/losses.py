@@ -102,12 +102,11 @@ def physiology_constraint_loss(prediction: torch.Tensor,
                                d12_scale_uV: torch.Tensor | None) -> torch.Tensor:
     """Apply scale-aware, baseline-invariant limb-lead constraints.
 
-    ``prediction`` is the centered/scaled d12 model view.  The limb-lead
+    ``prediction`` is the raw/scaled d12 model view.  The limb-lead
     equations are defined in microvolts, so each lead is first restored with
-    its frozen d12 scale.  Because preprocessing removes an independent
-    median from every lead, each algebraic residual may contain a constant
-    window offset; removing that residual median keeps the constraint focused
-    on morphology rather than an unavailable baseline.
+    its frozen d12 scale. Removing each residual's constant window offset
+    keeps this auxiliary constraint focused on shape. Absolute lead offsets
+    are still learned by the raw-target Huber supervision.
     """
     if prediction.ndim != 3 or prediction.shape[1] != 12:
         raise ValueError("prediction must have shape [batch, 12, time]")

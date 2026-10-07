@@ -55,7 +55,7 @@ def main() -> None:
     validation_rows = [row for row in metadata if row["split"] == "validation"]
     target = arrays["validation_target"]
     identity, _ = evaluate_record_predictions(target, target, "task1", validation_rows)
-    if identity["n_records"] != 21 or not np.isclose(identity["missing11_mean_pearson_r"], 1.0):
+    if identity["n_records"] != 21 or not np.isclose(identity["r_missing11"], 1.0):
         raise AssertionError("Record evaluator did not recover the 21 complete validation records")
     train = JointAnchorDataset(config, "task1", "train")
     validation = JointAnchorDataset(config, "task1", "validation")

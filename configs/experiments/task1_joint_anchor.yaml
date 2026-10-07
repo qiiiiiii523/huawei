@@ -13,7 +13,7 @@ experiments:
     context_enabled: false
     output: full_d12_prediction
     training_output_i_replacement: forbidden
-    validation_metrics: [r_raw_12, r_submit_12, r_missing11]
+    validation_metrics: [r_missing11]
   P1-C1:
     protocol_stage: P1-C1
     input: [watch_ecg_context, machine_i_anchor]
@@ -24,7 +24,7 @@ experiments:
     anchor_target_relation: same_record_same_window
     output: full_d12_prediction
     training_output_i_replacement: forbidden
-    validation_metrics: [r_raw_12, r_submit_12, r_missing11]
+    validation_metrics: [r_missing11]
   P1-C2:
     protocol_stage: P1-C2
     input: [watch_ecg_context, machine_i_anchor]
@@ -35,7 +35,7 @@ experiments:
     anchor_target_relation: same_record_same_window
     output: full_d12_prediction
     training_output_i_replacement: forbidden
-    validation_metrics: [r_raw_12, r_submit_12, r_missing11]
+    validation_metrics: [r_missing11]
   P1-C3:
     protocol_stage: P1-C3
     input: [watch_ecg_context, machine_i_anchor]
@@ -46,7 +46,7 @@ experiments:
     anchor_target_relation: same_record_same_window
     output: full_d12_prediction
     training_output_i_replacement: forbidden
-    validation_metrics: [r_raw_12, r_submit_12, r_missing11]
+    validation_metrics: [r_missing11]
 joint_stage:
   supervision_mode: joint_anchor_adaptation
   context_source: watch_ecg

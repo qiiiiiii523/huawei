@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
 from ecg12gen.contracts import ContractError, SupervisionMode, prepare_joint_anchor_inference
 from ecg12gen.d12_pretrain import StrictD12PretrainDataset
 from ecg12gen.dataset import ECGDataConfig, JointAnchorDataset
-from ecg12gen.evaluate import evaluate_joint_anchor_predictions, evaluate_predictions
+from ecg12gen.evaluate import evaluate_joint_anchor_predictions, evaluate_record_predictions
 from ecg12gen.losses import (joint_anchor_sync_loss, physiology_constraint_loss,
                               replace_output_i_with_anchor, strict_anchor_pretrain_loss)
 
@@ -34,25 +34,22 @@ def main() -> None:
     except ContractError: pass
     try: prepare_joint_anchor_inference(np.zeros((1,5000), np.float32), task_id="task1", context_source_type="watch_ecg", anchor_i_ecg=np.zeros((1,5000)), target=np.zeros((12,5000))); raise AssertionError("target accepted")
     except TypeError: pass
-    target = np.linspace(-1, 1, 2 * 12 * 5000, dtype=np.float32).reshape(2,12,5000); overall, details = evaluate_predictions(target, target, "task2")
-    assert overall["evaluation_input_contract"] == "joint_anchor_test_like" and all(not row["input_present"] for row in details[1:])
+    target = np.linspace(-1, 1, 2 * 12 * 5000, dtype=np.float32).reshape(2,12,5000)
     raw = target.copy(); raw[:, :1] *= -1
     metadata = [{"pair_id": f"pair_{i}", "target_record_id": f"target_{i}", "start_sample_500hz": "0"}
                 for i in range(len(target))]
-    summary, raw_details, submit_details, submit = evaluate_joint_anchor_predictions(
+    summary, raw_details = evaluate_joint_anchor_predictions(
         raw, target, target[:, :1], "task2", metadata)
-    assert summary["r_submit_12"] > summary["r_raw_12"]
-    assert summary["r_missing11"] == np.mean([row["pearson_r"] for row in raw_details[1:]])
-    assert summary["task2_r2"] == summary["r_missing11"]
+    assert np.isclose(summary["r_missing11"], 1.0)
+    assert len(raw_details) == 11
     assert summary["checkpoint_selection_metric"] == "r_missing11"
     prediction_t, target_t, anchor_t = torch.randn(2,12,500), torch.randn(2,12,500), torch.randn(2,1,500)
     scale_t = torch.linspace(200.0, 900.0, 12)
     target_mask_t = torch.ones((2, 12), dtype=torch.bool)
     assert torch.isfinite(strict_anchor_pretrain_loss(prediction_t, target_t, anchor_t, target_lead_mask=target_mask_t, d12_scale_uV=scale_t))
     assert torch.isfinite(joint_anchor_sync_loss(prediction_t, target_t, anchor_t, target_lead_mask=target_mask_t, d12_scale_uV=scale_t))
-    # Independent per-lead offsets are allowed after median baseline removal;
-    # the corrected constraint should still accept an exactly consistent limb
-    # morphology after unequal lead scaling.
+    # The auxiliary physiological shape constraint ignores constant offsets;
+    # raw-target Huber supervision still learns each lead's absolute voltage.
     raw_i = torch.linspace(-1.0, 1.0, 500)
     raw_ii = torch.sin(torch.linspace(0.0, 8.0, 500))
     raw = torch.zeros(1, 12, 500)

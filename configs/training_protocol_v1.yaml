@@ -6,7 +6,7 @@ data:
   split_strategy: fixed_subject_level
   train_split: train
   validation_split: validation
-  preprocessing: unified_runtime_preprocessing_v2
+  preprocessing: unified_runtime_preprocessing_v3
   preprocessing_config: configs/preprocessing.yaml
   raw_data_mutation: false
   default_training_quality: paired_and_usable_only
@@ -41,21 +41,20 @@ two_stage_protocol:
     comparison_baseline: P0_anchor_only
     test_anchor_requirement: organizer_explicit_machine_i_anchor
 model_input_output:
-  input_view: centered_scaled_context_plus_anchor_with_separate_masks
-  target_view: centered_scaled_d12
-  raw_output_for_official_evaluation: "morphology_uV + model_predicted_d12_baseline_uV"
+  input_view: record_centered_scaled_context_plus_raw_scaled_anchor_with_separate_masks
+  target_view: raw_scaled_d12
+  raw_output_for_official_evaluation: "model_output_view * frozen_d12_scale_uV"
   true_target_baseline_at_inference: forbidden
 validation:
   run_on: validation_only
   input_contract: joint_anchor_test_like
   official_view: raw_uV
-  primary_metric_task1: task1_r1
-  primary_metric_task2: task2_r2
+  aggregation: record_macro_after_chronological_window_stitch
+  primary_metric_task1: r_missing11
+  primary_metric_task2: r_missing11
   task2_bonus_metric: task2_missing_lead_mean_rmse_uV
-  morphology_diagnostic_view: centered_per_record_uV
   checkpoint_selection: maximize_validation_r_missing11
   checkpoint_metric: r_missing11
-  required_metrics: [r_raw_12, r_submit_12, r_missing11]
+  required_metrics: [r_missing11]
   official_prediction_view: raw_prediction_scored_on_II_through_V6
-  anchor_i_replacement: diagnostic_only_not_scored
 results: {record_template: docs/experiment-record-template.md, generated_output_dir: results}

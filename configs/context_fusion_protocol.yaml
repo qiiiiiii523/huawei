@@ -145,8 +145,8 @@ fair_comparison:
   shuffled_context_diagnostic:
     required_for: [P1-C1, P1-C2, P1-C3]
 reporting:
-  required_metrics: [r_raw_12, r_submit_12, r_missing11, RMSE]
-  task2_extra_metrics: [machine_body_stratified, subject_macro, V1-V6_diagnostics, shuffled_context]
+  required_metrics: [r_missing11, RMSE]
+  task2_extra_metrics: [shuffled_context]
   checkpoint_metric_view: raw_uV_v0
   checkpoint_metric: r_missing11
   architecture_fields: [architecture_id, architecture_config_hash]

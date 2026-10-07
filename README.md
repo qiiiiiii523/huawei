@@ -23,9 +23,9 @@ task2: d6 context    + machine-I anchor -> d12 target
 | joint 数据 | `ecg12gen/dataset.py` | 读取 `context_ecg`、`anchor_i_ecg`、`Y_12lead` 和独立 masks |
 | task2 A/B | `ecg12gen/body_scale.py` | body-scale A/B、五导联 context 消融 |
 | 推理输入检查 | `prepare_joint_anchor_inference()` | 测试必须显式传入 machine-I anchor；没有 target 参数 |
-| 预处理 | `ecg12gen/preprocessing.py` | train-only frozen scale、per-record/per-lead median baseline |
+| 预处理 | `ecg12gen/preprocessing.py` | train-only frozen scale；anchor/target 保留 raw 电压，context 减记录 median |
 | loss | `ecg12gen/losses.py` | `joint_anchor_sync_loss()`、`replace_output_i_with_anchor()` |
-| V0 评估 | `ecg12gen/evaluate.py` | 按 `pair_id` 拼接的 record-level r、task2 分设备/subject/V1–V6 诊断 |
+| V0 评估 | `ecg12gen/evaluate.py` | 按 `pair_id` 拼接的唯一相关系数 r_missing11，以及原始 μV RMSE |
 | 配置与检查 | `configs/`、`scripts/` | 统一实验契约与提交前 smoke check |
 
 ## 3. baseline 分支必须实现的网络模块
@@ -38,7 +38,7 @@ task2: d6 context    + machine-I anchor -> d12 target
 | **Context encoder** | 编码 watch/d6 的跨时刻个体、设备、形态信息 | 将 context 当作 target-time 同步导联 |
 | **Fusion module** | 融合 anchor representation 与 context representation；可用 concat、gate、cross-attention 等 | 按相同采样点把 context 与 anchor 拼成同步 ECG |
 | **d12 output head** | 训练时输出完整 `[batch,12,5000]`，包括模型预测的 I | 从真实 target 读取 I 或其他导联 |
-| **可选 baseline head** | 预测 raw-uV 合成所需 d12 baseline | 推理时读取真实 target baseline |
+| **原始电压输出** | 输出 raw-scaled d12，乘固定 scale 还原 μV | 再加 target median 或使用旧 centered-target checkpoint |
 
 建议统一模型接口：
 
@@ -60,7 +60,7 @@ d12_prediction = model(
 | **Anchor-only** | `machine-I anchor -> d12` | 严格预训练主干 / 无 context 基线 | 是 |
 | **Joint-anchor** | `context + machine-I anchor -> d12` | 检验 context 融合带来的增益 | 是 |
 
-两者必须使用相同 subject split、strict 初始化、预处理、训练预算、loss 和 raw-V0 checkpoint 规则。报告中必须同时给出 anchor-only 与 joint-anchor 的 task1 r1 / task2 r2、RMSE、task2 V1–V6 和 machine/body 分层结果。
+两者必须使用相同 subject split、strict 初始化、预处理、训练预算、loss 和 raw-V0 checkpoint 规则。报告分别给出 anchor-only 与 joint-anchor 的 r_missing11 和 RMSE。
 
 可选但推荐的 task2 消融：
 
@@ -159,14 +159,16 @@ V2 严格复用 `metadata/subject_split.csv`，不会重新划分患者。手表
 
 1. 使用 `ECGPreprocessor`；不要自己重新定义归一化。
 2. 固定 μV、500 Hz、10 秒、5000 点和 canonical d12 顺序。
-3. 每条物理记录、每导联只计算一个 median；该记录的所有窗口减同一个 baseline。
+3. 仅 context 按完整物理记录、每导联计算一个 median，所有窗口减同一个数；anchor I 和 d12 target 不减 median。
 4. scale 只在 train 拟合，validation/test 必须复用冻结实例。
 5. watch、machine d6、body-scale d6、machine-I、d12 使用各自 source scale；machine-I scale 只能来自 train d12 的 I。
-6. 当前无 baseline head 阶段只正式比较完整记录相关系数；raw-uV RMSE 仅作未恢复 baseline 的诊断。以后恢复 raw-uV 时，其他导联只能使用模型预测 baseline，绝不能读取真实 target baseline。
+6. 不裁剪幅值、不限制到 [0,1]。模型输出乘冻结 d12 scale 即为 raw μV，不再加 baseline；r 和 RMSE 均对原始电压按记录评估。
 
-`subject_id` 表示患者，`record_id` 表示一次设备采集，`window_id` 表示该次采集切出的窗口。一个患者可有多次记录；一条 d12 记录有 12 个 median（每导联一个）。target/anchor 按 `target_record_id` 取 baseline，context 按 `input_record_id` 取 baseline。验证拼接按 `pair_id`，避免同一 target 与不同 context 的预测被错误混合。
+`subject_id` 表示患者，`record_id` 表示一次设备采集，`window_id` 表示窗口。context 按 `input_record_id` 取逐导联 median。旧 metadata 中 target median 可以保留用于审计，但不用于 target/anchor 变换或输出还原。验证拼接按 `pair_id`，避免不同 context 配对的预测混合。
 
-测试输入是完整记录时，先调用 `transform_observed_record()` 对每个可见输入记录计算一次逐导联 median 并中心化，再把 `model_signal` 切成模型窗口；禁止先切窗后分别计算 median。
+测试完整记录先调用 `transform_observed_record()`，再切窗：context 现算记录 median 后缩放；同步 anchor I 只缩放。主方案不额外去漂移，体脂秤去漂移仅作为独立对照，训练/测试必须使用一致流程和对应冻结 scale。
+
+v3 与旧 centered-target 训练不兼容，应重新训练。现有 raw NPY、患者划分、完整窗口和质量/time mask 可复用；无需重切数据。
 
 ```python
 from ecg12gen.preprocessing import ECGPreprocessor, PreprocessingConfig
@@ -175,6 +177,15 @@ preprocessor = ECGPreprocessor.fit(
     PreprocessingConfig.from_yaml("configs/preprocessing.yaml"),
     train_signals,
 )
+preprocessor.save("preprocessing_scales.npz")  # 随 checkpoint 保存
+# 验证/测试只加载，不拟合：
+preprocessor = ECGPreprocessor.load(
+    PreprocessingConfig.from_yaml("configs/preprocessing.yaml"),
+    "preprocessing_scales.npz",
+)
+# target = preprocessor.transform_d12_target(raw_target).model_signal
+# anchor = preprocessor.transform_window(raw_anchor, "ecg_machine_i").model_signal
+# prediction_uV = preprocessor.d12_model_view_to_raw_uV(prediction_model)
 ```
 
 ## 7. validation、测试与评估
@@ -196,28 +207,22 @@ checkpoint selection uses validation record-level `r_missing11` (mean Pearson r 
 `task1_output_v2` 的 21 个 validation pair 均为完整记录；`task2_validation`
 的 25 个 pair 也连续。
 
-每次 validation 必须保留三套 r：
+每次 validation 只保留 `r_missing11`（II--V6 的逐记录平均相关系数）；RMSE 保留用于加分。
 
-| 指标 | 预测 | 用途 |
-|---|---|---|
-| `r_raw_12` | 模型原始完整 d12 输出 | 检查完整预测和 I 身份保持 |
-| `r_submit_12` | Anchor-I-replaced 12-lead diagnostic | Diagnostic only; never used for checkpoint selection |
-| `r_missing11` | Raw prediction on II, III, aVR, aVL, aVF, V1--V6 | Official `task1_r1` / `task2_r2`; checkpoint selection metric |
-
-`pred_submit` 的 I 覆盖不是训练策略：训练时必须保留模型完整 d12 输出和 I 的监督；只有 validation/test 输出阶段才执行 `pred_submit[:, 0:1] = anchor_i_ecg`。
+评估输入必须为已乘回冻结 d12 scale 的原始 μV，target 必须为原始 NPY。
+评估不再减 median、乘 scale、滤波或替换 I；不生成中心化、设备分层、逐导联 r 或窗口级 r 报告。
 
 ```powershell
 python -m ecg12gen.evaluate `
-  --prediction results/task1_validation_prediction.npy `
-  --anchor results/task1_validation_anchor_i.npy `
+  --prediction results/task1_validation_prediction_uV.npy `
   --target ../task1_output_v2/task1_validation_target.npy `
   --metadata ../task1_output_v2/task1_window_metadata.csv `
   --task-id task1 `
-  --output-dir results/task1 `
-  --write-centered-diagnostic
+  --output-dir results/task1
 ```
 
-task2 必须额外保留 machine/body 分层、subject-macro 和 V1–V6 RMSE。评估报告应写入 `evaluation_input_contract=joint_anchor_test_like`。
+模型分支的 `evaluate_joint_anchor_predictions()` 现在仅返回 `(summary, rmse_details)`，
+不再返回替换 I 后的预测。旧的四项解包调用必须修改。
 
 ## 8. 从 main 开始工作的最小清单
 
@@ -228,7 +233,7 @@ task2 必须额外保留 machine/body 分层、subject-macro 和 V1–V6 RMSE。
 4. 先报告 Anchor-only baseline。
 5. 添加 Context encoder + Fusion module，跑 Joint-anchor adaptation。
 6. 在相同预算下比较 Anchor-only vs Joint-anchor。
-7. 仅以 raw-V0 validation 选择 checkpoint；记录 task2 分层诊断。
+7. 仅以逐记录 raw-uV r_missing11 选择 checkpoint。
 8. 测试时只传 context + 主办方 machine-I anchor。
 ```
 
@@ -266,6 +271,6 @@ C1、C2、C3 的定义、gate/residual 初始化常量和 checkpoint 兼容字�
 
 Task 1 固定为 `watch I(A) + machine I(C) -> machine d12(C)`。Task 2 分别运行互斥的 machine/holter d6(B) 与 body-scale d6(A) source variant；不实现、不声明、不比较 `P1-both`。context 仅为条件信息，禁止 context-target 逐点损失、跨时刻波形硬对齐、R 峰伪配对和训练阶段 I 回填。
 
-B0/B1/B2/B3/M1 均可按需运行 P1-C1、P1-C2、P1-C3；至少比较 P0 与 P1-C3。B2 和 M1 完成 C1/C2/C3 模块消融。实验记录必须填写 architecture_id、architecture_config_hash、P0 checkpoint、task/context source、fusion_mode、训练预算、r_raw_12、r_submit_12、r_missing11、RMSE 及 shuffled-context 结果；Task 2 还需记录 machine/body 分层、subject-macro 和 V1–V6 诊断。
+B0/B1/B2/B3/M1 均可按需运行 P1-C1、P1-C2、P1-C3；至少比较 P0 与 P1-C3。B2 和 M1 完成 C1/C2/C3 模块消融。实验记录必须填写 architecture_id、architecture_config_hash、P0 checkpoint、task/context source、fusion_mode、训练预算、r_missing11、RMSE 及 shuffled-context 结果；不再要求其他相关系数或分层相关系数报告。
 
 不要向 main 提交原始 ECG、窗口 NPY、checkpoint、预测、患者级结果或训练日志。实验详情记录到 `docs/experiment-record-template.md`。

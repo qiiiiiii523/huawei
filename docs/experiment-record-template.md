@@ -36,10 +36,8 @@
 
 ## 结果和诊断
 
-- r_raw_12 / r_submit_12 / r_missing11：
+- r_missing11：
 - RMSE：
-- task1 r1 / task2 r2；12 导联 r、RMSE：
-- task2 machine/body、subject-macro、V1–V6 RMSE：
-- shuffled-context result（r_submit_12 / r_missing11 / RMSE）：
-- raw-V0 与 centered diagnostic：
+- shuffled-context result（r_missing11 / RMSE）：
+- 评估输入：原始 μV，未重复中心化或缩放
 - 异常、失败和可比性备注：

@@ -1,12 +1,14 @@
-protocol_version: "v2.0-joint-anchor-preprocessing"
+protocol_version: "v3.0-raw-target-record-context"
 protocol_status: frozen_joint_anchor
 raw_data_mutation: false
-baseline: {method: per_record_per_lead_median}
+baseline:
+  method: context_only_per_record_per_lead_median
+  scale_only_sources: [ecg_machine_i, d12]
 scaling:
   method: train_median_p5_p95_range
   fit_split: train
   minimum_scale_uV: 25.0
-  clip_model_signal: 12.0
+  clip_model_signal: null  # reversible scaling; no amplitude clipping
 sources:
   watch_ecg: {expected_leads: 1}
   ecg_machine_d6: {expected_leads: 6}
@@ -14,10 +16,9 @@ sources:
   ecg_machine_i: {expected_leads: 1, scale_fit_source: "train_target_d12:I"}
   d12: {expected_leads: 12}
 target_transform: d12
-target_baseline_policy: train_label_only_predict_at_inference
+target_baseline_policy: preserve_raw_voltage_no_subtraction
 output_contract:
-  model_output_view: centered_scaled_d12
-  morphology_uV: "model_output_view * frozen_d12_scale_uV"
-  raw_uV: "morphology_uV + model_predicted_d12_baseline_uV"
+  model_output_view: raw_scaled_d12
+  raw_uV: "model_output_view * frozen_d12_scale_uV"
   prohibited_at_inference: using_true_target_baseline_uV
-evaluation_views: {official: raw_uV, morphology_diagnostic: centered_per_record_uV}
+evaluation_views: {official: raw_uV}
