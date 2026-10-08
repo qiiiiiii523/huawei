@@ -9,6 +9,7 @@ import numpy as np
 from .contracts import D12_LEADS, ContractError
 
 MISSING_11_LEAD_INDICES = np.arange(1, 12)
+TASK2_RMSE_LEADS = D12_LEADS[6:12]
 
 
 def _pearson(x: np.ndarray, y: np.ndarray) -> float:
@@ -57,6 +58,7 @@ def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task
     """Stitch raw-uV windows, compute record r per lead, then average II--V6.
 
     RMSE remains point-weighted per lead, followed by a lead average.
+    Task-2 bonus uses V1--V6 only; r1/r2 retain record-level r_missing11.
     Undefined constant-record correlations are excluded with explicit counts.
     """
     prediction, target = np.asarray(prediction), np.asarray(target)
@@ -96,7 +98,9 @@ def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task
         "n_undefined_record_lead_correlations": invalid_count,
     }
     if task_id == "task2":
-        overall["task2_missing_lead_mean_rmse_uV"] = rmse
+        overall["task2_missing_lead_mean_rmse_uV"] = float(np.mean(
+            [row["rmse_uV"] for row in details if row["lead"] in TASK2_RMSE_LEADS]))
+        overall["task2_rmse_scored_leads"] = ",".join(TASK2_RMSE_LEADS)
     return overall, details
 
 
@@ -137,7 +141,7 @@ def write_competition_score(output_dir: str | Path, summary: dict[str, float]) -
         writer.writerow(summary)
     lines = ["# 比赛总分", "", "| 指标 | 数值 |", "|---|---:|"]
     lines.extend(f"| {key} | {value:.6f} |" for key, value in summary.items())
-    lines += ["", "主分 = 两任务 r_missing11 的平均；RMSE 加分 = 10（≤70 μV），否则为 700 / RMSE。"]
+    lines += ["", "主分 = 两任务 r_missing11 的平均；Task 2 V1–V6 平均 RMSE 加分 = 10（≤70 μV），否则为 700 / RMSE。"]
     markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return csv_path, markdown
 

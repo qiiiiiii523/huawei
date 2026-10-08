@@ -30,6 +30,8 @@ def main() -> None:
     task2 = _read_first_row(Path(args.task2_overall))
     if task1.get("task_id") != "task1" or task2.get("task_id") != "task2":
         raise ValueError("Input reports must be task1 and task2 V0 overall reports respectively")
+    if task2.get("task2_rmse_scored_leads") != "V1,V2,V3,V4,V5,V6":
+        raise ValueError("Task2 report must score V1--V6 RMSE; regenerate old 11-lead RMSE reports")
     summary = competition_score(
         r1=float(task1["r_missing11"]),
         r2=float(task2["r_missing11"]),

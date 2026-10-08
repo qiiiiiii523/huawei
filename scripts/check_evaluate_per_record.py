@@ -9,7 +9,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ecg12gen.evaluate import _pearson, evaluate_record_predictions, evaluate_joint_anchor_predictions
+from ecg12gen.evaluate import _pearson, evaluate_record_predictions, evaluate_joint_anchor_predictions, competition_score
 from ecg12gen.contracts import ContractError
 
 
@@ -48,6 +48,21 @@ def main() -> None:
     two_pairs = [metadata[0], {**metadata[1], "pair_id": "record_b", "start_sample_500hz": "0"}]
     separate, _ = evaluate_record_predictions(prediction, target, "task1", two_pairs)
     assert separate["n_records"] == 2 and np.isclose(separate["r_missing11"], 1)
+    # Limb errors must not change the chest-only Task2 bonus RMSE.
+    limb_error = prediction.copy()
+    limb_error[:, 1:6] += 1000
+    chest_score, _ = evaluate_record_predictions(limb_error, prediction, "task2", metadata)
+    assert np.isclose(chest_score["task2_missing_lead_mean_rmse_uV"], 0)
+    assert chest_score["task2_rmse_scored_leads"] == "V1,V2,V3,V4,V5,V6"
+    assert chest_score["missing11_mean_rmse_uV"] > 0
+    # Averaging six per-lead RMSEs, not averaging their squared errors.
+    offsets = np.asarray([20, 40, 60, 80, 100, 120])
+    limb_error[:, 6:12] += offsets[None, :, None]
+    chest_score, _ = evaluate_record_predictions(limb_error, prediction, "task2", metadata)
+    assert np.isclose(chest_score["task2_missing_lead_mean_rmse_uV"], 70)
+    assert np.isclose(competition_score(.8, .6, chest_score["task2_missing_lead_mean_rmse_uV"])["task2_rmse_bonus_score"], 10)
+    assert competition_score(.8, .6, 70)["task2_rmse_bonus_score"] == 10
+    assert competition_score(.8, .6, 140)["task2_rmse_bonus_score"] == 5
     broken = [metadata[0], {**metadata[1], "start_sample_500hz": "10000"}]
     try:
         evaluate_record_predictions(prediction, target, "task1", broken)

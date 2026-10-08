@@ -37,7 +37,7 @@
 ## 结果和诊断
 
 - r_missing11：
-- RMSE：
+- Task 2 V1–V6 平均 RMSE（μV，加分项）；11 导联 RMSE 不用于加分：
 - shuffled-context result（r_missing11 / RMSE）：
 - 评估输入：原始 μV，未重复中心化或缩放
 - 异常、失败和可比性备注：

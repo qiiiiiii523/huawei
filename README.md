@@ -209,6 +209,8 @@ checkpoint selection uses validation record-level `r_missing11` (mean Pearson r 
 
 每次 validation 只保留 `r_missing11`（II--V6 的逐记录平均相关系数）；RMSE 保留用于加分。
 
+两任务 r1/r2 使用上述 r_missing11。Task 2 加分字段 `task2_missing_lead_mean_rmse_uV` 只计算 V1–V6；`missing11_mean_rmse_uV` 是 11 导联误差统计，不用于加分。旧报告需重新评估，总分脚本会拒绝未声明 V1–V6 范围的旧报告。
+
 评估输入必须为已乘回冻结 d12 scale 的原始 μV，target 必须为原始 NPY。
 评估不再减 median、乘 scale、滤波或替换 I；不生成中心化、设备分层、逐导联 r 或窗口级 r 报告。
 

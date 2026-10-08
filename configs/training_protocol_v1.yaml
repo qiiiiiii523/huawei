@@ -53,6 +53,7 @@ validation:
   primary_metric_task1: r_missing11
   primary_metric_task2: r_missing11
   task2_bonus_metric: task2_missing_lead_mean_rmse_uV
+  task2_bonus_leads: [V1, V2, V3, V4, V5, V6]
   checkpoint_selection: maximize_validation_r_missing11
   checkpoint_metric: r_missing11
   required_metrics: [r_missing11]
