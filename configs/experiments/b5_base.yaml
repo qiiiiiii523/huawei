@@ -1,9 +1,9 @@
 experiment_id: B5-U-Meta
 stage: local
 paths:
-  data_root: ../Data
+  data_root: Data
   huawei_data_root: ..
-  ptbxl_root: ${data}
+  ptbxl_root: ${data}/PTB-XL
   demographics: ${data}/userinfobean.csv
   common_config: configs/common.yaml
   preprocessing_config: configs/preprocessing.yaml
