@@ -1,0 +1,5 @@
+base: b5_local_i.yaml
+experiment_id: E3-public-I-Huawei-finetune
+stage: finetune
+paths:
+  output_dir: results/B5/E3_finetune_I

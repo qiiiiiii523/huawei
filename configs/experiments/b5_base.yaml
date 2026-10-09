@@ -1,0 +1,47 @@
+experiment_id: B5-U-Meta
+stage: local
+paths:
+  data_root: ../Data
+  huawei_data_root: ..
+  ptbxl_root: ${data}
+  demographics: ${data}/userinfobean.csv
+  common_config: configs/common.yaml
+  preprocessing_config: configs/preprocessing.yaml
+  scales: results/B5/shared/preprocessing_scales.npz
+  output_dir: results/B5/local_meta
+model:
+  channels: [64, 128, 256]
+  time_dim: 128
+  metadata_dim: 128
+  metadata_enabled: true
+  metadata_dropout: 0.2
+  metadata_field_dropout: 0.05
+  dilations: [1, 2, 4, 8]
+loss:
+  huber: 0.1
+  pcc: 0.1
+  anchor: 0.02
+  physiology: 0.0
+  huber_delta: 1.0
+training:
+  seed: 42
+  deterministic: true
+  epochs: 100
+  batch_size: 8
+  workers: 0
+  gradient_accumulation: 1
+  learning_rate: 0.00005
+  weight_decay: 0.01
+  ema_decay: 0.999
+  gradient_clip: 1.0
+  amp: false
+  validate_every: 5
+validation:
+  tasks: [task1, task2]
+  selection_task: task1
+  batch_size: 8
+sampling:
+  seed: 42
+  solver: heun
+  steps: 16
+  samples: 1

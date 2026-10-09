@@ -1,0 +1,5 @@
+base: b5_base.yaml
+experiment_id: E2-B5-public-meta-Huawei-finetune
+stage: finetune
+paths:
+  output_dir: results/B5/E2_finetune_meta
