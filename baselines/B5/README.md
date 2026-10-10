@@ -1,205 +1,96 @@
-# B5-U：同步 I＋人口学条件 Flow Matching
+# B5：精简微调与最终评估主线
 
-第一版主线实现。代码不会在 import、数据检查或缺少执行开关时启动训练，也不会自动下载数据。
+分支 `B5` 从 `baseline/B5` 的 `20f6ea8` 建立。只保留同步 I＋年龄/性别/身高/体重条件的 B5-U 微调、数据预检、正式评估和测试推理。网络仍是原64/128/256条件1D U-Net，FM线性路径和原损失不变；模型/条件/预处理版本不变，兼容已有公开预训练和华为微调 checkpoint。
 
-## 已实现的范围
+最终候选是 **EMA权重＋Heun16＋K=16＋seed=42**。K=16是16次独立ODE输出逐点平均，默认配置为 `configs/b5_inference.yaml`。validate/predict自动读取，无需传steps或samples；旧checkpoint内的K=1不会覆盖它。每窗口512次速度场调用，16份依次生成并累加。
 
-- 三尺度条件 1D U-Net，64/128/256 通道，11 导联速度头和独立辅助 I 重建头。
-- 同步 I 多尺度特征注入，连续时间编码，年龄/性别/身高/体重 MLP＋FiLM，字段 mask、整组人口学 dropout 和单字段 dropout。
-- 独立噪声—目标线性 Flow Matching、坏目标导联屏蔽、Huber/PCC/I 辅助监督。
-- Heun/Euler 真正 ODE 采样、多样本均值、按记录/窗口稳定噪声种子。
-- 华为 train-only 同步缓存、当前 main 的验证 Dataset 与记录级 evaluator。
-- 本地 PTB-XL records500 读取、WFDB 物理单位和导联映射、患者 fold 检查、下载完整性检查。
-- 公开从零预训练、华为从零基准、公开 checkpoint→华为微调，以及兼容性校验和精确续训。
-- 保存 EMA、优化器、随机状态、数据清单摘要、条件版本、尺度参数和采样配置。
-- 仅可见同步 I＋可选人口学的任意长度预测、尾窗 padding/裁去、输入/输出采样率适配。
+旧的从头训练、I-only消融、公开预训练脚本、过拟合、慢走势实验和绘图/诊断代码保存在原 `baseline/B5`。需要重跑公开预训练时使用原分支；本分支加载现成的公开预训练checkpoint微调。共享 `ecg12gen`、metadata和common/preprocessing配置是数据/评分依赖，保留原状。
 
-首版不实现历史 ECG/PPG 条件融合，也不启用 CNN＋Transformer。现有网络和条件 schema 保留为稳定基础版；后续扩展需要新 schema、真实配对数据和加载审计，不能把缺失 mask 当作该模态已经学习。
+## 1. 直接评估已有最佳微调模型，不需重新训练
 
-## 与当前 main 对接
-
-预处理直接复用 ecg12gen.preprocessing：
-
-- anchor I 与 d12 target 只除冻结 scale，不减 median。
-- scale 仅由华为 train-only 去重同步索引拟合，公开预训练与华为微调复用同一文件。
-- B5-U 不使用跨时间 context，因此首版不需 context 的尺度；主 Dataset/评估协议不改。
-- 训练完整 d12 辅助输出中 I 由重建头预测，不拿真实 I 回填训练输出。
-- 输出只乘回一次 scale，不加 target baseline；evaluator 不中心化、不替换 I。
-- r_missing11 评分 II–V6；**当前 main 的 Task2 RMSE 加分只统计 V1–V6**，missing11_mean_rmse_uV 仍是 11 导联平均误差。直接调用 main evaluator，不另写计分公式。
-
-一个基础模型会同时报告 task1、task2。默认配置以 **task1 validation r_missing11** 选择 best.pt，task2 另行报告；这避免隐式更改 main 的 checkpoint 指标。若研究 Task2 专用 checkpoint，请改 validation.selection_task=task2，并用独立 output_dir，所有对照同样设置。公共预训练以 PTB-XL fold9 的 r_missing11 选 checkpoint，该结果不作为华为竞赛成绩。
-
-## 目录和公开数据
-
-默认配置从仓库目录计算：
-
-```text
-HW/
-  huawei/
-    baselines/B5/
-    configs/experiments/b5_*.yaml
-  task1_output_v2/
-  task2_output/
-  Data/
-    userinfobean.csv
-    ptbxl_database.csv
-    records500/00000/00001_hr.hea
-    records500/00000/00001_hr.dat
-    ...
-```
-
-PTB-XL 也可位于 Data/ptb-xl/1.0.3 等子目录，适配器会在最多三层路径中寻找数据库 CSV；多个版本时必须显式设置 paths.ptbxl_root。已下载 records100 并不表示可以开始本方案的 records500 预训练，不自动将 100 Hz 波形插值当作 500 Hz 高分辨率数据。
-
-缺文件时 preflight 返回 ready=false 和退出码 2，训练构造器拒绝静默使用不完整子集。不会调用 wget、请求远端 WFDB 或自动下载。
-
-移动到训练服务器后调整配置中的 paths.data_root、paths.huawei_data_root、paths.ptbxl_root。保留患者级 split、500 Hz 原始电压缓存与 main metadata；不要重新按窗口随机划分。
-
-## 环境
-
-Python >=3.10。先在实际训练机器按 CPU/CUDA 环境安装 PyTorch，然后：
-
-```powershell
-python -m pip install -r baselines/B5/requirements.txt
-```
-
-根目录 requirements.txt 只描述公共 main 的 NumPy/PyYAML，B5 的 Torch/WFDB/SciPy 依赖位于自己的 requirements.txt。无需在当前无 GPU 的本机安装训练环境。
-
-## 第一步：只做准备检查，不训练
-
-以下命令从 huawei 仓库根目录执行。
-
-```powershell
-python -m baselines.B5.prepare --config configs/experiments/b5_local_meta.yaml --fit-scales --report results/B5/preflight_huawei.json
-python -m baselines.B5.prepare --config configs/experiments/b5_public_meta.yaml --check-public --report results/B5/preflight_public.json
-```
-
-第一条只从华为训练数据拟合尺度并检查缓存，不更新任何网络参数。尺度文件已存在时去掉 --fit-scales，直接复用；禁止微调时重新拟合或对验证目标拟合。
-
-第二条检查下载和单位。公共十秒记录本身合法，公共适配器不会套用华为原始记录“少于30秒不训练”的规则。PTB-XL folds1–8 train、9 validation、10 test；同一 patient_id 跨 fold 会报错。
-
-元信息冲突逐字段设缺失，不随意选最后一行；找不到患者时所有人口学字段缺失。ID 只用于关联/划分，不输入模型。PTB-XL sex=0为女、1为男，统一映射到 B5 的 male=0、female=1、unknown=2；匿名高龄编码归入 90+，不会直接把 300 岁当数值条件。
-
-## 第二步：训练服务器先做小集合过拟合诊断
-
-先完成华为缓存/环境检查和 train-only 尺度准备，不必等公开数据下载完。下面命令只应由用户在训练机器上显式执行，本次交付未运行任何优化步骤：
+先由用户提交并推送本地新分支，服务器检查没有运行中的旧训练进程或未处理本地改动，再切换：
 
 ```bash
-python -m baselines.B5.overfit --config configs/experiments/b5_local_meta.yaml --windows 1 --steps 1000 --device cuda --output-dir results/B5/overfit_w1 --execute-training
-python -m baselines.B5.overfit --config configs/experiments/b5_local_meta.yaml --windows 4 --steps 1000 --device cuda --output-dir results/B5/overfit_w4 --execute-training
+cd /home/qht/huawei
+git fetch origin
+git switch B5
+git pull --ff-only origin B5
+
+CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.validate \
+  --config configs/experiments/b5_finetune_meta.yaml \
+  --checkpoint results/B5/E2_finetune_meta/best.pt \
+  --device cuda \
+  --output-dir results/B5/E2_finetune_meta/final_B5_heun16_k16
 ```
 
-诊断仅从 Huawei train-only 索引选择不同记录、完整可靠且非恒定的目标窗口，固定可见条件和 target，每次优化仍随机采样 t/noise。关闭人口学 dropout/weight decay，评估使用固定噪声的真实 ODE 生成。输出 diagnostic.jsonl、training_target_uV.npy、last_prediction_uV.npy；不保存可复用的 checkpoint。
+首次本地没有B5分支时，fetch后 `git switch --track origin/B5`。不要强制reset；服务器路径修改按实际位置保留。输出目录须新建或为空。终端和输出报告包含r、Task2胸导联RMSE、实际采样设置；`inference_sampling.json`记录配置和checkpoint路径。
 
-关注平均训练 loss 趋势，以及 training_window_r_missing11、training_window_mean_rmse_scaled 相对 step0 是否显著改善。单窗口可将 r 接近0.95以上、缩放空间RMSE接近0.1以下作为参考，但不设成所有数据必达的硬门槛。随机 FM 的瞬时 loss 不必为零；波形仍不对、训练样本都无法拟合时，先查单位、对齐、mask和采样，不立即跑公开全量。
+使用你已训练好的 `results/B5/E2_finetune_meta/best.pt` 就能复用当前最优候选权重。Git分支不会包含服务器checkpoint和数据；精简代码不意味着从头重训可以自动得到相同权重，也未在本机重算服务器成绩。
 
-这是训练集合上的窗口诊断，不是验证成绩或正式记录级比赛得分。overfit 同样必须带 --execute-training；当前开发与CPU检查没有运行它的优化循环。
+## 2. 测试推理
 
-## 第三步：将来在训练机器上执行完整训练
-
-**本次交付没有执行本节任何训练命令。只有显式传 --execute-training 才会启动训练。** 不带开关会在导入训练运行时之前报错。
-
-### E1：华为从零基准
-
-```powershell
-python -m baselines.B5.train_huawei --config configs/experiments/b5_local_meta.yaml --device cuda --execute-training
+```bash
+CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.predict \
+  --checkpoint results/B5/E2_finetune_meta/best.pt \
+  --anchor /path/to/visible_synchronous_I.npy \
+  --record-id test_record_001 \
+  --input-fs 500 --input-unit uV \
+  --device cuda \
+  --output results/B5/test_predictions/test_record_001.npy
 ```
 
-### E2：公开预训练→华为微调主线
+anchor只允许可见同步I的 `[T]` 或 `[1,T]` 数组。可选 `--metadata-json /path/to/observed_metadata.json`，内容如 `{"age":24,"gender":"男","height":175,"weight":70}`；没有则按原缺失mask处理。填写真实采样率和单位；默认输出与原输入相同长度、采样率，12导联，μV。输出文件和JSON需不存在。JSON记录实际Heun16/K16。
 
-```powershell
-python -m baselines.B5.train_public --config configs/experiments/b5_public_meta.yaml --device cuda --execute-training
-python -m baselines.B5.train_huawei --config configs/experiments/b5_finetune_meta.yaml --init-checkpoint results/B5/E2_public_meta/best.pt --device cuda --execute-training
+不会读取真实缺失导联；I输出沿用原辅助预测头，没有默认复制可见I。原始目标与anchor不减median；输出只乘一次冻结scale，不用真实目标基线校正。
+
+## 3. 路径与数据检查
+
+只剩两份实验配置：`b5_base.yaml`为共有参数，`b5_finetune_meta.yaml`为微调入口；不需要选择多个实验版本。`paths.data_root`默认为小写 `data`：
+
+```text
+/home/qht/
+├── task1_output_v2/
+├── task2_output/
+└── huawei/
+    ├── data/userinfobean.csv
+    ├── metadata/
+    └── results/B5/
+        ├── shared/preprocessing_scales.npz
+        ├── E2_public_meta/best.pt      # 仅需要继续微调时
+        └── E2_finetune_meta/best.pt    # 直接评估/测试使用
 ```
 
-公开预训练从随机初始化开始，同步 I、人口学和主干一起学习；华为微调加载公开模型的 EMA 权重并继续训练全部基础参数。同一数值/条件定义跨阶段保持一致。微调必须给 compatible checkpoint；不会静默退回随机初始化。
+不需上传或读取PTB-XL原始数据来评估/推理。沿用原缓存、受试者划分、单位和尺度；文件夹大小写按实际配置。
 
-### E3：人口学与框架对照
-
-```powershell
-python -m baselines.B5.train_public --config configs/experiments/b5_public_i.yaml --device cuda --execute-training
-python -m baselines.B5.train_huawei --config configs/experiments/b5_finetune_i.yaml --init-checkpoint results/B5/E3_public_I/best.pt --device cuda --execute-training
-python -m baselines.B5.train_huawei --config configs/experiments/b5_local_i.yaml --device cuda --execute-training
+```bash
+python -m baselines.B5.prepare \
+  --config configs/experiments/b5_finetune_meta.yaml \
+  --report results/B5/preflight_finetune.json
 ```
 
-E1与E2比较公开预训练；E2与公开I-only路线比较人口学条件；local-I与相同骨干/数据/预算的I-only diffusion比较FM。不能将额外公开数据和人口学增益全部归因于FM。
+预检不训练、不下载；ready=true才表示缓存/尺度/人口学检查通过。已有冻结尺度不要重新拟合。validate/predict从checkpoint读取其冻结尺度，prepare与微调读取配置的既有尺度文件并检查兼容。
 
-### 精确续训
+## 4. 可选继续微调
 
-```powershell
-python -m baselines.B5.train_huawei --config configs/experiments/b5_finetune_meta.yaml --resume results/B5/E2_finetune_meta/last.pt --device cuda --execute-training
+训练不是获得当前候选成绩的必需步骤。若另开一轮微调，先把配置中 `paths.output_dir` 改为新的空目录，然后：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
+  --config configs/experiments/b5_finetune_meta.yaml \
+  --init-checkpoint results/B5/E2_public_meta/best.pt \
+  --device cuda --execute-training
 ```
 
---resume 恢复模型、EMA、优化器、GradScaler、随机状态和数据加载顺序；必须保持数据清单、阶段、选模人群和关键训练设置。增加总 epochs 可继续；换数据/条件/预算应另建配置与 output_dir 并使用 --init-checkpoint。精确续训需同 CUDA 设备数量。
+也可用兼容微调best初始化新的微调运行。精确续训用 `--resume /path/to/last.pt`，不能同时传init-checkpoint，保留原阶段/损失/数据/关键训练设置；只有显式execute-training才训练。
 
-所有配置中的 epoch/LR 是起始设置，不是已调优结果。首版无 LR scheduler、回放混训或历史分支，这些不是隐藏启用的功能。梯度累积处理最后一个不足整组的 batch，验证始终用 EMA 和实际 ODE 生成。
+周期验证保持原实验Heun16/K1，best.pt仍按Task1 r选择，last.pt用于续训。独立最终评估/测试用K16，选模历史不伪装成K16。另开新实验若要按K16选模型，可在新实验配置改sampling.samples，但不能把旧K1最佳分数作为新设置的历史基准。
 
-## 第四步：验证已有 checkpoint
+## 5. 环境与验证
 
-```powershell
-python -m baselines.B5.validate --config configs/experiments/b5_finetune_meta.yaml --checkpoint results/B5/E2_finetune_meta/best.pt --device cuda --output-dir results/B5/E2_final_validation
+Python>=3.10，沿用BioFlow；依赖是NumPy、PyYAML、PyTorch、SciPy，不再需要WFDB或matplotlib来使用这条主线。
+
+```bash
+python -m unittest discover -s baselines/B5/tests -v
 ```
 
-输出每任务的 prediction_uV.npy、target_uV.npy、window_metadata.csv、overall_metrics.csv、lead_metrics.csv、report.md，以及两任务计分汇总。public validation 会标记 source_domain=PTB-XL，不能当华为测试成绩。输出目录需为空，避免覆盖先前记录。
-
-验证不将真实 target 用于生成。score 由 main evaluator 计算，记录级拼接检查会对缺窗/重复窗报错。Task2 缓存无 expected_window_count 时的末尾缺窗判定限制仍按 main 实现，不宣称已自动补齐缓存。
-
-## 第五步：只用可见同步 I 做预测
-
-```powershell
-python -m baselines.B5.predict --checkpoint results/B5/E2_finetune_meta/best.pt --anchor visible_record_I_uV.npy --metadata-json observed_metadata.json --record-id record_001 --input-fs 500 --input-unit uV --device cuda --output results/B5/record_001_prediction.npy
-```
-
-observed_metadata.json 示例：
-
-```json
-{"age":24,"gender":"男","height":175,"weight":70}
-```
-
-没有人口学信息时省略 --metadata-json。anchor 只接受 [T] 或 [1,T] 的真实可见同步 I；不会读取完整 d12/隐藏目标。长度不限十秒，尾段 edge padding 后预测并裁去 padding。默认输出恢复到输入采样率及原始长度，单位 μV，导联顺序标准 d12；可用 --output-fs 明确指定其他接口输出采样率。
-
-默认 I 通道来自辅助重建头，与训练/验证一致。只有正式接口明确需要复制可见 I 时才用 --copy-observed-i，此选项仅在提交预测入口，不参与 evaluator 替换或选模。
-
-独立评估与测试预测默认读取 configs/b5_inference.yaml，采用 Heun16/K16（每窗口512NFE），无需额外传采样参数。可覆盖 --steps、--samples、--solver、--seed 做独立采样实验；复现K1加 --samples 1。Heun16/K1约32NFE；K4约128NFE。噪声基于record-id＋窗口起点，不依赖batch排序。禁止用真实target挑最好样本。
-
-输出 .npy 与 JSON sidecar 使用新文件名，不覆盖输入或先前结果。预测格式是通用 NPY 适配器；最终主办方可执行包装/字段格式需要在正式接口确认后另行接入，不能将其称为已完成官方打包提交。
-
-## 无训练的 CPU 检查
-
-```powershell
-python -m unittest baselines.B5.tests.test_b5 -v
-```
-
-检查完整5000点网络前向、FiLM/mask、坏导联屏蔽、ODE解析例、按记录噪声、真实WFDB格式夹具、患者fold隔离、尺度/安全checkpoint加载、尾段与采样率恢复。损失只做一次导数检查，不创建优化器或更新参数，不进入训练循环。
-
-可选实际缓存的只读集成检查：
-
-```powershell
-$env:B5_REAL_HW_ROOT = 'C:\Users\Ashley\Desktop\HW'
-python -m unittest baselines.B5.tests.test_b5 -v
-```
-
-只从真实缓存读取/在内存计算train尺度，并用target自身检查main评分契约；这不是模型性能结果，不拟合验证统计，不写回Data。
-
-checkpoint使用 weights_only=True 加载，且检查architecture/schema/scale校验值。生成的checkpoint、尺度、波形预测、日志均放results下，现有.gitignore已排除；不要提交原始数据或训练产物。
-## 原始电压与完整验证集快慢变化诊断
-
-新增 CPU 只读工具，不启动训练或模型推理，保持 best.pt 原选择规则：
-
-- python -m baselines.B5.diagnose_evaluation：读取已保存的全部验证预测，按完整记录分析快/慢变化和偏移，核对原始评分与目标一致性。
-- python -m baselines.B5.audit_raw_voltage：独立核对原始 XML 的单位、scale、origin、重采样与缓存，并导出严格训练/验证缓存的描述统计。
-- python -m unittest baselines.B5.tests.test_diagnostics -v：诊断功能测试。
-
-完整服务器命令、缺失 XML 的处理和结果打包见 [诊断流程](../../docs/b5_diagnostic_workflow.md)。诊断滤波指标不能代替正式 raw μV 评分，不改变目标或推理输出。
-## 慢走势辅助监督配对实验
-
-新配置 b5_slow_control.yaml 与 b5_slow_trend.yaml 从同一微调EMA快照初始化、各20轮；只改变训练期中心慢走势辅助损失权重（0 / 0.1），首次作用于V1–V6。旧配置默认关闭，网络、推理输入和原始μV目标不变，best.pt仍按原Task1 r选择，不增加best_score.pt。
-
-配对预检冻结初始化并校验配置/尺度/数据；两组新增第0轮真实ODE验证以保留不退步的起点。精确resume会拒绝变更损失；新实验用init-checkpoint。全记录诊断增加窗口均值与边界误差，结果比较检查初始化一致性及原始r，不以训练辅助loss替代评分。
-
-服务器预检、训练、续训、评估、诊断与打包命令见 [慢走势实验说明](../../docs/b5_slow_trend_experiment.md)。本机仅功能检查，没有启动训练；此方案尚未验证分数提升。
-
-## 最终评估与测试推理默认采样
-
-configs/b5_inference.yaml 固定最终候选 Heun16、K=16、seed=42。validate 和 predict 自动读取，无需传步数/采样次数；旧 checkpoint 保存的 K=1 不会覆盖当前推理配置。显式采样参数可用于复现K=1。训练周期验证继续使用实验配置，best.pt仍按Task1 r选择。
-
-服务器评估、测试预测和配置优先级见 [最终采样说明](../../docs/b5_final_sampling.md)。
+测试不运行优化器更新，覆盖网络/条件/缺失mask、原始电压尺度、ODE、旧checkpoint、默认K16、参数覆盖、推理尾段、采样率和main评分合同。best-score保存方式、共享main、网络参数布局均未修改。

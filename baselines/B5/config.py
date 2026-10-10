@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from .objective import slow_settings
+from .objective import validate_mainline_loss
 
 
 @dataclass(frozen=True)
@@ -79,8 +79,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
     config = _read(path, set())
     config["repository_root"] = str(repository_root(path))
     config["config_path"] = str(path)
-    if config.get("stage") not in {"local", "public", "finetune"}:
-        raise ValueError("stage must be local, public, or finetune")
+    if config.get("stage") != "finetune":
+        raise ValueError("The clean B5 branch only accepts finetune configurations")
     ModelConfig.from_dict(config.get("model", {}))
     training = config["training"]
     for key in ("epochs", "batch_size", "gradient_accumulation", "validate_every"):
@@ -99,9 +99,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("Loss weights cannot be negative")
     if float(config["loss"]["huber_delta"]) <= 0:
         raise ValueError("Huber delta must be positive")
-    slow_settings(config["loss"])  # Legacy configs default to a disabled auxiliary.
-    if not isinstance(training.get("validate_initial", False), bool):
-        raise ValueError("training.validate_initial must be a boolean")
+    validate_mainline_loss(config["loss"])
     tasks = config["validation"]["tasks"]
     if not tasks or len(set(tasks)) != len(tasks) or any(task not in {"task1", "task2"} for task in tasks):
         raise ValueError("validation.tasks must contain distinct task1/task2 entries")

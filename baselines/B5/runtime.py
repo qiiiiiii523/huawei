@@ -23,29 +23,11 @@ from .data import HuaweiTrainDataset, HuaweiValidationDataset, common_config, de
 from .flow import sample
 from .losses import flow_loss
 from .model import B5UNet
-from .public_adapter import PTBXLDataset, locate_ptbxl
 from .objective import file_sha256, validate_resume_loss
 
 INPUT_FIELDS = ("anchor", "numeric", "sex", "field_mask", "age_topcoded")
 
 
-def initialize_validation_baseline(model, datasets, config, preprocessor, device,
-                                   output: Path, selection: str, make_payload) -> float:
-    """Save a selectable epoch0 baseline, without any optimizer update."""
-    summaries = validate(model, datasets, config, preprocessor, device,
-                         output / 'validation' / 'epoch_0000')
-    score = float(summaries[selection]['r_missing11'])
-    if not math.isfinite(score):
-        raise FloatingPointError('Undefined initializer validation selection score')
-    (output / 'initial_validation.json').write_text(json.dumps({
-        'epoch': 0, 'updates': 0, 'validation': summaries, 'selection_task': selection,
-        'selection_value': score}, indent=2), encoding='utf-8')
-    payload = make_payload(score)
-    atomic_save(output / 'best.pt', payload)
-    atomic_save(output / 'last.pt', payload)
-    print(json.dumps({'epoch': 0, 'phase': 'initial_validation',
-                      'best_validation_r_missing11': score}), flush=True)
-    return score
 
 
 def seed_all(seed: int, deterministic: bool) -> None:
@@ -91,20 +73,13 @@ def device_from_name(name: str) -> torch.device:
 
 
 def build_validation_datasets(config: dict[str, Any], preprocessor: Any) -> dict[str, Any]:
-    if config["stage"] == "public":
-        root = locate_ptbxl(resolve_path(config, "data_root"), resolve_path(config, "ptbxl_root"))
-        return {"public": PTBXLDataset(root, "validation", preprocessor)}
     demographics = demographics_table(config)
     return {task: HuaweiValidationDataset(config, task, preprocessor, demographics)
             for task in config["validation"]["tasks"]}
 
 
 def build_datasets(config: dict[str, Any], preprocessor: Any) -> tuple[Any, dict[str, Any]]:
-    if config["stage"] == "public":
-        root = locate_ptbxl(resolve_path(config, "data_root"), resolve_path(config, "ptbxl_root"))
-        train = PTBXLDataset(root, "train", preprocessor)
-    else:
-        train = HuaweiTrainDataset(config, preprocessor, demographics_table(config))
+    train = HuaweiTrainDataset(config, preprocessor, demographics_table(config))
     return train, build_validation_datasets(config, preprocessor)
 
 
@@ -137,9 +112,9 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
             offset += size
         prediction.flush()
         target.flush()
-        task_id = "task1" if name == "public" else name
+        task_id = name
         overall, details = evaluate_record_predictions(prediction, target, task_id, rows)
-        overall.update({"source_domain": "PTB-XL" if name == "public" else "Huawei", "solver": settings["solver"],
+        overall.update({"source_domain": "Huawei", "solver": settings["solver"],
                         "architecture_id": ARCHITECTURE_ID, "condition_schema": CONDITION_SCHEMA,
                         "metadata_enabled": model.config.metadata_enabled,
                         "integration_steps": int(settings["steps"]), "samples": int(settings["samples"]),
@@ -165,7 +140,9 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     """Called only by CLI after its explicit --execute-training gate."""
     if init_path and resume_path:
         raise ValueError("Choose either fine-tune initialization or exact resume")
-    if config["stage"] == "finetune" and not (init_path or resume_path):
+    if config["stage"] != "finetune":
+        raise ValueError("The clean B5 branch only runs Huawei fine-tuning")
+    if not (init_path or resume_path):
         raise ValueError("Fine-tuning requires --init-checkpoint or --resume")
     device = device_from_name(device_name)
     training = config["training"]
@@ -210,13 +187,12 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     train_data, validation_data = build_datasets(config, preprocessor)
     manifests = {"train": train_data.manifest_digest,
                  **{name: data.manifest_digest for name, data in validation_data.items()}}
-    if config["stage"] != "public":
-        import hashlib
-        manifests["demographics_csv"] = hashlib.sha256(resolve_path(config, "demographics").read_bytes()).hexdigest()
-        common = common_config(config)
-        for key in ("subject_split_csv", "device_interpretation_qc_csv"):
-            manifests[key] = hashlib.sha256(common.path(key).read_bytes()).hexdigest()
-    selection = "public" if config["stage"] == "public" else config["validation"]["selection_task"]
+    import hashlib
+    manifests["demographics_csv"] = hashlib.sha256(resolve_path(config, "demographics").read_bytes()).hexdigest()
+    common = common_config(config)
+    for key in ("subject_split_csv", "device_interpretation_qc_csv"):
+        manifests[key] = hashlib.sha256(common.path(key).read_bytes()).hexdigest()
+    selection = config["validation"]["selection_task"]
     if selection not in validation_data:
         raise ValueError("validation.selection_task must be included in validation.tasks")
     if resume_path:
@@ -252,11 +228,6 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
                 "training_config": training, "loss_config": config['loss'], "config": config,
                 "torch_version": str(torch.__version__), "initialization": initialization}
 
-    if training.get('validate_initial', False) and not resume_path:
-        # Seeded target-free ODE validation is identical in both paired runs.
-        # epoch=-1 means zero optimizer epochs completed; --resume starts at epoch 1.
-        best_score = initialize_validation_baseline(model, validation_data, config, preprocessor,
-            device, output, selection, lambda score: {**checkpoint_payload(-1), 'best_score': score})
     for epoch in range(start_epoch, int(training["epochs"])):
         model.train()
         optimizer.zero_grad(set_to_none=True)

@@ -1,5 +1,0 @@
-base: b5_base.yaml
-experiment_id: E1-B5-local-meta
-stage: local
-paths:
-  output_dir: results/B5/E1_local_meta

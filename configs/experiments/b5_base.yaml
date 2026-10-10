@@ -1,14 +1,13 @@
 experiment_id: B5-U-Meta
-stage: local
+stage: finetune
 paths:
   data_root: data
   huawei_data_root: ..
-  ptbxl_root: ${data}/PTB-XL
   demographics: ${data}/userinfobean.csv
   common_config: configs/common.yaml
   preprocessing_config: configs/preprocessing.yaml
   scales: results/B5/shared/preprocessing_scales.npz
-  output_dir: results/B5/local_meta
+  output_dir: results/B5/E2_finetune_meta
 model:
   channels: [64, 128, 256]
   time_dim: 128

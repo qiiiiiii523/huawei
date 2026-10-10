@@ -1,8 +1,0 @@
-base: b5_base.yaml
-experiment_id: E2-B5-public-meta-pretrain
-stage: public
-training:
-  epochs: 30
-  learning_rate: 0.0001
-paths:
-  output_dir: results/B5/E2_public_meta

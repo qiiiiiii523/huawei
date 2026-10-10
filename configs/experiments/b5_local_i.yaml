@@ -1,8 +1,0 @@
-base: b5_base.yaml
-experiment_id: E3-local-I-framework-control
-model:
-  metadata_enabled: false
-  metadata_dropout: 0.0
-  metadata_field_dropout: 0.0
-paths:
-  output_dir: results/B5/E3_local_I

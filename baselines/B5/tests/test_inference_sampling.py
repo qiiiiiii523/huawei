@@ -23,7 +23,7 @@ LEGACY = {'seed': 42, 'solver': 'heun', 'steps': 16, 'samples': 1}
 class InferenceSamplingTests(unittest.TestCase):
     def test_default_final_profile_and_training_config_separate(self):
         self.assertEqual(inference_sampling(), {**LEGACY, 'samples': 16})
-        self.assertEqual(load_config(ROOT/'configs/experiments/b5_local_meta.yaml')['sampling'], LEGACY)
+        self.assertEqual(load_config(ROOT/'configs/experiments/b5_finetune_meta.yaml')['sampling'], LEGACY)
 
     def test_explicit_overrides_and_none_preserves_profile(self):
         self.assertEqual(inference_sampling(overrides={'steps': 32, 'samples': 4, 'seed': None}),

@@ -27,7 +27,6 @@ from baselines.B5.losses import flow_loss
 from baselines.B5.metadata import DemographicsTable, encode_demographics
 from baselines.B5.model import B5UNet
 from baselines.B5.predict import canonical_anchor, predict_record, restore_rate
-from baselines.B5.public_adapter import PTBXLDataset, lead_order, locate_ptbxl, physical_to_uV
 
 torch.set_num_threads(2)
 ROOT = Path(__file__).resolve().parents[3]
@@ -185,56 +184,7 @@ class DataAndCheckpointTests(unittest.TestCase):
         np.testing.assert_allclose(processor.transform_window(raw[:1], "ecg_machine_i").model_signal,
                                    transformed.model_signal[:1])
 
-    def test_units_and_avr_avl_reordering(self) -> None:
-        names = ["I", "II", "III", "AVL", "AVR", "AVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-        raw = np.tile(np.arange(1, 13, dtype=float), (5000, 1))
-        converted = physical_to_uV(raw, ["mV"] * 12, names, 500)
-        self.assertEqual(converted[3, 0], 5000.)
-        self.assertEqual(converted[4, 0], 4000.)
-        with self.assertRaises(ValueError):
-            physical_to_uV(raw, ["mV"] * 12, names, 100)
-        with self.assertRaises(ValueError):
-            lead_order(names[:-1] + ["I"])
 
-    def test_public_real_wfdb_fixture_split_and_partial_download(self) -> None:
-        import wfdb
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            directory = root / "records500" / "00000"
-            directory.mkdir(parents=True)
-            rows = []
-            wave = np.sin(np.arange(5000) * .02)[:, None] * .02 + np.arange(12)[None, :] * .003
-            names = ["I", "II", "III", "AVL", "AVR", "AVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-            for index, fold in enumerate((1, 9, 10), 1):
-                name = f"{index:05d}_hr"
-                wfdb.wrsamp(name, fs=500, units=["mV"] * 12, sig_name=names, p_signal=wave,
-                            fmt=["16"] * 12, adc_gain=[1000.] * 12, baseline=[100] * 12, write_dir=str(directory))
-                rows.append({"ecg_id": str(index), "patient_id": str(index), "strat_fold": str(fold),
-                             "filename_hr": f"records500/00000/{name}", "age": "302", "sex": "0"})
-            path = root / "ptbxl_database.csv"
-            with path.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
-            self.assertEqual(locate_ptbxl(root), root)
-            processor = preprocessor()
-            dataset = PTBXLDataset(root, "train", processor)
-            item = dataset[0]
-            self.assertEqual(len(dataset), 1)
-            self.assertEqual(item["target"].shape, (12, 5000))
-            expected_avr = wave[:, 4] * 1000
-            np.testing.assert_allclose(item["target_uV"][3], expected_avr, atol=.51)
-            self.assertTrue(item["quality_mask"].all())
-            directory.joinpath("00001_hr.dat").unlink()
-            with self.assertRaises(FileNotFoundError):
-                PTBXLDataset(root, "train", processor)
-            rows[1]["patient_id"] = "1"
-            with path.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
-            with self.assertRaises(ValueError):
-                PTBXLDataset(root, "validation", processor, check_files=False)
 
     def test_checkpoint_safe_load_scale_and_architecture_rejection(self) -> None:
         model, processor = tiny_model(), preprocessor()
@@ -281,10 +231,10 @@ class DataAndCheckpointTests(unittest.TestCase):
         for path in sorted((ROOT / "configs" / "experiments").glob("b5_*.yaml")):
             config = load_config(path)
             self.assertEqual(len(config["model"]["channels"]), 3)
-            self.assertIn(config["stage"], {"local", "public", "finetune"})
+            self.assertEqual(config["stage"], "finetune")
 
     def test_training_cli_requires_explicit_opt_in_before_loading_config(self) -> None:
-        for module in ("train_public", "train_huawei", "overfit"):
+        for module in ("train_huawei",):
             completed = subprocess.run([sys.executable, "-m", "baselines.B5." + module,
                                         "--config", "a_nonexistent_config.yaml"], cwd=ROOT,
                                        text=True, capture_output=True, timeout=20)
@@ -309,7 +259,7 @@ class RealHuaweiReadOnlyTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("B5_REAL_HW_ROOT"), "Set B5_REAL_HW_ROOT for real-cache read-only integration checks")
     def test_real_caches_scales_and_validation_contract(self) -> None:
         hw = Path(os.environ["B5_REAL_HW_ROOT"])
-        config = load_config(ROOT / "configs" / "experiments" / "b5_local_meta.yaml")
+        config = load_config(ROOT / "configs" / "experiments" / "b5_finetune_meta.yaml")
         config["paths"]["huawei_data_root"] = str(hw)
         config["paths"]["data_root"] = str(hw / "Data")
         processor, report = fit_huawei_scales(config)
