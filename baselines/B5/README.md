@@ -181,3 +181,12 @@ python -m unittest baselines.B5.tests.test_b5 -v
 只从真实缓存读取/在内存计算train尺度，并用target自身检查main评分契约；这不是模型性能结果，不拟合验证统计，不写回Data。
 
 checkpoint使用 weights_only=True 加载，且检查architecture/schema/scale校验值。生成的checkpoint、尺度、波形预测、日志均放results下，现有.gitignore已排除；不要提交原始数据或训练产物。
+## 原始电压与完整验证集快慢变化诊断
+
+新增 CPU 只读工具，不启动训练或模型推理，保持 best.pt 原选择规则：
+
+- python -m baselines.B5.diagnose_evaluation：读取已保存的全部验证预测，按完整记录分析快/慢变化和偏移，核对原始评分与目标一致性。
+- python -m baselines.B5.audit_raw_voltage：独立核对原始 XML 的单位、scale、origin、重采样与缓存，并导出严格训练/验证缓存的描述统计。
+- python -m unittest baselines.B5.tests.test_diagnostics -v：诊断功能测试。
+
+完整服务器命令、缺失 XML 的处理和结果打包见 [诊断流程](../../docs/b5_diagnostic_workflow.md)。诊断滤波指标不能代替正式 raw μV 评分，不改变目标或推理输出。
