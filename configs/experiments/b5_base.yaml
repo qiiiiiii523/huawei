@@ -1,7 +1,7 @@
 experiment_id: B5-U-Meta
 stage: local
 paths:
-  data_root: Data
+  data_root: data
   huawei_data_root: ..
   ptbxl_root: ${data}/PTB-XL
   demographics: ${data}/userinfobean.csv
