@@ -1,7 +1,7 @@
 paths:
   data_root: ".."
-  task1_output: "${data_root}/task1_output_v2"
-  task2_output: "${data_root}/task2_output"
+  task1_output: "${data_root}/task1_record_context_v3"
+  task2_output: "${data_root}/task2_record_context_v3"
   task2_body_scale_ablation: "${data_root}/task2_body_scale_ablation"
   task2_body_scale_b_metadata: "${data_root}/task2_body_scale_ablation/window_metadata_B_raw.csv"
   subject_split_csv: metadata/subject_split.csv
@@ -34,6 +34,11 @@ joint_anchor:
   context_target_relation: same_subject_cross_time
   anchor_target_relation: same_record_same_window
   task2_context_channel_indices: [0, 1, 2, 3, 4, 5]
+  context_layout: independent_record_windows
+  cache_protocol: independent-record-context-v1
+  target_record_seconds: 120
+  context_tail_policy: retain_zero_in_model_space_with_mask
+  context_unusable_policy: anchor_only
 input_variants:
   task2_body_scale:
     default: A_raw_window

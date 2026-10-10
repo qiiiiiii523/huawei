@@ -32,6 +32,17 @@ class StrictD12PretrainDataset:
             task: np.load(self.config.path(f"{task}_output") / f"{task}_train_target.npy", mmap_mode="r")
             for task in {row["source_task_id"] for row in self.rows}
         }
+        # A new cache changes array ordering. Never silently apply an old index.
+        for task, targets in self.targets.items():
+            task_dir = self.config.path(f"{task}_output")
+            if (task_dir / f"{task}_context_window_metadata.csv").is_file():
+                with (task_dir / f"{task}_window_metadata.csv").open(encoding="utf-8-sig", newline="") as handle:
+                    current = {int(r["array_index"]): r for r in csv.DictReader(handle) if r["split"] == "train"}
+                for row in (r for r in self.rows if r["source_task_id"] == task):
+                    cached = current.get(int(row["source_array_index"]))
+                    if (not cached or cached["target_record_id"] != row["target_record_id"] or
+                            str(cached.get("target_physical_start_sample_500hz", cached["start_sample_500hz"])) != row["start_sample_500hz"]):
+                        raise ContractError("Strict index is stale for the independent cache; rebuild d12_strict_pretrain_index.csv")
         self._record_baselines: dict[str, np.ndarray] = {}
         for row in self.rows:
             text = row.get("target_record_baseline_uV", "")

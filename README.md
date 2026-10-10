@@ -104,11 +104,12 @@ from ecg12gen.dataset import JointAnchorDataset
 
 train = JointAnchorDataset("configs/common.yaml", "task1", "train")
 sample = train[0]
-# sample.context_ecg
+# sample.context_ecg          # [W,C,5000]，整条独立context
 # sample.anchor_i_ecg
 # sample.Y_12lead
-# sample.context_lead_mask
-# sample.anchor_lead_mask  # 仅 I=true
+# sample.context_time_mask   # [W,C,5000]
+# sample.context_window_mask # [W]
+# 使用 collate_record_context(samples, preprocessor) 补齐窗口数并返回有效时长权重
 ```
 
 train/validation 的 `anchor_i_ecg` 从该窗口 target I 模拟构造，metadata 会标记：
@@ -138,24 +139,13 @@ loss 包含：
 
 ## 6. 预处理：模型分支必须遵守
 
-Task 1 使用 record-complete V2 缓存。首次使用或原始数据更新后运行：
+新版采用 independent-record-context-v1。target/anchor 固定为同一120秒的12窗；
+context独立切窗，保留尾窗、缺口mask、有效长度及记录median。所有target窗口关联整条context，
+第k个context窗与第k个target窗没有同步含义。缺失/不合格context回退anchor-only，保留有效target。
+具体缓存格式、构建与模型接入见 [独立context与设备评分协议](docs/independent-context-and-device-scoring.md)。
 
-```powershell
-python scripts/build_task1_record_windows.py `
-  --data-root .. `
-  --output-dir ../task1_output_v2
-
-python scripts/build_d12_strict_pretrain_index.py
-```
-
-V2 严格复用 `metadata/subject_split.csv`，不会重新划分患者。手表时间戳
-缺口只影响 context：所有缺失位置均填该物理记录 median（逐记录中心化后为 0），不插值伪造 ECG 波形，并在
-`task1_*_context_valid_mask.npy` 和 metadata 中留痕；对应 d12 target/anchor
-窗口始终保留。含填补缺口的 context 窗口不用于 joint 训练，但 validation
-必须保留，以便完整记录评估。Dataset 通过 `sample.context_time_mask`
-暴露逐点有效性；模型应屏蔽无效 context token，不能把填充值当成真实 ECG。
-不支持时间 mask 的模型应在该窗口退化为 anchor-only。原始 ZIP/XML 和旧
-`task1_output` 均不修改。
+本次仅改代码，未重建数据。common.yaml 指向未来的 task1_record_context_v3 / task2_record_context_v3；
+旧缓存保留，不能用来冒充新格式。重建缓存后还需重新生成 strict d12 索引。
 
 1. 使用 `ECGPreprocessor`；不要自己重新定义归一化。
 2. 固定 μV、500 Hz、10 秒、5000 点和 canonical d12 顺序。
@@ -204,21 +194,20 @@ checkpoint selection uses validation record-level `r_missing11` (mean Pearson r 
 
 正式 record evaluator 会验证窗口从 0 开始、以 5000 点连续递增，并与
 `expected_window_count` 一致；缺窗缓存会直接报错，不能伪装成完整记录分数。
-`task1_output_v2` 的 21 个 validation pair 均为完整记录；`task2_validation`
-的 25 个 pair 也连续。
+新版正式评估要求每个pair严格12窗/120秒；旧Task1的110秒缓存会拒绝评分，需重建。
 
 每次 validation 只保留 `r_missing11`（II--V6 的逐记录平均相关系数）；RMSE 保留用于加分。
 
 两任务 r1/r2 使用上述 r_missing11。Task 2 加分字段 `task2_missing_lead_mean_rmse_uV` 只计算 V1–V6；`missing11_mean_rmse_uV` 是 11 导联误差统计，不用于加分。旧报告需重新评估，总分脚本会拒绝未声明 V1–V6 范围的旧报告。
 
 评估输入必须为已乘回冻结 d12 scale 的原始 μV，target 必须为原始 NPY。
-评估不再减 median、乘 scale、滤波或替换 I；不生成中心化、设备分层、逐导联 r 或窗口级 r 报告。
+评估不减 median、乘 scale、滤波或替换 I。Task2按input_type分别计算，再设备1:1平均r；各设备胸导联RMSE先换算加分，再1:1平均加分。两设备均须存在，缺一设备报错，不按记录数量混合。
 
 ```powershell
 python -m ecg12gen.evaluate `
   --prediction results/task1_validation_prediction_uV.npy `
-  --target ../task1_output_v2/task1_validation_target.npy `
-  --metadata ../task1_output_v2/task1_window_metadata.csv `
+  --target ../task1_record_context_v3/task1_validation_target.npy `
+  --metadata ../task1_record_context_v3/task1_window_metadata.csv `
   --task-id task1 `
   --output-dir results/task1
 ```
@@ -273,6 +262,6 @@ C1、C2、C3 的定义、gate/residual 初始化常量和 checkpoint 兼容字�
 
 Task 1 固定为 `watch I(A) + machine I(C) -> machine d12(C)`。Task 2 分别运行互斥的 machine/holter d6(B) 与 body-scale d6(A) source variant；不实现、不声明、不比较 `P1-both`。context 仅为条件信息，禁止 context-target 逐点损失、跨时刻波形硬对齐、R 峰伪配对和训练阶段 I 回填。
 
-B0/B1/B2/B3/M1 均可按需运行 P1-C1、P1-C2、P1-C3；至少比较 P0 与 P1-C3。B2 和 M1 完成 C1/C2/C3 模块消融。实验记录必须填写 architecture_id、architecture_config_hash、P0 checkpoint、task/context source、fusion_mode、训练预算、r_missing11、RMSE 及 shuffled-context 结果；不再要求其他相关系数或分层相关系数报告。
+B0/B1/B2/B3/M1 均可按需运行 P1-C1、P1-C2、P1-C3；至少比较 P0 与 P1-C3。B2 和 M1 完成 C1/C2/C3 模块消融。实验记录必须填写 architecture_id、architecture_config_hash、P0 checkpoint、task/context source、fusion_mode、训练预算、r_missing11、RMSE 及 shuffled-context 结果；Task2必须报告两设备分项和1:1汇总；不生成窗口级或中心化r诊断。
 
 不要向 main 提交原始 ECG、窗口 NPY、checkpoint、预测、患者级结果或训练日志。实验详情记录到 `docs/experiment-record-template.md`。

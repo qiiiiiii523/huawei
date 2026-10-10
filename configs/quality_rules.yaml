@@ -63,7 +63,7 @@ device_interpretation_qc:
     arrays_and_raw_records: "retain unchanged"
   ecg_machine_d6_context:
     actionable_leads: [I, II, III, aVR, aVL, aVF]
-    named_observed_bad_lead: "exclude the d6 context sample from training"
+    named_observed_bad_lead: "disable context and retain usable anchor/target; anchor-only fallback"
     expected_chest_lead_dropout: "ignore"
   body_scale_d6:
     affected: false
@@ -71,5 +71,5 @@ device_interpretation_qc:
 protection:
   raw_data_must_not_be_modified: true
   final_windowing_in_this_stage: true
-  final_windowing_note: "Task 1 record-complete windows are reproducibly built by scripts/build_task1_record_windows.py; Task 2 continues to consume the audited team-generated products."
+  final_windowing_note: "Both tasks use independent-record-context-v1; target 120s, context full actual duration including masked tails. Build scripts are provided but are not automatically run."
   model_training_in_this_stage: false

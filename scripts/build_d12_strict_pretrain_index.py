@@ -29,8 +29,8 @@ def rows_for_task(config: ECGDataConfig, task_id: str) -> list[dict[str, str]]:
         if row.get("split") != "train" or row.get("quality_status") != "usable":
             continue
         target_id = row.get("target_record_id", "")
-        start = row.get("start_sample_500hz", "")
-        end = row.get("end_sample_500hz_exclusive", "")
+        start = row.get("target_physical_start_sample_500hz") or row.get("start_sample_500hz", "")
+        end = str(int(start) + 5000) if start else ""
         if not target_id or not start or not end:
             raise ValueError(f"{task_id} row lacks d12 de-duplication fields: {row.get('window_id')}")
         result.append({
