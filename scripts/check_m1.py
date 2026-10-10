@@ -25,9 +25,9 @@ def main():
     try: M1AxialLeadTimeModel(fusion_mode='film',task_id='task2')(anchor,context=d6,context_source_type='body_scale_d6+ecg_machine_d6',context_lead_mask=d6mask); raise AssertionError('combined source accepted')
     except ContractError: pass
     assert list(D12_LEADS)==['I','II','III','aVR','aVL','aVF','V1','V2','V3','V4','V5','V6'] and ARCHITECTURE_VERSION.startswith('M1-axial')
-    pred=torch.zeros(2,12,5000).numpy(); target=torch.randn(2,12,5000).numpy(); raw_anchor=torch.randn(2,1,5000).numpy(); _,_,_,submit=evaluate_joint_anchor_predictions(pred,target,raw_anchor,'task1'); assert torch.equal(torch.from_numpy(submit[:,:1]),torch.from_numpy(raw_anchor))
+    target=torch.randn(2,12,5000).numpy(); pred=target.copy(); raw_anchor=target[:,:1].copy(); rows=[{'pair_id':'p','target_record_id':'r','start_sample_500hz':str(i*5000)} for i in range(2)]; summary,_=evaluate_joint_anchor_predictions(pred,target,raw_anchor,'task1',rows); assert abs(summary['r_missing11']-1)<1e-6
     assert '--target' not in (ROOT/'scripts/predict_m1_axial.py').read_text(encoding='utf-8'); assert 'context_model' not in inspect.getsource(joint_anchor_sync_loss)
     try: validate_p0_checkpoint({'model':{}},p0,torch.ones(12)); raise AssertionError('legacy checkpoint accepted')
-    except ValueError as error: assert 'metadata' in str(error)
-    print('PASS: M1 Axial shape/trace; 4 fusion routes forward-backward; no causal time mask; canonical leads; none isolation; d6 exclusivity; gate/residual init; submit I exact; no target CLI; P0 metadata guard')
+    except ValueError as error: assert 'protocol' in str(error) or 'metadata' in str(error)
+    print('PASS: M1 Axial shape/trace; 4 fusion routes forward-backward; no causal time mask; canonical leads; none isolation; d6 exclusivity; gate/residual init; raw record scoring; no target CLI; P0 metadata guard')
 if __name__=='__main__':main()

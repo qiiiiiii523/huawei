@@ -123,22 +123,24 @@ class M1AxialLeadTimeModel(nn.Module):
         observed=torch.zeros((anchor.shape[0],12),dtype=torch.bool,device=anchor.device); observed[:,0]=True
         if mask is not None and (mask.shape!=observed.shape or not torch.equal(mask.to(torch.bool),observed)): raise ContractError('target-time lead mask must mark only I')
         return h[:,None]+self.lead_embedding[None,:,None]+self.lead_state_embedding[(~observed).long()][:,:,None,:],f0,f1
-    def forward(self,anchor_i,*,context=None,context_source_type=None,context_lead_mask=None,lead_mask=None,return_trace=False):
+    def forward(self,anchor_i,*,context=None,context_source_type=None,context_lead_mask=None,context_available=None,lead_mask=None,return_trace=False):
         if anchor_i.ndim!=3 or anchor_i.shape[1:]!=(1,5000): raise ContractError('M1 input must be [B,1,5000]')
         if self.fusion_mode=='none':
-            if context is not None or context_source_type is not None or context_lead_mask is not None: raise ContractError('none path must not read context')
+            if context is not None or context_source_type is not None or context_lead_mask is not None or context_available is not None: raise ContractError('none path must not read context')
         elif context is None or context_source_type is None: raise ContractError('P1 requires context and explicit source type')
         z,f0,f1=self._grid(anchor_i,lead_mask)
         if self.fusion_mode!='none':
             z_context=self._context(context,context_source_type,context_lead_mask)
+            available=torch.ones(anchor_i.shape[0],device=anchor_i.device,dtype=anchor_i.dtype) if context_available is None else context_available.to(device=anchor_i.device,dtype=anchor_i.dtype)
+            if available.shape!=(anchor_i.shape[0],) or not torch.all((available==0)|(available==1)): raise ContractError('context_available must be a binary [B] mask')
             if self.fusion_mode in {'film','film_gated_residual'}:
-                gamma,beta=self.film(z_context).chunk(2,-1); z=z*(1+gamma[:,None,None])+beta[:,None,None]
+                gamma,beta=self.film(z_context).chunk(2,-1); gamma=gamma*available[:,None]; beta=beta*available[:,None]; z=z*(1+gamma[:,None,None])+beta[:,None,None]
         for block in self.axial_blocks:
             block.time_attention_calls=0
             block.lead_attention_calls=0
             z=block(z)
         z=self.final_norm(z); base=self.decoder(z,f0,f1,self.lead_embedding); prediction=base
         if self.fusion_mode in {'gated_residual','film_gated_residual'}:
-            delta=self.residual(z+z_context[:,None,None]).squeeze(-1); delta=F.interpolate(delta.reshape(-1,1,250),size=5000,mode='linear',align_corners=False).reshape(-1,12,5000); prediction=base+torch.sigmoid(self.gate(z_context)).view(-1,1,1)*delta
+            delta=self.residual(z+z_context[:,None,None]).squeeze(-1); delta=F.interpolate(delta.reshape(-1,1,250),size=5000,mode='linear',align_corners=False).reshape(-1,12,5000); prediction=base+available[:,None,None]*torch.sigmoid(self.gate(z_context)).view(-1,1,1)*delta
         trace=M1ForwardTrace(tuple(z.shape),sum(x.time_attention_calls for x in self.axial_blocks),sum(x.lead_attention_calls for x in self.axial_blocks),False); self.last_trace=trace
         return (prediction,trace) if return_trace else prediction
