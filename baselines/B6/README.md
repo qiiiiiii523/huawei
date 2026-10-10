@@ -102,7 +102,7 @@ CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B6.overfit \
   --config configs/experiments/b6_local_meta.yaml --windows 1 --steps 1000 \
   --device cuda --output-dir results/B6/overfit_w1 --execute-training
 
-CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B6.overfit \
+CUDA_VISIBLE_DEVICES=1 python -u -m baselines.B6.overfit \
   --config configs/experiments/b6_local_meta.yaml --windows 4 --steps 1000 \
   --device cuda --output-dir results/B6/overfit_w4 --execute-training
 ```
@@ -119,7 +119,7 @@ CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B6.train_huawei \
 5. E2：B6公开预训练，再B6华为微调。
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B6.train_public \
+CUDA_VISIBLE_DEVICES=1 python -u -m baselines.B6.train_public \
   --config configs/experiments/b6_public_meta.yaml --device cuda --execute-training
 
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B6.train_huawei \
@@ -133,7 +133,7 @@ CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B6.train_huawei \
 6. 同一Huawei验证集上评估：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B6.validate \
+CUDA_VISIBLE_DEVICES=2 python -u -m baselines.B6.validate \
   --config configs/experiments/b6_local_meta.yaml \
   --checkpoint results/B6/E1_local_meta/best.pt \
   --device cuda --output-dir results/B6/E1_local_meta/evaluation
