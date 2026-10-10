@@ -1,0 +1,8 @@
+base: b6_local_meta.yaml
+experiment_id: E1-B6-local-I-only
+model:
+  metadata_enabled: false
+  metadata_dropout: 0.0
+  metadata_field_dropout: 0.0
+paths:
+  output_dir: results/B6/E1_local_i

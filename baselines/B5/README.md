@@ -197,3 +197,9 @@ checkpoint使用 weights_only=True 加载，且检查architecture/schema/scale�
 配对预检冻结初始化并校验配置/尺度/数据；两组新增第0轮真实ODE验证以保留不退步的起点。精确resume会拒绝变更损失；新实验用init-checkpoint。全记录诊断增加窗口均值与边界误差，结果比较检查初始化一致性及原始r，不以训练辅助loss替代评分。
 
 服务器预检、训练、续训、评估、诊断与打包命令见 [慢走势实验说明](../../docs/b5_slow_trend_experiment.md)。本机仅功能检查，没有启动训练；此方案尚未验证分数提升。
+
+## 同步输入 I 与真实/预测慢曲线对照
+
+CPU 只读绘图工具：python -m baselines.B5.plot_anchor_slow。读取实际验证 anchor I，按 pair/记录/时间核对缓存与已有评估，输出原始电压及仅供显示的去均值慢曲线。不训练或运行模型，best.pt 和正式评估保持不变。
+
+服务器命令和结果打包见 [输入 I 慢曲线对照](../../docs/b5_anchor_slow_plots.md)。绘图需要 matplotlib>=3.8。

@@ -1,0 +1,6 @@
+# Install on the training server; use its existing CUDA-enabled PyTorch environment.
+numpy>=1.26.4
+PyYAML>=6.0
+torch>=2.4
+wfdb>=4.2
+scipy>=1.13

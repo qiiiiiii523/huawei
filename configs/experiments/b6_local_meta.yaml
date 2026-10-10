@@ -1,0 +1,5 @@
+base: b6_base.yaml
+experiment_id: E1-B6-local-meta
+stage: local
+paths:
+  output_dir: results/B6/E1_local_meta

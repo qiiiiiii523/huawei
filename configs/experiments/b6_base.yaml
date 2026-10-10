@@ -1,0 +1,57 @@
+experiment_id: B6-M1-CFM-Meta
+stage: local
+paths:
+  data_root: Data
+  huawei_data_root: ..
+  ptbxl_root: ${data}/PTB-XL
+  demographics: ${data}/userinfobean.csv
+  common_config: configs/common.yaml
+  preprocessing_config: configs/preprocessing.yaml
+  scales: results/B5/shared/preprocessing_scales.npz
+  output_dir: results/B6/local_meta
+model:
+  cnn_channels: [64, 128, 256]
+  decoder_channels: [128, 64]
+  state_channels: [32, 64]
+  state_fine_channels: 16
+  d_model: 128
+  num_blocks: 4
+  num_heads: 4
+  ffn_dim: 256
+  dropout: 0.1
+  time_tokens: 250
+  attention_axes: both
+  time_dim: 128
+  metadata_dim: 128
+  metadata_enabled: true
+  metadata_dropout: 0.2
+  metadata_field_dropout: 0.05
+loss:
+  huber: 0.1
+  pcc: 0.1
+  anchor: 0.02
+  physiology: 0.0
+  huber_delta: 1.0
+  slow_trend: 0.0
+training:
+  seed: 42
+  deterministic: true
+  epochs: 150
+  batch_size: 2
+  workers: 0
+  gradient_accumulation: 4
+  learning_rate: 0.00005
+  weight_decay: 0.01
+  ema_decay: 0.999
+  gradient_clip: 1.0
+  amp: false
+  validate_every: 5
+validation:
+  tasks: [task1, task2]
+  selection_task: task1
+  batch_size: 2
+sampling:
+  seed: 42
+  solver: heun
+  steps: 16
+  samples: 1

@@ -1,0 +1,8 @@
+base: b6_finetune_meta.yaml
+experiment_id: E2-B6-finetune-I-only
+model:
+  metadata_enabled: false
+  metadata_dropout: 0.0
+  metadata_field_dropout: 0.0
+paths:
+  output_dir: results/B6/E2_finetune_i

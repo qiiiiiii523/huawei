@@ -1,0 +1,9 @@
+base: b6_base.yaml
+experiment_id: E2-B6-public-meta
+stage: public
+training:
+  epochs: 100
+  learning_rate: 0.0001
+  validate_every: 10
+paths:
+  output_dir: results/B6/E2_public_meta

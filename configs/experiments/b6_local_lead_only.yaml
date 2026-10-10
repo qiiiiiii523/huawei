@@ -1,0 +1,6 @@
+base: b6_local_meta.yaml
+experiment_id: E1-B6-lead-attention-only
+model:
+  attention_axes: lead_only
+paths:
+  output_dir: results/B6/E1_lead_only

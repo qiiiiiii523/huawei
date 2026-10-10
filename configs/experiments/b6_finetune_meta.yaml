@@ -1,0 +1,7 @@
+base: b6_base.yaml
+experiment_id: E2-B6-finetune-meta
+stage: finetune
+training:
+  epochs: 100
+paths:
+  output_dir: results/B6/E2_finetune_meta
