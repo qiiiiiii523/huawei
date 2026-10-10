@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import torch
+from typing import Any
 
 from ecg12gen.losses import masked_huber_loss, masked_pcc_loss, physiology_constraint_loss
 from .flow import linear_path
 from .model import B5UNet
+from .objective import slow_settings
+from .slow_trend import masked_slow_trend_loss
 
 
-def flow_loss(model: B5UNet, batch: dict[str, torch.Tensor], weights: dict[str, float],
+def flow_loss(model: B5UNet, batch: dict[str, torch.Tensor], weights: dict[str, Any],
               d12_scale: torch.Tensor, noise: torch.Tensor | None = None,
               time: torch.Tensor | None = None) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     target = batch["target"]
@@ -41,8 +44,16 @@ def flow_loss(model: B5UNet, batch: dict[str, torch.Tensor], weights: dict[str, 
         reliable = mask[:, :6].all(dim=1)
         if reliable.any():
             physiology = physiology_constraint_loss(full[reliable], d12_scale)
+    settings = slow_settings(weights)
+    slow_trend = full.new_zeros(())
+    if settings['weight']:
+        slow_trend = masked_slow_trend_loss(endpoint, missing, mask[:, 1:],
+                                           settings['width'], settings['delta'], settings['leads'])
     parts = {"fm": fm, "huber": huber, "pcc": pcc, "anchor": anchor, "physiology": physiology}
+    if 'slow_trend' in weights:
+        parts['slow_trend'] = slow_trend
     total = fm + sum(float(weights[key]) * parts[key] for key in ("huber", "pcc", "anchor", "physiology"))
+    total = total + settings['weight'] * slow_trend
     if not torch.isfinite(total):
         raise FloatingPointError("Nonfinite B5 loss")
     return total, parts

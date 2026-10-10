@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from .objective import slow_settings
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -97,6 +99,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("Loss weights cannot be negative")
     if float(config["loss"]["huber_delta"]) <= 0:
         raise ValueError("Huber delta must be positive")
+    slow_settings(config["loss"])  # Legacy configs default to a disabled auxiliary.
+    if not isinstance(training.get("validate_initial", False), bool):
+        raise ValueError("training.validate_initial must be a boolean")
     tasks = config["validation"]["tasks"]
     if not tasks or len(set(tasks)) != len(tasks) or any(task not in {"task1", "task2"} for task in tasks):
         raise ValueError("validation.tasks must contain distinct task1/task2 entries")

@@ -24,8 +24,28 @@ from .flow import sample
 from .losses import flow_loss
 from .model import B5UNet
 from .public_adapter import PTBXLDataset, locate_ptbxl
+from .objective import file_sha256, validate_resume_loss
 
 INPUT_FIELDS = ("anchor", "numeric", "sex", "field_mask", "age_topcoded")
+
+
+def initialize_validation_baseline(model, datasets, config, preprocessor, device,
+                                   output: Path, selection: str, make_payload) -> float:
+    """Save a selectable epoch0 baseline, without any optimizer update."""
+    summaries = validate(model, datasets, config, preprocessor, device,
+                         output / 'validation' / 'epoch_0000')
+    score = float(summaries[selection]['r_missing11'])
+    if not math.isfinite(score):
+        raise FloatingPointError('Undefined initializer validation selection score')
+    (output / 'initial_validation.json').write_text(json.dumps({
+        'epoch': 0, 'updates': 0, 'validation': summaries, 'selection_task': selection,
+        'selection_value': score}, indent=2), encoding='utf-8')
+    payload = make_payload(score)
+    atomic_save(output / 'best.pt', payload)
+    atomic_save(output / 'last.pt', payload)
+    print(json.dumps({'epoch': 0, 'phase': 'initial_validation',
+                      'best_validation_r_missing11': score}), flush=True)
+    return score
 
 
 def seed_all(seed: int, deterministic: bool) -> None:
@@ -169,6 +189,7 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
         if checkpoint["scales_sha256"] != scales_digest(scale_payload):
             raise ValueError("Freeze and reuse the checkpoint's Huawei-fitted scale file before transfer")
         if resume_path:
+            validate_resume_loss(checkpoint, config['loss'])
             if checkpoint["stage"] != config["stage"]:
                 raise ValueError("Exact resume must preserve training stage")
             model.load_state_dict(checkpoint["model"], strict=True)
@@ -183,6 +204,7 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
             model.load_state_dict(checkpoint["ema"], strict=True)
             ema = {key: value.detach().clone() for key, value in model.state_dict().items()}
             initialization = {"type": "pretrained_ema", "source_checkpoint": str(Path(init_path).resolve()),
+                              "source_checkpoint_sha256": file_sha256(init_path),
                               "source_stage": checkpoint["stage"], "source_epoch": int(checkpoint["epoch"]),
                               "source_manifests": checkpoint["manifests"]}
     train_data, validation_data = build_datasets(config, preprocessor)
@@ -209,10 +231,32 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
         raise FileExistsError("Output already contains checkpoints; use a new output directory or explicit resume")
     output.mkdir(parents=True, exist_ok=True)
     (output / "resolved_config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    (output / "initialization.json").write_text(json.dumps({
+        'initialization': initialization, 'scales_sha256': scales_digest(scale_payload),
+        'manifests': manifests, 'selection_task': selection, 'architecture_hash': model_config.fingerprint,
+        'loss_config': config['loss'], 'resumed': bool(resume_path)}, indent=2), encoding='utf-8')
     loader = DataLoader(train_data, batch_size=int(training["batch_size"]), shuffle=True, generator=generator,
                         num_workers=int(training["workers"]), collate_fn=collate, worker_init_fn=seed_worker,
                         pin_memory=device.type == "cuda", persistent_workers=False)
     scale_tensor = torch.as_tensor(preprocessor.scale_uV_by_source["d12"], device=device)
+
+    def checkpoint_payload(epoch: int) -> dict[str, Any]:
+        return {"format_version": 1, "architecture_id": ARCHITECTURE_ID,
+                "architecture_hash": model_config.fingerprint, "model_config": asdict(model_config),
+                "condition_schema": CONDITION_SCHEMA, "preprocessing_version": PREPROCESSING_VERSION,
+                "scales": scale_payload, "scales_sha256": scales_digest(scale_payload),
+                "stage": config["stage"], "epoch": epoch, "updates": updates, "best_score": best_score,
+                "selection_task": selection, "selection_metric": "r_missing11", "model": model.state_dict(),
+                "ema": ema, "optimizer": optimizer.state_dict(), "grad_scaler": scaler.state_dict(),
+                "rng": pack_rng(), "loader_rng": generator.get_state(), "manifests": manifests,
+                "training_config": training, "loss_config": config['loss'], "config": config,
+                "torch_version": str(torch.__version__), "initialization": initialization}
+
+    if training.get('validate_initial', False) and not resume_path:
+        # Seeded target-free ODE validation is identical in both paired runs.
+        # epoch=-1 means zero optimizer epochs completed; --resume starts at epoch 1.
+        best_score = initialize_validation_baseline(model, validation_data, config, preprocessor,
+            device, output, selection, lambda score: {**checkpoint_payload(-1), 'best_score': score})
     for epoch in range(start_epoch, int(training["epochs"])):
         model.train()
         optimizer.zero_grad(set_to_none=True)
@@ -256,16 +300,7 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
             record.update({"validation": summaries, "selection_task": selection,
                            "selection_metric": "r_missing11", "selection_value": score})
             del evaluation_model
-        payload = {"format_version": 1, "architecture_id": ARCHITECTURE_ID,
-                   "architecture_hash": model_config.fingerprint, "model_config": asdict(model_config),
-                   "condition_schema": CONDITION_SCHEMA, "preprocessing_version": PREPROCESSING_VERSION,
-                   "scales": scale_payload, "scales_sha256": scales_digest(scale_payload),
-                   "stage": config["stage"], "epoch": epoch, "updates": updates, "best_score": best_score,
-                   "selection_task": selection, "selection_metric": "r_missing11", "model": model.state_dict(),
-                   "ema": ema, "optimizer": optimizer.state_dict(), "grad_scaler": scaler.state_dict(),
-                   "rng": pack_rng(), "loader_rng": generator.get_state(), "manifests": manifests,
-                   "training_config": training, "config": config, "torch_version": str(torch.__version__)}
-        payload["initialization"] = initialization
+        payload = checkpoint_payload(epoch)
         atomic_save(output / "last.pt", payload)
         if improved:
             atomic_save(output / "best.pt", payload)

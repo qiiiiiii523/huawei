@@ -190,3 +190,10 @@ checkpoint使用 weights_only=True 加载，且检查architecture/schema/scale�
 - python -m unittest baselines.B5.tests.test_diagnostics -v：诊断功能测试。
 
 完整服务器命令、缺失 XML 的处理和结果打包见 [诊断流程](../../docs/b5_diagnostic_workflow.md)。诊断滤波指标不能代替正式 raw μV 评分，不改变目标或推理输出。
+## 慢走势辅助监督配对实验
+
+新配置 b5_slow_control.yaml 与 b5_slow_trend.yaml 从同一微调EMA快照初始化、各20轮；只改变训练期中心慢走势辅助损失权重（0 / 0.1），首次作用于V1–V6。旧配置默认关闭，网络、推理输入和原始μV目标不变，best.pt仍按原Task1 r选择，不增加best_score.pt。
+
+配对预检冻结初始化并校验配置/尺度/数据；两组新增第0轮真实ODE验证以保留不退步的起点。精确resume会拒绝变更损失；新实验用init-checkpoint。全记录诊断增加窗口均值与边界误差，结果比较检查初始化一致性及原始r，不以训练辅助loss替代评分。
+
+服务器预检、训练、续训、评估、诊断与打包命令见 [慢走势实验说明](../../docs/b5_slow_trend_experiment.md)。本机仅功能检查，没有启动训练；此方案尚未验证分数提升。

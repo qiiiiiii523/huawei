@@ -1,0 +1,6 @@
+base: b5_slow_pair_base.yaml
+experiment_id: E3-B5-centered-slow-trend
+loss:
+  slow_trend: 0.1
+paths:
+  output_dir: results/B5/E3_slow_trend

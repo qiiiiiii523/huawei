@@ -93,7 +93,35 @@ def record_metrics(prediction: np.ndarray, target: np.ndarray, width: int) -> di
         'slow_rmse_uV': float(np.sqrt(slow_mse)), 'fast_rmse_uV': float(np.sqrt(fast_mse)),
         'slow_std_ratio': ratio(float(ps.std()), float(ys.std())),
         'fast_std_ratio': ratio(float(pf.std()), float(yf.std())),
+        **boundary_metrics(p, y),
     }
+
+
+def boundary_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, Any]:
+    """Compare natural target transitions with predicted 10s-window transitions."""
+    p,y=np.asarray(prediction,dtype=np.float64),np.asarray(target,dtype=np.float64)
+    if p.shape!=y.shape or p.ndim!=1 or len(p)%5000:
+        raise ValueError('Boundary diagnostics require complete 5000-point windows')
+    boundaries=np.arange(5000,len(p),5000)
+    if not len(boundaries):
+        return {'boundary_count':0,'point_jump_error_mae_uV':None,'point_jump_error_max_uV':None,
+                'prediction_point_jump_mae_uV':None,'target_point_jump_mae_uV':None,
+                'window_mean_change_error_mse':None,'window_mean_change_error_rmse_uV':None,
+                'boundary_100ms_each_side_error_jump_mae_uV':None}
+    pj=p[boundaries]-p[boundaries-1]
+    yj=y[boundaries]-y[boundaries-1]
+    mean_error=p.reshape(-1,5000).mean(axis=1)-y.reshape(-1,5000).mean(axis=1)
+    change=np.diff(mean_error)
+    error=p-y
+    neighborhood=[error[b:b+50].mean()-error[b-50:b].mean() for b in boundaries]
+    return {'boundary_count':len(boundaries),
+            'point_jump_error_mae_uV':float(np.abs(pj-yj).mean()),
+            'point_jump_error_max_uV':float(np.abs(pj-yj).max()),
+            'prediction_point_jump_mae_uV':float(np.abs(pj).mean()),
+            'target_point_jump_mae_uV':float(np.abs(yj).mean()),
+            'window_mean_change_error_mse':float(np.mean(change**2)),
+            'window_mean_change_error_rmse_uV':float(np.sqrt(np.mean(change**2))),
+            'boundary_100ms_each_side_error_jump_mae_uV':float(np.mean(np.abs(neighborhood)))}
 
 
 def record_groups(metadata: list[dict[str, str]]) -> dict[str, list[int]]:
@@ -138,5 +166,11 @@ def aggregate_leads(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for field in ('std_ratio', 'slow_std_ratio', 'fast_std_ratio'):
             values = macro(field)
             row['median_' + field] = float(np.median(values)) if values else None
+        boundaries=sum(r['boundary_count'] for r in selected)
+        row['boundary_count']=boundaries
+        for field in ('point_jump_error_mae_uV','boundary_100ms_each_side_error_jump_mae_uV'):
+            row[field]=sum(r[field]*r['boundary_count'] for r in selected if r['boundary_count'])/boundaries if boundaries else None
+        mse=sum(r['window_mean_change_error_mse']*r['boundary_count'] for r in selected if r['boundary_count'])/boundaries if boundaries else None
+        row['window_mean_change_error_rmse_uV']=float(np.sqrt(mse)) if mse is not None else None
         result.append(row)
     return result

@@ -12,7 +12,7 @@ from .diagnostic_signals import (LEADS, aggregate_leads, boxcar_width, fresh_dir
                                  read_rows, record_groups, record_metrics, write_rows)
 
 
-def analyze_task(folder: Path, width: int):
+def analyze_task(folder: Path, width: int, window_stats: list | None = None):
     metadata = read_rows(folder / 'window_metadata.csv')
     p = np.load(folder / 'prediction_uV.npy', mmap_mode='r', allow_pickle=False)
     y = np.load(folder / 'target_uV.npy', mmap_mode='r', allow_pickle=False)
@@ -33,6 +33,12 @@ def analyze_task(folder: Path, width: int):
             stats.append({'pair_id': key, 'target_record_id': metadata[indices[0]]['target_record_id'],
                           'subject_id': metadata[indices[0]].get('subject_id', ''), 'lead': LEADS[lead],
                           **record_metrics(prediction[lead], target[lead], width)})
+            if window_stats is not None:
+                for i in indices:
+                    pm,ym=float(p[i,lead].mean(dtype=np.float64)),float(y[i,lead].mean(dtype=np.float64))
+                    window_stats.append({'pair_id':key,'target_record_id':metadata[i]['target_record_id'],
+                        'lead':LEADS[lead],'start_sample_500hz':metadata[i]['start_sample_500hz'],
+                        'prediction_mean_uV':pm,'target_mean_uV':ym,'mean_error_uV':pm-ym})
     summary = aggregate_leads(stats)
     if any(r['raw_r'] is None for r in summary):
         raise ValueError('A lead has no defined raw correlation')
@@ -78,7 +84,8 @@ def main():
         manifest['evaluations'][label] = {'directory': str(directory), 'tasks': {}}
         for task in args.tasks:
             print(f'Analyzing {label}/{task} (all complete records)', flush=True)
-            stats, leads, contract = analyze_task(directory / task, width)
+            windows=[]
+            stats, leads, contract = analyze_task(directory / task, width, windows)
             if task in reference:
                 match = all(contract[k] == reference[task][k] for k in ('metadata_sha256', 'target_sha256_float64'))
                 manifest['cross_model_target_and_metadata_match'][f'{label}/{task}'] = match
@@ -91,6 +98,7 @@ def main():
             destination.mkdir(parents=True)
             write_rows(destination / 'record_lead_diagnostics.csv', stats)
             write_rows(destination / 'lead_diagnostics.csv', leads)
+            write_rows(destination / 'window_mean_diagnostics.csv', windows)
             result = {'model': label, 'task': task, 'records': contract['records'], 'windows': contract['windows'],
                       'raw_r_missing11': contract['raw_r_missing11'],
                       'raw_missing11_mean_rmse_uV': contract['raw_missing11_mean_rmse_uV']}
@@ -103,6 +111,10 @@ def main():
             result['chest_centered_rmse_uV_diagnostic'] = float(np.mean([r['centered_rmse_uV'] for r in chest]))
             chest_points = [r for r in stats if r['lead'].startswith('V')]
             result['chest_offset_mse_fraction'] = sum(r['offset_mse']*r['points'] for r in chest_points) / max(sum(r['raw_mse']*r['points'] for r in chest_points), 1e-30)
+            boundary_count=sum(r['boundary_count'] for r in chest_points)
+            boundary_mse=sum(r['window_mean_change_error_mse']*r['boundary_count'] for r in chest_points if r['boundary_count'])
+            result['chest_window_mean_change_error_rmse_uV_diagnostic']=float(np.sqrt(boundary_mse/boundary_count)) if boundary_count else None
+            result['chest_boundary_point_jump_error_mae_uV_diagnostic']=sum(r['point_jump_error_mae_uV']*r['boundary_count'] for r in chest_points if r['boundary_count'])/boundary_count if boundary_count else None
             task_summary.append(result)
     write_rows(output / 'task_summary.csv', task_summary)
     (output / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
@@ -116,6 +128,8 @@ def main():
               '不能把诊断r当作正式分数；不能将去均值或真实目标慢曲线用于推理校正。',
               'slow MSE与fast MSE不直接相加，record表同时报告误差交叉项。',
               'lead表的r按记录平均、RMSE按点加权，与原始评估聚合一致。']
+    lines += ['', '跨窗口指标见task_summary.csv和lead表；window_mean_diagnostics.csv列出每个10秒窗口的均值误差。',
+              '跳变误差扣除真实目标自身的变化，不能把自然波峰直接当作拼接问题。']
     (output / 'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
     print(f'Done: {output / "report.md"}', flush=True)
 
