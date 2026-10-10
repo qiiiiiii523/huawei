@@ -4,11 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import torch
 from torch import nn
-import torch.nn.functional as F
 
 from baselines.B5.conditions import MetadataEncoder, TimeEmbedding
 from .components import AxialLeadTimeBlock, ConvNormAct, LeadTimeDecoder, MultiScaleCNNEncoder
 from .config import ModelConfig
+from .resampling import resize_linear_1d
 
 
 @dataclass
@@ -84,7 +84,7 @@ class B6AxialFlow(nn.Module):
         position = self.time_position
         if length != self.config.time_tokens:
             # Unit tests can use shorter sequences; prediction pads real windows to 5000.
-            position = F.interpolate(position.transpose(1, 2), size=length, mode='linear', align_corners=False).transpose(1, 2)
+            position = resize_linear_1d(position.transpose(1, 2), length).transpose(1, 2)
         tokens = self.anchor_projection(f2.transpose(1, 2)) + position
         metadata = self.metadata_encoder(numeric, sex, field_mask, age_topcoded)
         if metadata.shape[0] != anchor.shape[0]:

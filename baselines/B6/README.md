@@ -41,6 +41,16 @@ raw-state直连按导联分组、零初始化，允许绝对状态电压不经�
 
 `deterministic: true`时CUDA SDPA使用math实现，避免fused attention backward不确定性；可能增加显存/耗时。改deterministic设置属于新实验，不能作为原运行的等价续训。
 
+CUDA兼容修复：解码器与位置编码使用`resampling.resize_linear_1d`，采用与`align_corners=False`相同的半像素坐标/边缘延拓，通过index_select和加权求和实现。严格确定性模式下index_select具有确定性的CUDA backward，避开原生`upsample_linear1d_backward_out_cuda`报错。参数量、checkpoint字段和FM目标不变，前向数学定义相同但可能有微小浮点舍入差异。
+
+服务器更新后先执行GPU回归（不执行optimizer.step）：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m unittest baselines.B6.tests.test_resampling -v
+```
+
+本机21项CPU测试通过、2项CUDA测试因无GPU跳过；服务器需要确认两项CUDA测试实际通过，不能把skipped当作GPU验证通过。若此前overfit在step0之后报错，使用新的输出目录如`results/B6/overfit_w1_fixed`重跑，保留失败诊断文件。
+
 ## 服务器路径
 
 默认与本机B5配置一致：仓库内 `Data`，两个缓存在父目录，尺度复用 `results/B5/shared/preprocessing_scales.npz`。服务器此前成功配置使用小写`data`时，B6也必须改为相同大小写。

@@ -11,6 +11,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from .resampling import resize_linear_1d
+
 
 def group_norm(channels: int) -> nn.GroupNorm:
     return nn.GroupNorm(math.gcd(8, channels), channels)
@@ -117,7 +119,7 @@ class LeadTimeDecoder(nn.Module):
     @staticmethod
     def resize(features: torch.Tensor, length: int) -> torch.Tensor:
         batch, leads, channels, _ = features.shape
-        x = F.interpolate(features.reshape(batch * leads, channels, -1), size=length, mode='linear', align_corners=False)
+        x = resize_linear_1d(features.reshape(batch * leads, channels, -1), length)
         return x.reshape(batch, leads, channels, length)
 
     def forward(self, tokens: torch.Tensor, f0: torch.Tensor, f1: torch.Tensor, embeddings: torch.Tensor) -> torch.Tensor:
