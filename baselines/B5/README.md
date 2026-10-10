@@ -159,7 +159,7 @@ observed_metadata.json 示例：
 
 默认 I 通道来自辅助重建头，与训练/验证一致。只有正式接口明确需要复制可见 I 时才用 --copy-observed-i，此选项仅在提交预测入口，不参与 evaluator 替换或选模。
 
-可覆盖 --steps、--samples、--solver、--seed 做独立采样实验。Heun16/K1约32NFE；K4约128NFE。噪声基于record-id＋窗口起点，不依赖batch排序。禁止用真实target挑最好样本。
+独立评估与测试预测默认读取 configs/b5_inference.yaml，采用 Heun16/K16（每窗口512NFE），无需额外传采样参数。可覆盖 --steps、--samples、--solver、--seed 做独立采样实验；复现K1加 --samples 1。Heun16/K1约32NFE；K4约128NFE。噪声基于record-id＋窗口起点，不依赖batch排序。禁止用真实target挑最好样本。
 
 输出 .npy 与 JSON sidecar 使用新文件名，不覆盖输入或先前结果。预测格式是通用 NPY 适配器；最终主办方可执行包装/字段格式需要在正式接口确认后另行接入，不能将其称为已完成官方打包提交。
 
@@ -197,3 +197,9 @@ checkpoint使用 weights_only=True 加载，且检查architecture/schema/scale�
 配对预检冻结初始化并校验配置/尺度/数据；两组新增第0轮真实ODE验证以保留不退步的起点。精确resume会拒绝变更损失；新实验用init-checkpoint。全记录诊断增加窗口均值与边界误差，结果比较检查初始化一致性及原始r，不以训练辅助loss替代评分。
 
 服务器预检、训练、续训、评估、诊断与打包命令见 [慢走势实验说明](../../docs/b5_slow_trend_experiment.md)。本机仅功能检查，没有启动训练；此方案尚未验证分数提升。
+
+## 最终评估与测试推理默认采样
+
+configs/b5_inference.yaml 固定最终候选 Heun16、K=16、seed=42。validate 和 predict 自动读取，无需传步数/采样次数；旧 checkpoint 保存的 K=1 不会覆盖当前推理配置。显式采样参数可用于复现K=1。训练周期验证继续使用实验配置，best.pt仍按Task1 r选择。
+
+服务器评估、测试预测和配置优先级见 [最终采样说明](../../docs/b5_final_sampling.md)。

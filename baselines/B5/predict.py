@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from .metadata import encode_demographics
+from .sampling_settings import add_sampling_arguments, sampling_from_arguments
 
 
 def canonical_anchor(raw: np.ndarray, fs: int, unit: str) -> tuple[np.ndarray, int]:
@@ -87,13 +88,11 @@ def main() -> None:
     parser.add_argument("--output", required=True, help="New .npy file, shape [12,original_length] at default rate")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--steps", type=int)
-    parser.add_argument("--samples", type=int)
-    parser.add_argument("--solver", choices=("heun", "euler"))
-    parser.add_argument("--seed", type=int)
+    add_sampling_arguments(parser)
     parser.add_argument("--copy-observed-i", action="store_true", help="Submission-interface option only; evaluator never replaces I")
     parser.add_argument("--preprocessing-config", default=str(Path(__file__).resolve().parents[2] / "configs" / "preprocessing.yaml"))
     args = parser.parse_args()
+    settings = sampling_from_arguments(args)
     output = Path(args.output).resolve()
     if output.suffix.lower() != ".npy" or output.exists() or output.with_suffix(".json").exists():
         raise FileExistsError("Output must be a new .npy path with a new JSON sidecar")
@@ -103,11 +102,6 @@ def main() -> None:
     from .checkpoint import checkpoint_preprocessor, load_checkpoint, model_from_checkpoint
     from .runtime import device_from_name, seed_all
     checkpoint = load_checkpoint(args.checkpoint)
-    settings = dict(checkpoint["config"]["sampling"])
-    for key in ("steps", "samples", "solver", "seed"):
-        value = getattr(args, key)
-        if value is not None:
-            settings[key] = value
     seed_all(int(settings["seed"]), True)
     device = device_from_name(args.device)
     model = model_from_checkpoint(checkpoint, device)
@@ -127,7 +121,8 @@ def main() -> None:
     np.save(output, prediction, allow_pickle=False)
     description = {"record_id": args.record_id, "unit": "uV", "sampling_rate_hz": output_fs,
                    "length": prediction.shape[-1], "lead_order": ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"],
-                   "sampling": settings, "copied_observed_i": args.copy_observed_i,
+                   "sampling": settings, "sampling_config": str(Path(args.sampling_config).resolve()),
+                   "copied_observed_i": args.copy_observed_i,
                    "condition_schema": checkpoint["condition_schema"], "field_available": demographics["field_mask"].tolist()}
     output.with_suffix(".json").write_text(json.dumps(description, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Wrote {output}; shape={prediction.shape}, unit=uV")

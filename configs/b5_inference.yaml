@@ -1,0 +1,8 @@
+# Final evaluation and target-free prediction candidate, not a training config.
+# Both baselines.B5.validate and baselines.B5.predict load this file by default.
+profile_id: B5-final-candidate-heun16-k16
+sampling:
+  seed: 42
+  solver: heun
+  steps: 16
+  samples: 16
