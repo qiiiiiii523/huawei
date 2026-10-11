@@ -4,7 +4,7 @@
 
 ## 本次范围
 
-保留B5-U网络、人口学条件、FM训练目标及best.pt按Task1 r选择的规则。没有新增context编码器、T或F模块。
+保留B5-U网络、人口学条件和FM训练目标。当前best.pt改按50分主分＋10分加分的总分选择，并独立保存best_r.pt、best_bonus.pt和last.pt；见[评分与保存说明](b5_score60_checkpoint_policy.md)。没有新增context编码器、T或F模块。
 同步I与target保持raw电压，只除冻结scale，输出仅乘一次scale。缓存中的独立context不按target窗口序号取窗，也不作为网络输入。
 训练使用新版strict去重的1872个窗口/156条物理target，排除不可靠I并按导联质量mask监督；不把两个Task的重复配对当作新增训练目标。
 验证覆盖Task1的27配对/324窗，以及Task2机器40配对/480窗和体脂秤25配对/300窗。每个配对固定12窗/120秒。
@@ -72,16 +72,16 @@ CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.validate \
 
 ## 在新数据上微调
 
-默认输出为新目录 `results/B5/main_v2_finetune_meta`，不会覆盖旧E2目录：
+默认输出为新目录 `results/B5/main_v2_score60_finetune_meta`，不会覆盖旧E2目录：
 
 ```bash
 set -o pipefail
-mkdir -p results/B5/main_v2_finetune_meta
+mkdir -p results/B5/main_v2_score60_finetune_meta
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
   --config configs/experiments/b5_finetune_meta.yaml \
   --init-checkpoint results/B5/E2_finetune_meta/best.pt \
   --device cuda --execute-training \
-  2>&1 | tee results/B5/main_v2_finetune_meta/train.log
+  2>&1 | tee results/B5/main_v2_score60_finetune_meta/train.log
 ```
 
 只加载EMA模型权重；优化器、更新次数、数据manifest和best_score重新建立，不把旧最佳分数用作新版阈值。
@@ -92,25 +92,25 @@ CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
   --config configs/experiments/b5_finetune_meta.yaml \
-  --resume results/B5/main_v2_finetune_meta/last.pt \
+  --resume results/B5/main_v2_score60_finetune_meta/last.pt \
   --device cuda --execute-training
 ```
 
-旧last.pt的resume会报协议变化；应使用init-checkpoint。新版resume检查实际缓存字节、split/pair/QC/人口学/strict索引、模型、损失及验证采样，防止同目录换数据后继续旧历史。
+旧数据或旧选模规则last.pt的resume会报协议变化；应使用init-checkpoint开启新运行。新版resume检查实际缓存字节、split/pair/QC/人口学/strict索引、模型、损失及验证采样，防止同目录换数据后继续旧历史。
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.validate \
   --config configs/experiments/b5_finetune_meta.yaml \
-  --checkpoint results/B5/main_v2_finetune_meta/best.pt \
+  --checkpoint results/B5/main_v2_score60_finetune_meta/best.pt \
   --device cuda \
-  --output-dir results/B5/main_v2_finetune_meta/final_evaluation
+  --output-dir results/B5/main_v2_score60_finetune_meta/final_evaluation
 ```
 
 ## 测试推理
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.predict \
-  --checkpoint results/B5/main_v2_finetune_meta/best.pt \
+  --checkpoint results/B5/main_v2_score60_finetune_meta/best.pt \
   --anchor /path/to/visible_synchronous_I.npy \
   --metadata-json /path/to/observed_demographics.json \
   --record-id test_record_001 \

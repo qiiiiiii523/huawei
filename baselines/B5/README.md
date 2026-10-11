@@ -19,3 +19,9 @@ python -m unittest discover -s baselines/B5/tests -v
 ## 新版华为双实验
 
 当前支持同配置的华为从头训练与公开权重初始化微调。原网络、损失、100轮、每5轮验证K1、最终Heun16/K16均保留；两组只改变初始化来源和输出目录。入口与命令见 [双实验说明](../../docs/b5_main_v2_public_vs_scratch.md)。
+
+## 评分与权重保存更新
+
+主分为50×(0.5r1＋0.5r2)，加设备等权RMSE加分，满分60。best.pt按周期验证总分选；另保存best_r.pt（两任务相关性均值）、best_bonus.pt（等权加分）、last.pt（续训）。r、各设备RMSE和全部分数仍保留在验证日志及validation_metrics.csv。
+
+周期K1与最终K16不变。新运行使用score60输出目录，旧权重仍可评估或初始化，但旧选模状态不能resume。具体操作见[评分及四份权重说明](../../docs/b5_score60_checkpoint_policy.md)。

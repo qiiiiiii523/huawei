@@ -19,6 +19,8 @@ from baselines.B5.config import load_config
 from baselines.B5.data import HuaweiValidationDataset, common_config, demographics_path
 from baselines.B5.metadata import encode_demographics
 from baselines.B5.runtime import validate, validate_resume_protocol
+from baselines.B5.selection import SELECTION_PROTOCOL, empty_best_metrics
+from ecg12gen.evaluate import COMPETITION_SCORE_PROTOCOL
 from baselines.B5.tests.test_b5 import preprocessor, tiny_model
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -60,7 +62,9 @@ class MainV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'protocol changed'):
             validate_resume_protocol({'config':config}, config)
         cp = {'cache_protocol':CACHE_PROTOCOL,'evaluation_protocol':EVALUATION_PROTOCOL,
-              'sampling_config':copy.deepcopy(config['sampling'])}
+              'sampling_config':copy.deepcopy(config['sampling']), 'selection_protocol':SELECTION_PROTOCOL,
+              'competition_score_protocol':COMPETITION_SCORE_PROTOCOL, 'selection_metric':'competition_total_score',
+              'best_metrics':empty_best_metrics(), 'best_score':None, 'checkpoint_role':'last'}
         validate_resume_protocol(cp,config)
         cp['sampling_config']['samples'] += 1
         with self.assertRaisesRegex(ValueError,'sampling'):
@@ -130,7 +134,7 @@ class MainV2Tests(unittest.TestCase):
             import csv
             with (Path(tmp)/'competition_score.csv').open() as h:score=next(csv.DictReader(h))
             self.assertAlmostEqual(float(score['task2_rmse_bonus_score']),7.5,places=5)
-            self.assertAlmostEqual(float(score['competition_total_score']),8.5,places=5)
+            self.assertAlmostEqual(float(score['competition_total_score']),57.5,places=5)
         self.assertEqual(summary['task2']['ecg_machine_d6_n_records'],2)
         self.assertEqual(summary['task2']['body_scale_d6_n_records'],1)
         self.assertEqual(summary['task2']['task2_device_aggregation'],EVALUATION_PROTOCOL)

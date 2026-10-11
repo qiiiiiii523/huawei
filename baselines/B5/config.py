@@ -103,8 +103,11 @@ def load_config(path: str | Path) -> dict[str, Any]:
     tasks = config["validation"]["tasks"]
     if not tasks or len(set(tasks)) != len(tasks) or any(task not in {"task1", "task2"} for task in tasks):
         raise ValueError("validation.tasks must contain distinct task1/task2 entries")
-    if config["validation"]["selection_task"] not in tasks or int(config["validation"]["batch_size"]) < 1:
-        raise ValueError("Invalid validation checkpoint task or batch size")
+    if set(tasks) != {"task1", "task2"} or int(config["validation"]["batch_size"]) < 1:
+        raise ValueError("Competition selection requires both tasks and a positive validation batch size")
+    config["validation"].setdefault("selection_metric", "competition_total_score")
+    if config["validation"]["selection_metric"] != "competition_total_score":
+        raise ValueError("B5 best.pt must maximize competition_total_score")
     return config
 
 

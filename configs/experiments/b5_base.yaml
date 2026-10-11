@@ -7,7 +7,7 @@ paths:
   common_config: configs/common.yaml
   preprocessing_config: configs/preprocessing.yaml
   scales: results/B5/shared/preprocessing_scales.npz
-  output_dir: results/B5/main_v2_finetune_meta
+  output_dir: results/B5/main_v2_score60_finetune_meta
 model:
   channels: [64, 128, 256]
   time_dim: 128
@@ -37,7 +37,7 @@ training:
   validate_every: 5
 validation:
   tasks: [task1, task2]
-  selection_task: task1
+  selection_metric: competition_total_score
   batch_size: 8
 sampling:
   seed: 42

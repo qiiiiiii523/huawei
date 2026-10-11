@@ -5,4 +5,4 @@ initialization:
   allowed_source_stage: public
 paths:
   demographics: ${data}/userinfobean.csv
-  output_dir: results/B5/main_v2_public_finetune_meta
+  output_dir: results/B5/main_v2_score60_public_finetune_meta

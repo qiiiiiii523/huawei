@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 import os
 import random
 import time
@@ -15,9 +14,9 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from ecg12gen.evaluate import competition_score, evaluate_record_predictions, write_competition_score, write_report
+from ecg12gen.evaluate import competition_score, evaluate_record_predictions, write_competition_score, write_report, COMPETITION_SCORE_PROTOCOL
 from . import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION, CACHE_PROTOCOL, EVALUATION_PROTOCOL
-from .checkpoint import atomic_save, load_checkpoint, pack_rng, restore_rng, scales_digest, scales_payload
+from .checkpoint import load_checkpoint, pack_rng, restore_rng, scales_digest, scales_payload
 from .config import ModelConfig, resolve_path
 from .cli import validate_training_start
 from .data import HuaweiTrainDataset, HuaweiValidationDataset, common_config, demographics_table, demographics_path, load_preprocessor
@@ -25,6 +24,9 @@ from .flow import sample
 from .losses import flow_loss
 from .model import B5UNet
 from .objective import file_sha256, validate_resume_loss
+
+from .selection import (SELECTION_PROTOCOL, METRIC_FILES, empty_best_metrics, restore_best_metrics,
+                        scores_from_summaries, update_best_metrics, save_selected_checkpoints)
 
 INPUT_FIELDS = ("anchor", "numeric", "sex", "field_mask", "age_topcoded")
 
@@ -34,6 +36,7 @@ def validate_resume_protocol(checkpoint: dict[str, Any], config: dict[str, Any])
     if (checkpoint.get("cache_protocol") != CACHE_PROTOCOL or
             checkpoint.get("evaluation_protocol") != EVALUATION_PROTOCOL):
         raise ValueError("Data/evaluation protocol changed; use --init-checkpoint and a new output directory, not --resume")
+    restore_best_metrics(checkpoint)
     if checkpoint.get("sampling_config") != config["sampling"]:
         raise ValueError("Resume changed validation sampling; use --init-checkpoint for a new run")
 
@@ -128,7 +131,7 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
                         "architecture_id": ARCHITECTURE_ID, "condition_schema": CONDITION_SCHEMA,
                         "metadata_enabled": model.config.metadata_enabled,
                         "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL,
-                        "context_used": False,
+                        "context_used": False, "competition_score_protocol": COMPETITION_SCORE_PROTOCOL,
                         "integration_steps": int(settings["steps"]), "samples": int(settings["samples"]),
                         "velocity_nfe_per_window": int(settings["steps"]) * int(settings["samples"]) *
                         (2 if settings["solver"] == "heun" else 1), "elapsed_seconds": time.perf_counter() - started})
@@ -167,7 +170,8 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     scaler = torch.amp.GradScaler("cuda", enabled=amp)
     generator = torch.Generator().manual_seed(int(training["seed"]))
     ema = {key: value.detach().clone() for key, value in model.state_dict().items()}
-    start_epoch, updates, best_score = 0, 0, -math.inf
+    start_epoch, updates = 0, 0
+    best_metrics = empty_best_metrics()
     checkpoint = load_checkpoint(resume_path or init_path) if (resume_path or init_path) else None
     initialization = {"type": "random", "source_checkpoint": None}
     if checkpoint:
@@ -186,7 +190,8 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
             optimizer.load_state_dict(checkpoint["optimizer"])
             scaler.load_state_dict(checkpoint["grad_scaler"])
             start_epoch = int(checkpoint["epoch"]) + 1
-            updates, best_score = int(checkpoint["updates"]), float(checkpoint["best_score"])
+            updates = int(checkpoint["updates"])
+            best_metrics = restore_best_metrics(checkpoint)
             generator.set_state(checkpoint["loader_rng"].cpu())
             ema = {key: value.to(device).clone() for key, value in checkpoint["ema"].items()}
             initialization = checkpoint["initialization"]
@@ -214,9 +219,9 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
         manifests[f"{task}_window_metadata"] = file_sha256(directory/f"{task}_window_metadata.csv")
         for split in ("train", "validation"):
             manifests[f"{task}_{split}_target"] = file_sha256(directory/f"{task}_{split}_target.npy")
-    selection = config["validation"]["selection_task"]
-    if selection not in validation_data:
-        raise ValueError("validation.selection_task must be included in validation.tasks")
+    selection = "competition"
+    if not {"task1", "task2"}.issubset(validation_data):
+        raise ValueError("Total/correlation/bonus selection requires both task validation datasets")
     if resume_path:
         if checkpoint["manifests"] != manifests or checkpoint["selection_task"] != selection:
             raise ValueError("Resume changed data manifest or checkpoint-selection population")
@@ -225,13 +230,15 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
                 raise ValueError(f"Exact resume changed training.{key}; use --init-checkpoint for a new run")
         restore_rng(checkpoint["rng"])
     output = resolve_path(config, "output_dir")
-    if not resume_path and any((output / name).exists() for name in ("last.pt", "best.pt")):
+    if not resume_path and any((output / name).exists() for name in ("last.pt", "best.pt", "best_r.pt", "best_bonus.pt")):
         raise FileExistsError("Output already contains checkpoints; use a new output directory or explicit resume")
     output.mkdir(parents=True, exist_ok=True)
     (output / "resolved_config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
     (output / "initialization.json").write_text(json.dumps({
         'initialization': initialization, 'scales_sha256': scales_digest(scale_payload),
-        'manifests': manifests, 'selection_task': selection, 'architecture_hash': model_config.fingerprint,
+        'manifests': manifests, 'selection_task': selection, 'selection_metric': 'competition_total_score',
+        'selection_protocol': SELECTION_PROTOCOL, 'competition_score_protocol': COMPETITION_SCORE_PROTOCOL,
+        'architecture_hash': model_config.fingerprint,
         'cache_protocol': CACHE_PROTOCOL, 'evaluation_protocol': EVALUATION_PROTOCOL,
         'loss_config': config['loss'], 'resumed': bool(resume_path)}, indent=2), encoding='utf-8')
     loader = DataLoader(train_data, batch_size=int(training["batch_size"]), shuffle=True, generator=generator,
@@ -240,14 +247,15 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     scale_tensor = torch.as_tensor(preprocessor.scale_uV_by_source["d12"], device=device)
 
     def checkpoint_payload(epoch: int) -> dict[str, Any]:
-        return {"format_version": 2, "cache_protocol": CACHE_PROTOCOL,
+        return {"format_version": 3, "selection_protocol": SELECTION_PROTOCOL,
+                "competition_score_protocol": COMPETITION_SCORE_PROTOCOL, "best_metrics": best_metrics, "cache_protocol": CACHE_PROTOCOL,
                 "evaluation_protocol": EVALUATION_PROTOCOL, "sampling_config": dict(config["sampling"]),
                 "architecture_id": ARCHITECTURE_ID,
                 "architecture_hash": model_config.fingerprint, "model_config": asdict(model_config),
                 "condition_schema": CONDITION_SCHEMA, "preprocessing_version": PREPROCESSING_VERSION,
                 "scales": scale_payload, "scales_sha256": scales_digest(scale_payload),
-                "stage": config["stage"], "epoch": epoch, "updates": updates, "best_score": best_score,
-                "selection_task": selection, "selection_metric": "r_missing11", "model": model.state_dict(),
+                "stage": config["stage"], "epoch": epoch, "updates": updates, "best_score": None if best_metrics["competition_total_score"] is None else best_metrics["competition_total_score"]["value"],
+                "selection_task": selection, "selection_metric": "competition_total_score", "model": model.state_dict(),
                 "ema": ema, "optimizer": optimizer.state_dict(), "grad_scaler": scaler.state_dict(),
                 "rng": pack_rng(), "loader_rng": generator.get_state(), "manifests": manifests,
                 "training_config": training, "loss_config": config['loss'], "config": config,
@@ -282,25 +290,33 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
         record: dict[str, Any] = {"epoch": epoch + 1, "updates": updates,
                                   "train": {key: value / count for key, value in running.items()}}
         is_validation_epoch = (epoch + 1) % int(training["validate_every"]) == 0 or epoch + 1 == int(training["epochs"])
-        improved = False
+        improved = []
         if is_validation_epoch:
             evaluation_model = B5UNet(model_config).to(device)
             evaluation_model.load_state_dict(ema, strict=True)
             summaries = validate(evaluation_model, validation_data, config, preprocessor, device,
                                  output / "validation" / f"epoch_{epoch + 1:04d}")
-            score = float(summaries[selection]["r_missing11"])
-            if not math.isfinite(score):
-                raise FloatingPointError("Undefined validation selection score")
-            improved = score > best_score
-            best_score = max(best_score, score)
-            record.update({"validation": summaries, "selection_task": selection,
-                           "selection_metric": "r_missing11", "selection_value": score})
+            scores = scores_from_summaries(summaries)
+            best_metrics, improved = update_best_metrics(best_metrics, scores, epoch + 1)
+            record.update({"validation": summaries, "competition": scores, "selection_task": selection,
+                           "selection_metric": "competition_total_score",
+                           "selection_value": scores["competition_total_score"],
+                           "selected_checkpoints": [METRIC_FILES[key] for key in improved]})
+            row = {"epoch": epoch + 1, "updates": updates, **config["sampling"], **scores}
+            table = output / "validation_metrics.csv"
+            exists = table.exists()
+            with table.open("a", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(row))
+                if not exists:
+                    writer.writeheader()
+                writer.writerow(row)
             del evaluation_model
         payload = checkpoint_payload(epoch)
-        atomic_save(output / "last.pt", payload)
-        if improved:
-            atomic_save(output / "best.pt", payload)
+        save_selected_checkpoints(output, payload, improved)
+        record["best_metrics"] = best_metrics
         with (output / "history.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         print(json.dumps({"epoch": epoch + 1, "updates": updates, "loss": record["train"]["loss"],
-                          "best_validation_r_missing11": best_score}, ensure_ascii=False), flush=True)
+                          "best_competition_total_score": None if best_metrics["competition_total_score"] is None else best_metrics["competition_total_score"]["value"],
+                          "best_main_correlation": None if best_metrics["main_correlation"] is None else best_metrics["main_correlation"]["value"],
+                          "best_task2_bonus_score": None if best_metrics["task2_rmse_bonus_score"] is None else best_metrics["task2_rmse_bonus_score"]["value"]}, ensure_ascii=False), flush=True)
