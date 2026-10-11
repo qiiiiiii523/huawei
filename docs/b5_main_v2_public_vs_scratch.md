@@ -1,8 +1,8 @@
 # 新版 B5：公开预训练作用的两个实验
 
 本次仅比较初始化方式：E1华为数据从头训练，E2公开预训练EMA初始化后在相同华为数据上微调。
-两组均使用同步I＋人口学的原B5-U，保留原FM损失、100轮、LR=5e-5、batch=8、seed42、每5轮验证K1、最终Heun16/K16。
-不增加T/F/context，不修改损失权重，也不把周期验证改成K16或每轮验证。
+两组均使用同步I＋人口学的原B5-U，保留原FM损失、100轮、LR=5e-5、batch=8、seed42、每5轮验证Heun16/K16、最终同样Heun16/K16。
+不增加T/F/context，不修改损失权重；周期验证改为K16以对齐最终推理，频率仍每5轮。
 
 这比较的是“额外公开预训练在相同华为训练预算下是否有帮助”。E2总计算量包含已经完成的公开预训练，不能声称两组总计算预算相同。
 从头训练组使用相同LR和预算是控制变量的起点，不证明已找到从头训练的最优超参数；一个seed的结果也不代表所有运行。
@@ -17,13 +17,13 @@
 | 华为训练 | 同一strict去重1872窗/156条d12 | 同左 |
 | 人口学 | data/userinfobean.csv，已更新的文件 | 同左 |
 | scale | 同一冻结preprocessing_scales.npz | 同左，必须与公开权重sha匹配 |
-| 选模 | 每5轮K1验证，总分最大；另保存相关性/加分最佳 | 同左 |
+| 选模 | 每5轮K16验证，总分最大；另保存相关性/加分最佳 | 同左 |
 | 最终评估 | K16，完整新版验证集 | 同左 |
-| 输出 | results/B5/main_v2_score60_scratch_meta | results/B5/main_v2_score60_public_finetune_meta |
+| 输出 | results/B5/main_v2_score60_k16_scratch_meta | results/B5/main_v2_score60_k16_public_finetune_meta |
 
 两个配置只在stage、初始化要求、实验ID和输出目录上不同，旧b5_base/b5_finetune配置的超参数不变。
 E1禁止传init-checkpoint，防止把“华为从头训练”误跑成带预训练。E2要求public来源的checkpoint，不能误用旧华为微调best。
-两组均可resume各自采用新选模协议生成的last.pt，不能跨stage、换人口学、换数据或换采样后resume。旧选模协议last仅能用于新运行初始化，不能精确续训。
+两组均可resume各自采用新选模协议生成的last.pt，不能跨stage、换人口学、换数据或换采样后resume。旧选模协议或K1验证的last仅能用于新运行初始化，不能直接恢复旧最佳记录到K16实验。
 
 ## 服务器先检查
 
@@ -55,18 +55,18 @@ python -m baselines.B5.prepare \
 
 ```bash
 set -o pipefail
-mkdir -p results/B5/main_v2_score60_scratch_meta results/B5/main_v2_score60_public_finetune_meta
+mkdir -p results/B5/main_v2_score60_k16_scratch_meta results/B5/main_v2_score60_k16_public_finetune_meta
 
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
   --config configs/experiments/b5_main_v2_scratch_meta.yaml \
   --device cuda --execute-training \
-  2>&1 | tee results/B5/main_v2_score60_scratch_meta/train.log
+  2>&1 | tee results/B5/main_v2_score60_k16_scratch_meta/train.log
 
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
   --config configs/experiments/b5_main_v2_public_finetune_meta.yaml \
   --init-checkpoint results/B5/E2_public_meta/best.pt \
   --device cuda --execute-training \
-  2>&1 | tee results/B5/main_v2_score60_public_finetune_meta/train.log
+  2>&1 | tee results/B5/main_v2_score60_k16_public_finetune_meta/train.log
 ```
 
 并行时分别在两个终端运行一组、指定不同空闲卡。直接把两条前台命令粘贴到同一个终端仍是顺序执行。
@@ -75,7 +75,7 @@ CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
 
 ## 训练后评估
 
-两组采用同样的四份权重保存规则，best.pt按50分主分＋10分加分的总分选择，最终统一K16。四份候选全部评估，检查K1选模与K16实际使用是否出现排名变化；不要把额外评估误称为训练用了K16。具体规则见[评分与保存说明](b5_score60_checkpoint_policy.md)。
+两组采用同样的四份权重保存规则，best.pt按50分主分＋10分加分的总分选择，最终统一K16。四份候选全部评估，比较各指标候选在同一K16设置下的结果；不要把额外评估误称为训练用了K16。具体规则见[评分与保存说明](b5_score60_checkpoint_policy.md)。
 
 ```bash
 for arm in scratch public_finetune; do
@@ -87,9 +87,9 @@ for arm in scratch public_finetune; do
   for checkpoint in best best_r best_bonus last; do
     CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.validate \
       --config "$config" \
-      --checkpoint "results/B5/main_v2_score60_${arm}_meta/${checkpoint}.pt" \
+      --checkpoint "results/B5/main_v2_score60_k16_${arm}_meta/${checkpoint}.pt" \
       --device cuda \
-      --output-dir "results/B5/main_v2_score60_${arm}_meta/evaluation_${checkpoint}"
+      --output-dir "results/B5/main_v2_score60_k16_${arm}_meta/evaluation_${checkpoint}"
   done
 done
 ```
@@ -97,15 +97,15 @@ done
 比较同一新版验证集的Task1 r、Task2两设备r及等权r、两设备胸导联RMSE和综合分。不能直接对比旧数据0.66949等历史分数。
 initialization.json中E1应type=random、source_checkpoint=null；E2应type=pretrained_ema、source_stage=public。
 两组的人口学、数据manifest和scale sha必须相同。
-K1选模与K16评价的限制是有意保留的旧协议，应在报告中说明；本次不修改它，后续另设实验才改变。
+周期选模和最终评价现已统一K16。best只覆盖每5轮实际验证过的checkpoint，不覆盖未验证轮次。K1历史实验与这次K16选模实验需标明不同协议。
 
 ## 打包报告
 
 ```bash
 tar --exclude='*.pt' --exclude='*.npy' --exclude='*.npz' \
   -czf B5_main_v2_pair_reports.tar.gz \
-  results/B5/main_v2_score60_scratch_meta \
-  results/B5/main_v2_score60_public_finetune_meta \
+  results/B5/main_v2_score60_k16_scratch_meta \
+  results/B5/main_v2_score60_k16_public_finetune_meta \
   results/B5/main_v2_pair_scratch_preflight.json \
   results/B5/main_v2_pair_public_preflight.json \
   configs/experiments/b5_main_v2_scratch_meta.yaml \

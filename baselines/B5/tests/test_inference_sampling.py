@@ -21,9 +21,11 @@ LEGACY = {'seed': 42, 'solver': 'heun', 'steps': 16, 'samples': 1}
 
 
 class InferenceSamplingTests(unittest.TestCase):
-    def test_default_final_profile_and_training_config_separate(self):
+    def test_periodic_validation_matches_final_profile(self):
         self.assertEqual(inference_sampling(), {**LEGACY, 'samples': 16})
-        self.assertEqual(load_config(ROOT/'configs/experiments/b5_finetune_meta.yaml')['sampling'], LEGACY)
+        for name in ('b5_finetune_meta.yaml','b5_main_v2_scratch_meta.yaml','b5_main_v2_public_finetune_meta.yaml'):
+            with self.subTest(config=name):
+                self.assertEqual(load_config(ROOT/'configs/experiments'/name)['sampling'], inference_sampling())
 
     def test_explicit_overrides_and_none_preserves_profile(self):
         self.assertEqual(inference_sampling(overrides={'steps': 32, 'samples': 4, 'seed': None}),

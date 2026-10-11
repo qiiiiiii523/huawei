@@ -98,15 +98,15 @@ class SelectionTests(unittest.TestCase):
         cfg=load_config(ROOT/'configs/experiments/b5_main_v2_scratch_meta.yaml')
         cp.update(cache_protocol='independent-record-context-v1',evaluation_protocol='machine_body_equal_weight_score_v1',sampling_config=copy.deepcopy(cfg['sampling']))
         validate_resume_protocol(cp,cfg)
-        cp['sampling_config']['samples']=16
+        cp['sampling_config']['samples']=1
         with self.assertRaisesRegex(ValueError,'sampling'):validate_resume_protocol(cp,cfg)
 
     def test_new_run_outputs_and_sampling_policy_are_explicit(self):
         for name in ['b5_main_v2_scratch_meta.yaml','b5_main_v2_public_finetune_meta.yaml']:
             c=load_config(ROOT/'configs/experiments'/name)
-            self.assertIn('score60',c['paths']['output_dir'])
+            self.assertIn('score60_k16',c['paths']['output_dir'])
             self.assertEqual(c['validation']['selection_metric'],'competition_total_score')
-            self.assertEqual(c['sampling']['samples'],1)  # preserve requested periodic K1
+            self.assertEqual(c['sampling']['samples'],16)  # match final generation
 
 
 if __name__=='__main__':unittest.main()

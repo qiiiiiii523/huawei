@@ -12,7 +12,14 @@ from .data import HuaweiTrainDataset, HuaweiValidationDataset, demographics_tabl
 
 def preflight(config: dict[str, Any], fit_scales: bool = False) -> dict[str, Any]:
     from . import CACHE_PROTOCOL, EVALUATION_PROTOCOL
+    from .sampling_settings import inference_sampling
+    from ecg12gen.evaluate import COMPETITION_SCORE_PROTOCOL
     report = {'cache_protocol': CACHE_PROTOCOL, 'evaluation_protocol': EVALUATION_PROTOCOL, 'context_used': False, 'training_started': False, 'downloads_started': False, 'stage': config['stage'], 'errors': []}
+    report.update({'sampling': dict(config['sampling']), 'final_sampling': inference_sampling(),
+                   'sampling_matches_final_default': config['sampling'] == inference_sampling(),
+                   'selection_metric': config['validation']['selection_metric'],
+                   'competition_score_protocol': COMPETITION_SCORE_PROTOCOL,
+                   'output_dir': str(resolve_path(config, 'output_dir'))})
     try:
         if fit_scales:
             path = resolve_path(config, 'scales')
@@ -65,7 +72,7 @@ def main():
     parser.add_argument('--config', required=True)
     parser.add_argument('--fit-scales', action='store_true', help='Only when the frozen train-only scale file does not exist')
     parser.add_argument('--data-root', help='Override the user-info data directory')
-    parser.add_argument('--huawei-data-root', help='Override directory containing task1_output_v2/task2_output')
+    parser.add_argument('--huawei-data-root', help='Override directory containing task1_record_context_v3/task2_record_context_v3')
     parser.add_argument('--scales', help='Override the existing frozen scale artifact')
     parser.add_argument('--report', help='Optional JSON report output')
     args = parser.parse_args()

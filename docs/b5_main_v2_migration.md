@@ -72,27 +72,27 @@ CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.validate \
 
 ## 在新数据上微调
 
-默认输出为新目录 `results/B5/main_v2_score60_finetune_meta`，不会覆盖旧E2目录：
+默认输出为新目录 `results/B5/main_v2_score60_k16_finetune_meta`，不会覆盖旧E2目录：
 
 ```bash
 set -o pipefail
-mkdir -p results/B5/main_v2_score60_finetune_meta
+mkdir -p results/B5/main_v2_score60_k16_finetune_meta
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
   --config configs/experiments/b5_finetune_meta.yaml \
   --init-checkpoint results/B5/E2_finetune_meta/best.pt \
   --device cuda --execute-training \
-  2>&1 | tee results/B5/main_v2_score60_finetune_meta/train.log
+  2>&1 | tee results/B5/main_v2_score60_k16_finetune_meta/train.log
 ```
 
 只加载EMA模型权重；优化器、更新次数、数据manifest和best_score重新建立，不把旧最佳分数用作新版阈值。
-保留原100轮、每5轮验证和期间K1的配置；最终评估仍K16。若另设K16期间选模，须在新运行开始前改配置；不能更改采样后直接resume。
+保留原100轮和每5轮验证；周期选模与最终评估均为Heun16/K16。旧K1运行不能在换成K16后直接resume；应初始化新运行，重新建立最佳状态。
 
 新运行中断后可续训本组last：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
   --config configs/experiments/b5_finetune_meta.yaml \
-  --resume results/B5/main_v2_score60_finetune_meta/last.pt \
+  --resume results/B5/main_v2_score60_k16_finetune_meta/last.pt \
   --device cuda --execute-training
 ```
 
@@ -101,16 +101,16 @@ CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.train_huawei \
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.validate \
   --config configs/experiments/b5_finetune_meta.yaml \
-  --checkpoint results/B5/main_v2_score60_finetune_meta/best.pt \
+  --checkpoint results/B5/main_v2_score60_k16_finetune_meta/best.pt \
   --device cuda \
-  --output-dir results/B5/main_v2_score60_finetune_meta/final_evaluation
+  --output-dir results/B5/main_v2_score60_k16_finetune_meta/final_evaluation
 ```
 
 ## 测试推理
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.predict \
-  --checkpoint results/B5/main_v2_score60_finetune_meta/best.pt \
+  --checkpoint results/B5/main_v2_score60_k16_finetune_meta/best.pt \
   --anchor /path/to/visible_synchronous_I.npy \
   --metadata-json /path/to/observed_demographics.json \
   --record-id test_record_001 \

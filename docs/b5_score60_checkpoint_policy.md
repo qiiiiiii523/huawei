@@ -27,21 +27,21 @@ competition_total_score = main_score + bonus
 
 ## 采样与控制变量
 
-按此前用户要求，当前保持周期验证Heun16/K1，每5轮验证；最终validate/predict默认Heun16/K16。网络、条件、损失、学习率、100轮预算不变。
-因此训练中的best严格含义是“周期K1下总分最高”，不能声称已经遍历所有轮次找到K16下最高总分。
-如果要直接以最终K16选模，应在新运行开始前显式把sampling.samples设为16，或保留候选再做统一K16筛选。本次没有默默改变采样设置。
+按用户确认，周期验证和最终validate/predict均为Heun16/K16、seed42；每5轮验证。网络、条件、FM训练目标、损失、学习率、100轮预算不变。
+best.pt按实际验证过的轮次的K16总分最高保存，不保证未验证轮次没有更好的权重。K16仅影响生成与验证，并非每个训练样本重复训练16次。
+验证速度场调用数约为K1的16倍；生成逐样本累计取平均，条件编码复用，不把16份生成同时堆入显存。
 
-旧K1/Task1选模实验仍保留在旧目录。新运行使用score60目录：
+旧K1选模实验仍保留在旧目录。新运行使用score60_k16目录：
 
 ```text
-results/B5/main_v2_score60_scratch_meta/
-results/B5/main_v2_score60_public_finetune_meta/
+results/B5/main_v2_score60_k16_scratch_meta/
+results/B5/main_v2_score60_k16_public_finetune_meta/
 ```
 
 使用现有两个实验配置及train_huawei入口，命令结构不变。E1不传初始化，E2仍用公开best初始化。不要覆盖已完成实验。
 
 旧checkpoint可以推理或初始化新运行，但不能直接resume：旧best_score是相关性或旧单位总分，没有完整三项ledger。
-新规则精确resume只使用本次last.pt，采样/数据/尺度/阶段等也须一致。若要从旧华为权重开启新一段微调，使用不限定public来源的b5_finetune_meta.yaml并另设输出目录；配对E2配置仍限定公开权重，以保护消融含义。
+新规则精确resume只使用本次K16实验的last.pt，采样/数据/尺度/阶段等也须一致。若要从旧华为权重开启新一段微调，使用不限定public来源的b5_finetune_meta.yaml并另设输出目录；配对E2配置仍限定公开权重，以保护消融含义。
 
 ## 重算已有报告：不训练、不生成波形
 
@@ -65,9 +65,9 @@ python scripts/summarize_competition_score.py \
 for checkpoint in best best_r best_bonus last; do
   CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B5.validate \
     --config configs/experiments/b5_main_v2_public_finetune_meta.yaml \
-    --checkpoint "results/B5/main_v2_score60_public_finetune_meta/${checkpoint}.pt" \
+    --checkpoint "results/B5/main_v2_score60_k16_public_finetune_meta/${checkpoint}.pt" \
     --device cuda \
-    --output-dir "results/B5/main_v2_score60_public_finetune_meta/evaluation_${checkpoint}"
+    --output-dir "results/B5/main_v2_score60_k16_public_finetune_meta/evaluation_${checkpoint}"
 done
 ```
 
@@ -75,5 +75,5 @@ done
 
 ## 分支工作目录
 
-main公共修正放在独立main工作目录 `C:\Users\Ashley\Downloads\备赛\B5评分更新\main-worktree`，未提交；B5主工作区已同步同样的公共文件并新增模型分支保存策略，未提交。
-main只包含公共评分/检查/说明改动，B5的网络与保存策略不应合并成main的模型实现。用户可先在main工作目录提交公共修正，再在B5提交适配。两处公共文件保持一致。
+main公共评分修正已提交并推送为f607fb1（修正评分V3_10.11），临时main工作树已删除。B5已包含同样公共文件，并独立实现四份权重保存。
+本次K16周期验证修改在本机B5工作目录，未提交、未推送；无需再次修改main。

@@ -9,11 +9,26 @@ from unittest.mock import patch
 
 from baselines.B5.cli import training_cli, validate_training_start
 from baselines.B5.config import load_config, resolve_path
+from baselines.B5.prepare import preflight
+from baselines.B5.sampling_settings import inference_sampling
+from ecg12gen.evaluate import COMPETITION_SCORE_PROTOCOL
 
 ROOT=Path(__file__).resolve().parents[3]
 
 
 class PublicVsScratchTests(unittest.TestCase):
+    def test_preflight_exposes_sampling_score_and_output_before_training(self):
+        config=load_config(ROOT/'configs/experiments/b5_main_v2_scratch_meta.yaml')
+        with patch('baselines.B5.prepare.load_preprocessor', side_effect=FileNotFoundError('fixture scales absent')):
+            report=preflight(config)
+        self.assertFalse(report['ready'])
+        self.assertFalse(report['training_started'])
+        self.assertEqual(report['sampling'],inference_sampling())
+        self.assertTrue(report['sampling_matches_final_default'])
+        self.assertEqual(report['selection_metric'],'competition_total_score')
+        self.assertEqual(report['competition_score_protocol'],COMPETITION_SCORE_PROTOCOL)
+        self.assertIn('score60_k16',report['output_dir'])
+
     def test_paired_settings_match_except_initialization_and_output(self):
         scratch=load_config(ROOT/'configs/experiments/b5_main_v2_scratch_meta.yaml')
         fine=load_config(ROOT/'configs/experiments/b5_main_v2_public_finetune_meta.yaml')
@@ -24,7 +39,7 @@ class PublicVsScratchTests(unittest.TestCase):
         self.assertEqual(a,b)
         self.assertEqual(scratch['stage'],'local');self.assertEqual(fine['stage'],'finetune')
         self.assertEqual(fine['initialization']['allowed_source_stage'],'public')
-        self.assertEqual(scratch['sampling']['samples'],1)
+        self.assertEqual(scratch['sampling']['samples'],16)
         self.assertEqual(scratch['training']['epochs'],100)
         self.assertEqual(scratch['training']['validate_every'],5)
         self.assertEqual(resolve_path(scratch,'demographics'), ROOT/'data/userinfobean.csv')

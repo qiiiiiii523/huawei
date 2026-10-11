@@ -7,7 +7,7 @@ paths:
   common_config: configs/common.yaml
   preprocessing_config: configs/preprocessing.yaml
   scales: results/B5/shared/preprocessing_scales.npz
-  output_dir: results/B5/main_v2_score60_finetune_meta
+  output_dir: results/B5/main_v2_score60_k16_finetune_meta
 model:
   channels: [64, 128, 256]
   time_dim: 128
@@ -43,4 +43,4 @@ sampling:
   seed: 42
   solver: heun
   steps: 16
-  samples: 1
+  samples: 16
