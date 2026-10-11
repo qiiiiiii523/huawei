@@ -52,7 +52,7 @@ def preprocessor() -> ECGPreprocessor:
 def checkpoint(model: B5UNet, processor: ECGPreprocessor) -> dict:
     scales = scales_payload(processor)
     return {"architecture_id": ARCHITECTURE_ID, "architecture_hash": model.config.fingerprint,
-            "model_config": asdict(model.config), "condition_schema": CONDITION_SCHEMA,
+            "model_config": model.config.checkpoint_dict, "condition_schema": CONDITION_SCHEMA,
             "preprocessing_version": PREPROCESSING_VERSION, "scales": scales,
             "scales_sha256": scales_digest(scales), "model": model.state_dict(), "ema": model.state_dict(),
             "config": {"sampling": {"seed": 42, "steps": 1, "solver": "euler", "samples": 1}}}

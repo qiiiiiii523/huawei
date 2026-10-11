@@ -1,0 +1,6 @@
+base: b5_t_finetune_meta.yaml
+experiment_id: B5-T-original-unet-control
+model:
+  temporal_enabled: false
+paths:
+  output_dir: results/B5-T/control

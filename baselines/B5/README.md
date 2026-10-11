@@ -1,3 +1,11 @@
+# B5-T：瓶颈时间Transformer实验分支
+
+本分支从精简B5创建，只增加250-token时间Transformer残差支路。配置b5_t_finetune_meta.yaml启用，b5_t_control.yaml关闭作配对对照；原B5配置仍可使用。旧B5 EMA按完整原网络参数审计加载，新增输出投影全零，不直接resume旧架构。
+
+CPU/GPU检查、初始化核对与后续训练评估命令见 [B5-T实验说明](../../docs/b5_time_transformer.md)。本地不启动训练，默认最终采样仍为Heun16/K16。
+
+以下为保留的原B5主线说明。
+
 # B5：精简微调与最终评估主线
 
 分支 `B5` 从 `baseline/B5` 的 `20f6ea8` 建立。只保留同步 I＋年龄/性别/身高/体重条件的 B5-U 微调、数据预检、正式评估和测试推理。网络仍是原64/128/256条件1D U-Net，FM线性路径和原损失不变；模型/条件/预处理版本不变，兼容已有公开预训练和华为微调 checkpoint。

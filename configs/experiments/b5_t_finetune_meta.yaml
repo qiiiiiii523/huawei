@@ -1,0 +1,20 @@
+base: b5_finetune_meta.yaml
+experiment_id: B5-T-temporal-residual-2layer
+model:
+  temporal_enabled: true
+  temporal_tokens: 250
+  temporal_dimension: 128
+  temporal_heads: 4
+  temporal_layers: 2
+  temporal_ffn: 256
+  temporal_dropout: 0.0
+training:
+  epochs: 20
+  validate_initial: true
+sampling:
+  steps: 16
+  samples: 16
+  solver: heun
+  seed: 42
+paths:
+  output_dir: results/B5-T/temporal

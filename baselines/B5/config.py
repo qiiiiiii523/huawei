@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from .objective import validate_mainline_loss
+from . import ARCHITECTURE_ID, TEMPORAL_ARCHITECTURE_ID
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,13 @@ class ModelConfig:
     metadata_dropout: float = 0.2
     metadata_field_dropout: float = 0.05
     dilations: tuple[int, ...] = (1, 2, 4, 8)
+    temporal_enabled: bool = False
+    temporal_tokens: int = 250
+    temporal_dimension: int = 128
+    temporal_heads: int = 4
+    temporal_layers: int = 2
+    temporal_ffn: int = 256
+    temporal_dropout: float = 0.0
 
     def __post_init__(self) -> None:
         if len(self.channels) != 3 or any(c < 4 for c in self.channels):
@@ -30,6 +38,14 @@ class ModelConfig:
             raise ValueError("time_dim must be even; embedding dimensions must be >=4")
         if not 0 <= self.metadata_dropout < 1 or not 0 <= self.metadata_field_dropout < 1 or not self.dilations or any(d < 1 for d in self.dilations):
             raise ValueError("Invalid dropout or dilation configuration")
+        if not isinstance(self.temporal_enabled, bool):
+            raise ValueError("temporal_enabled must be a boolean")
+        for name in ('temporal_tokens', 'temporal_dimension', 'temporal_heads', 'temporal_layers', 'temporal_ffn'):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.temporal_dimension % self.temporal_heads or not 0 <= self.temporal_dropout < 1:
+            raise ValueError("Temporal dimension must divide heads; dropout must be in [0,1)")
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ModelConfig":
@@ -40,8 +56,21 @@ class ModelConfig:
         return cls(**args)
 
     @property
+    def core_dict(self) -> dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if not key.startswith('temporal_')}
+
+    @property
+    def checkpoint_dict(self) -> dict[str, Any]:
+        # Disabled/control checkpoints keep the EXACT historical config/hash.
+        return asdict(self) if self.temporal_enabled else self.core_dict
+
+    @property
+    def architecture_id(self) -> str:
+        return TEMPORAL_ARCHITECTURE_ID if self.temporal_enabled else ARCHITECTURE_ID
+
+    @property
     def fingerprint(self) -> str:
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()
+        return hashlib.sha256(json.dumps(self.checkpoint_dict, sort_keys=True).encode()).hexdigest()
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -100,6 +129,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if float(config["loss"]["huber_delta"]) <= 0:
         raise ValueError("Huber delta must be positive")
     validate_mainline_loss(config["loss"])
+    if not isinstance(training.get("validate_initial", False), bool):
+        raise ValueError("training.validate_initial must be a boolean")
     tasks = config["validation"]["tasks"]
     if not tasks or len(set(tasks)) != len(tasks) or any(task not in {"task1", "task2"} for task in tasks):
         raise ValueError("validation.tasks must contain distinct task1/task2 entries")

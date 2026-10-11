@@ -7,7 +7,6 @@ import math
 import os
 import random
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +15,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from ecg12gen.evaluate import competition_score, evaluate_record_predictions, write_competition_score, write_report
-from . import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION
-from .checkpoint import atomic_save, load_checkpoint, pack_rng, restore_rng, scales_digest, scales_payload
+from . import CONDITION_SCHEMA, PREPROCESSING_VERSION
+from .checkpoint import atomic_save, initialize_model, load_checkpoint, pack_rng, restore_rng, scales_digest, scales_payload
 from .config import ModelConfig, resolve_path
 from .data import HuaweiTrainDataset, HuaweiValidationDataset, common_config, demographics_table, load_preprocessor
 from .flow import sample
@@ -115,7 +114,7 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
         task_id = name
         overall, details = evaluate_record_predictions(prediction, target, task_id, rows)
         overall.update({"source_domain": "Huawei", "solver": settings["solver"],
-                        "architecture_id": ARCHITECTURE_ID, "condition_schema": CONDITION_SCHEMA,
+                        "architecture_id": model.config.architecture_id, "condition_schema": CONDITION_SCHEMA,
                         "metadata_enabled": model.config.metadata_enabled,
                         "integration_steps": int(settings["steps"]), "samples": int(settings["samples"]),
                         "velocity_nfe_per_window": int(settings["steps"]) * int(settings["samples"]) *
@@ -161,8 +160,8 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     checkpoint = load_checkpoint(resume_path or init_path) if (resume_path or init_path) else None
     initialization = {"type": "random", "source_checkpoint": None}
     if checkpoint:
-        if checkpoint["architecture_hash"] != model_config.fingerprint:
-            raise ValueError("Cannot initialize a different architecture/condition configuration")
+        if resume_path and checkpoint["architecture_hash"] != model_config.fingerprint:
+            raise ValueError("Exact resume requires the same architecture; initialize B5-T with --init-checkpoint instead")
         if checkpoint["scales_sha256"] != scales_digest(scale_payload):
             raise ValueError("Freeze and reuse the checkpoint's Huawei-fitted scale file before transfer")
         if resume_path:
@@ -178,12 +177,12 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
             ema = {key: value.to(device).clone() for key, value in checkpoint["ema"].items()}
             initialization = checkpoint["initialization"]
         else:
-            model.load_state_dict(checkpoint["ema"], strict=True)
+            transfer = initialize_model(model, checkpoint)
             ema = {key: value.detach().clone() for key, value in model.state_dict().items()}
             initialization = {"type": "pretrained_ema", "source_checkpoint": str(Path(init_path).resolve()),
                               "source_checkpoint_sha256": file_sha256(init_path),
                               "source_stage": checkpoint["stage"], "source_epoch": int(checkpoint["epoch"]),
-                              "source_manifests": checkpoint["manifests"]}
+                              "source_manifests": checkpoint["manifests"], "compatibility": transfer}
     train_data, validation_data = build_datasets(config, preprocessor)
     manifests = {"train": train_data.manifest_digest,
                  **{name: data.manifest_digest for name, data in validation_data.items()}}
@@ -217,8 +216,8 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     scale_tensor = torch.as_tensor(preprocessor.scale_uV_by_source["d12"], device=device)
 
     def checkpoint_payload(epoch: int) -> dict[str, Any]:
-        return {"format_version": 1, "architecture_id": ARCHITECTURE_ID,
-                "architecture_hash": model_config.fingerprint, "model_config": asdict(model_config),
+        return {"format_version": 1, "architecture_id": model_config.architecture_id,
+                "architecture_hash": model_config.fingerprint, "model_config": model_config.checkpoint_dict,
                 "condition_schema": CONDITION_SCHEMA, "preprocessing_version": PREPROCESSING_VERSION,
                 "scales": scale_payload, "scales_sha256": scales_digest(scale_payload),
                 "stage": config["stage"], "epoch": epoch, "updates": updates, "best_score": best_score,
@@ -228,6 +227,17 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
                 "training_config": training, "loss_config": config['loss'], "config": config,
                 "torch_version": str(torch.__version__), "initialization": initialization}
 
+    if training.get('validate_initial', False) and not resume_path:
+        summaries = validate(model, validation_data, config, preprocessor, device, output/'validation'/'epoch_0000')
+        best_score = float(summaries[selection]['r_missing11'])
+        if not math.isfinite(best_score):
+            raise FloatingPointError('Undefined initializer validation correlation')
+        payload = checkpoint_payload(-1)
+        atomic_save(output/'best.pt', payload)
+        atomic_save(output/'last.pt', payload)
+        (output/'initial_validation.json').write_text(json.dumps({'epoch': 0, 'updates': 0,
+            'selection_task': selection, 'selection_value': best_score, 'validation': summaries}, indent=2), encoding='utf-8')
+        print(json.dumps({'epoch': 0, 'phase': 'initial_validation', 'best_validation_r_missing11': best_score}), flush=True)
     for epoch in range(start_epoch, int(training["epochs"])):
         model.train()
         optimizer.zero_grad(set_to_none=True)

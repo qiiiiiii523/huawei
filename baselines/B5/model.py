@@ -10,6 +10,7 @@ from torch import nn
 
 from .conditions import FiLM, MetadataEncoder, TimeEmbedding
 from .config import ModelConfig
+from .time_transformer import TemporalResidual
 
 
 def norm(channels: int) -> nn.GroupNorm:
@@ -65,6 +66,13 @@ class B5UNet(nn.Module):
         self.condition_enc = nn.ModuleList([nn.Conv1d(c, c, 1) for c in config.channels])
         self.condition_dec = nn.ModuleList([nn.Conv1d(c, c, 1) for c in config.channels[:2]])
         self.output = nn.Conv1d(c0, 11, 1)
+        self.temporal_branch = None
+        if config.temporal_enabled:
+            # Constructor runs on CPU before .to(device). Isolate added random
+            # initialization so it does not shift the baseline CPU noise RNG.
+            with torch.random.fork_rng(devices=[]):
+                self.temporal_branch = TemporalResidual(c2, config.temporal_tokens, config.temporal_dimension,
+                    config.temporal_heads, config.temporal_layers, config.temporal_ffn, config.temporal_dropout)
 
     def encode_conditions(self, anchor: torch.Tensor, numeric: torch.Tensor, sex: torch.Tensor,
                           field_mask: torch.Tensor, age_topcoded: torch.Tensor) -> ConditionCache:
@@ -98,6 +106,8 @@ class B5UNet(nn.Module):
         skip1 = self._blocks(self.encode1, h, t, condition.metadata)
         h = self.down2(skip1) + self.condition_enc[2](f2)
         h = self._blocks(self.bottleneck, h, t, condition.metadata)
+        if self.temporal_branch is not None:
+            h = self.temporal_branch(h)
         h = self.up1(F.interpolate(h, size=skip1.shape[-1], mode="nearest"))
         h = self.merge1(torch.cat((h, skip1), dim=1)) + self.condition_dec[1](f1)
         h = self._blocks(self.decode1, h, t, condition.metadata)
