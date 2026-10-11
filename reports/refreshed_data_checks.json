@@ -1,0 +1,74 @@
+{
+  "existing_subjects_preserved": 110,
+  "total_subjects": 203,
+  "raw_signal_hashes_verified": 534,
+  "demographics_rows": 185,
+  "demographics_source_encoding": "gb18030",
+  "datasets": {
+    "task1_train": {
+      "cache_target_windows": 1188,
+      "eligible_target_windows": 1152,
+      "eligible_pairs": 96,
+      "pair_device_counts": {
+        "watch_ecg": 96
+      },
+      "anchor_only_fallback_pairs": {
+        "watch_ecg": 9
+      },
+      "context_padding_lead_points": 116700,
+      "context_gap_lead_points": 2750
+    },
+    "task1_validation": {
+      "cache_target_windows": 324,
+      "eligible_target_windows": 324,
+      "eligible_pairs": 27,
+      "pair_device_counts": {
+        "watch_ecg": 27
+      },
+      "anchor_only_fallback_pairs": {
+        "watch_ecg": 5
+      },
+      "context_padding_lead_points": 29000,
+      "context_gap_lead_points": 1750,
+      "identity_r_missing11": 1.0
+    },
+    "task2_train": {
+      "cache_target_windows": 3228,
+      "eligible_target_windows": 3156,
+      "eligible_pairs": 263,
+      "pair_device_counts": {
+        "ecg_machine_d6": 156,
+        "body_scale_d6": 107
+      },
+      "anchor_only_fallback_pairs": {
+        "ecg_machine_d6": 11
+      },
+      "context_padding_lead_points": 5215626,
+      "context_gap_lead_points": 0
+    },
+    "task2_validation": {
+      "cache_target_windows": 780,
+      "eligible_target_windows": 780,
+      "eligible_pairs": 65,
+      "pair_device_counts": {
+        "ecg_machine_d6": 40,
+        "body_scale_d6": 25
+      },
+      "anchor_only_fallback_pairs": {
+        "ecg_machine_d6": 1
+      },
+      "context_padding_lead_points": 1331628,
+      "context_gap_lead_points": 0,
+      "identity_r_missing11": 1.0
+    }
+  },
+  "strict": {
+    "windows": 1872,
+    "target_records": 156,
+    "subjects": 156,
+    "source_task_windows": {
+      "task1": 1008,
+      "task2": 864
+    }
+  }
+}

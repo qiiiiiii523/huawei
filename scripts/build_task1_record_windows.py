@@ -87,7 +87,7 @@ def build(data_root: Path, repository_root: Path, output_dir: Path) -> dict[str,
     )
     writer = IndependentRecordCacheBuilder("task1")
     summaries, gap_rows, rejected = [], [], []
-    for pair in pairs:
+    for ordinal, pair in enumerate(pairs, 1):
         target_record = parse_d12_xml(_resolve(data_root, pair["target_path"]), D12_LEADS)
         target = _resample_d12(target_record.signal_uV, target_record.sampling_rate_hz)
         if target.shape[1] < 60000:
@@ -100,6 +100,8 @@ def build(data_root: Path, repository_root: Path, output_dir: Path) -> dict[str,
             context, valid, gaps = reconstruct_watch_timeline(watch)
             context = context[None, :]
         writer.add_pair({**pair, "input_type": "watch_ecg"}, target, context, valid)
+        if ordinal % 25 == 0 or ordinal == len(pairs):
+            print(f"Prepared Task1 pairs: {ordinal}/{len(pairs)}", flush=True)
         context_points = 0 if context is None else context.shape[1]
         summaries.append({"pair_id": pair["pair_id"], "split": pair["split"],
                           "target_500hz_points": target.shape[1], "target_used_points": 60000,

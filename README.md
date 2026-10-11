@@ -44,10 +44,10 @@ task2: d6 context    + machine-I anchor -> d12 target
 
 ```python
 d12_prediction = model(
-    context_ecg,          # task1 [B,1,5000]；task2 [B,6/5,5000]
+    context_ecg,          # task1 [B,W,1,5000]；task2 [B,W,6,5000]
     anchor_i_ecg,         # [B,1,5000]
-    context_lead_mask,
-    anchor_lead_mask,     # target-time 仅 I=true
+    context_time_mask,    # 排除缺口、padding及不可用导联
+    context_window_mask,  # 记录条件汇总时排除无效窗口
 )
 ```
 
@@ -144,8 +144,10 @@ context独立切窗，保留尾窗、缺口mask、有效长度及记录median。
 第k个context窗与第k个target窗没有同步含义。缺失/不合格context回退anchor-only，保留有效target。
 具体缓存格式、构建与模型接入见 [独立context与设备评分协议](docs/independent-context-and-device-scoring.md)。
 
-本次仅改代码，未重建数据。common.yaml 指向未来的 task1_record_context_v3 / task2_record_context_v3；
-旧缓存保留，不能用来冒充新格式。重建缓存后还需重新生成 strict d12 索引。
+2026-10-10已完成新数据刷新、两任务缓存及strict索引重建。common.yaml指向
+task1_record_context_v3 / task2_record_context_v3；旧缓存保留。
+可训练窗口：Task1 1152，Task2 3156；strict去重1872窗/156条记录。
+详见 [新数据处理结果](docs/data-refresh-20261010.md)。
 
 1. 使用 `ECGPreprocessor`；不要自己重新定义归一化。
 2. 固定 μV、500 Hz、10 秒、5000 点和 canonical d12 顺序。

@@ -69,7 +69,7 @@ class StrictD12PretrainDataset:
         qc = self._device_qc.get(row["target_record_id"])
         if not qc or qc["device_type"] != "ecg_machine_d12":
             raise ContractError("Strict d12 row lacks a d12 device-interpretation QC record")
-        return qc["d12_direct_supervision_eligible"] == "true"
+        return qc["d12_direct_supervision_eligible"] == "true" and bool(d12_target_mask(qc)[0])
 
     def __len__(self) -> int:
         return len(self.rows)

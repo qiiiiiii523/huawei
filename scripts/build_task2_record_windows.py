@@ -19,7 +19,7 @@ def build(data_root: Path, repository_root: Path, output_dir: Path):
     splits = {r["subject_id"]: r["split"] for r in _read_csv(metadata / "subject_split.csv")}
     writer = IndependentRecordCacheBuilder("task2")
     rejected = []
-    for pair in pairs:
+    for ordinal, pair in enumerate(pairs, 1):
         if pair["pair_status"] != "paired" or pair["target_quality_status"] != "usable":
             continue
         if splits.get(pair["subject_id"]) != pair["split"]:
@@ -40,6 +40,8 @@ def build(data_root: Path, repository_root: Path, output_dir: Path):
             else:
                 raise ValueError("Unknown Task2 source")
         writer.add_pair(pair, target, context, valid)
+        if ordinal % 25 == 0 or ordinal == len(pairs):
+            print(f"Prepared Task2 pairs: {ordinal}/{len(pairs)}", flush=True)
     if not writer.target_rows:
         raise ValueError("No eligible 120-second target records")
     audit = writer.write(output_dir)

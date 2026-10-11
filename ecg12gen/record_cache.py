@@ -50,6 +50,7 @@ class IndependentRecordCacheBuilder:
         self._contexts: dict[tuple, tuple] = {}
         self._target_owners: dict[str, tuple] = {}
         self._target_signatures: dict[tuple, str] = {}
+        self._target_blocks: dict[tuple, np.ndarray] = {}
         self._pairs: set[str] = set()
 
     def add_pair(self, pair: dict[str, str], target_uV: np.ndarray,
@@ -73,6 +74,7 @@ class IndependentRecordCacheBuilder:
         digest = hashlib.sha256(target.tobytes()).hexdigest()
         if self._target_signatures.setdefault(target_key, digest) != digest:
             raise ContractError("Same physical target interval has inconsistent raw content")
+        target = self._target_blocks.setdefault(target_key, target)  # reused targets share memory
         context = window_context_record(context_uV, source, context_valid_mask)
         if context_id:
             key = (source, context_id)
@@ -118,8 +120,15 @@ class IndependentRecordCacheBuilder:
                 ("target", self.targets[split], 12, np.float32),
                 ("context", self.contexts[split], channels, np.float32),
                 ("context_valid_mask", self.context_masks[split], channels, bool)):
-                array = np.stack(values).astype(dtype) if values else np.empty((0, width, 5000), dtype=dtype)
-                np.save(output / f"{self.task_id}_{split}_{suffix}.npy", array)
+                path = output / f"{self.task_id}_{split}_{suffix}.npy"
+                if values:
+                    array = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=(len(values), width, 5000))
+                    for index, value in enumerate(values):
+                        array[index] = value
+                    array.flush()
+                    array._mmap.close()
+                else:
+                    np.save(path, np.empty((0, width, 5000), dtype=dtype))
         _write_rows(output / f"{self.task_id}_window_metadata.csv", self.target_rows, TARGET_FIELDS)
         _write_rows(output / f"{self.task_id}_context_window_metadata.csv", self.context_rows, CONTEXT_FIELDS)
         audit = {"protocol": CACHE_PROTOCOL, "task_id": self.task_id, "target_seconds": 120,

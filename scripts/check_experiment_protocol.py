@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -63,8 +64,18 @@ def main() -> None:
         assert experiment["experiments"]["P0_anchor_only"]["training_output_i_replacement"] == "forbidden"
 
     with (ROOT / "metadata" / "subject_split.csv").open(encoding="utf-8-sig", newline="") as handle:
-        splits = [row["split"] for row in csv.DictReader(handle)]
-    assert splits.count("train") == 88 and splits.count("validation") == 22
+        split_rows = list(csv.DictReader(handle))
+    assignments = {r["subject_id"]: r["split"] for r in split_rows}
+    assert len(assignments) == len(split_rows) and set(assignments.values()) == {"train", "validation"}
+    audit_path = ROOT / "metadata/data_refresh_audit.json"
+    if audit_path.is_file():
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        backup = Path(audit["backup_directory"]) / "subject_split.csv"
+        if backup.is_file():
+            with backup.open(encoding="utf-8-sig", newline="") as handle:
+                previous = list(csv.DictReader(handle))
+            assert all(assignments[r["subject_id"]] == r["split"] for r in previous)
+        assert audit["existing_subject_splits_unchanged"] is True
     assert protocol["reproducibility"]["seed"] == 42
     assert protocol["context_fusion_protocol"]["config"] == "configs/context_fusion_protocol.yaml"
     assert protocol["context_fusion_protocol"]["stages"] == ["P0_anchor_only", "P1-C1", "P1-C2", "P1-C3"]
@@ -121,7 +132,7 @@ def main() -> None:
     score = competition_score(0.8, 0.6, 140.0, 140.0)
     assert score["main_score"] == 0.7 and score["task2_rmse_bonus_score"] == 5.0 and score["competition_total_score"] == 5.7
     state = seed_everything(42, deterministic=True)
-    print("PASS: v2 joint-anchor protocol; frozen preprocessing; 88/22 subject split; seed=42;", state)
+    print("PASS: joint-anchor protocol; frozen preprocessing; preserved patient splits; seed=42;", state)
 
 
 if __name__ == "__main__":

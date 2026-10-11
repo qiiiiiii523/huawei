@@ -75,7 +75,7 @@ class JointAnchorDataset:
             raise ContractError("Missing target XML QC")
         if row["quality_status"] != "usable" or pair.get("target_quality_status") != "usable":
             return False
-        return not (self.split == "train" and qc["d12_direct_supervision_eligible"] != "true")
+        return not (self.split == "train" and (qc["d12_direct_supervision_eligible"] != "true" or not d12_target_mask(qc)[0]))
 
     def _context(self, row):
         from .dataset import _baseline_from_text

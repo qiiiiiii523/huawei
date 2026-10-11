@@ -1,6 +1,6 @@
 # 独立记录context与Task 2设备等权评分
 
-更新日期：2026-10-10。本次只修改main代码和配置，未复制、删除、解析或重切真实数据，未训练模型。
+更新日期：2026-10-10。已完成新增数据metadata、独立缓存及strict索引刷新；原始数据只读，旧缓存保留，未训练模型。
 
 ## 1. 数据关系
 
@@ -65,11 +65,11 @@ taskX_build_audit.json                       independent-record-context-v1
 
 两个数组的N不需要相等。context记录按来源/record ID复用一次；pair负责将context物理记录与target关联。不同pair不能跨患者/划分。target缓存保留原始μV，不写去median后的label。
 
-## 4. 构建代码已准备，但本次没有执行
+## 4. 已完成数据重建
 
-common.yaml已指向尚未生成的 `../task1_record_context_v3` 和 `../task2_record_context_v3`。旧task1_output_v2/task2_output不动，也不自动迁移。新数据扫描、配对、QC和患者归属仍待后续数据处理任务完成。
+common.yaml指向已生成的 `../task1_record_context_v3` 和 `../task2_record_context_v3`。旧task1_output_v2/task2_output未修改。新数据扫描、配对、QC、固定旧患者归属和strict索引均已更新。统计与检查见 [处理结果](data-refresh-20261010.md)。
 
-完成metadata审核后，后续可显式运行：
+以下是本次流程的重现步骤；输出目录已存在，不应原样再次运行构建命令覆盖数据，后续更新请指定新输出目录：
 
 ```powershell
 python scripts/build_task1_record_windows.py --data-root .. --output-dir ../task1_record_context_v3
@@ -114,4 +114,4 @@ summary包含两个设备的r、胸导联RMSE、加分和记录数，以及等�
 4. 用新版四参数competition_score或公共汇总脚本，禁止用平均RMSE换加分。
 5. 严格按120秒target记录评分；110秒旧Task1缓存会报错，不能填target补分。
 
-本次没有修改任何模型分支，也未验证网络精度或启动训练。合成临时缓存覆盖mask、尾窗、有效median、完整target、Dataset关联、dropout、回退及设备评分测试。
+本次没有修改任何模型分支，也未验证网络精度或启动训练。合成测试和真实缓存检查均通过，包括mask、尾窗、有效median、完整target、Dataset关联、dropout、回退、设备评分、患者划分和strict去重。

@@ -42,5 +42,5 @@ data_protection:
   raw_data_overwrite_allowed: false
 
 competition_output:
-  sampling_rate_hz: "TBD"
-  note: "The final competition output sampling rate is unknown; do not infer it."
+  sampling_rate_hz: 500
+  note: "Organizer-confirmed output rate; complete target intervals are 120 seconds."
