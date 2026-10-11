@@ -1,82 +1,84 @@
-"""Check that ECG correlations are averaged over records, not pooled points."""
+"""Synthetic checks for full-record, equal-device correlation and nonlinear bonus weighting."""
 from __future__ import annotations
-
 import sys
+import csv
+import subprocess
+import tempfile
 from pathlib import Path
-
 import numpy as np
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-
-from ecg12gen.evaluate import _pearson, evaluate_record_predictions, evaluate_joint_anchor_predictions, competition_score
+from ecg12gen.evaluate import evaluate_record_predictions, competition_score, rmse_bonus
 from ecg12gen.contracts import ContractError
 
 
-def main() -> None:
-    time = np.linspace(0, 4 * np.pi, 5000, dtype=np.float32)
-    waveform = np.sin(time)
-    prediction = np.broadcast_to(waveform, (2, 12, 5000)).copy()
-    target = prediction.copy()
-    target[1] += 100.0
+def metadata(pair, source="watch_ecg"):
+    return [{"pair_id": pair, "target_record_id": pair, "start_sample_500hz": str(i * 5000),
+             "expected_window_count": "12", "input_type": source} for i in range(12)]
 
-    metadata = [
-        {"pair_id": "record_a", "target_record_id": "target_a", "start_sample_500hz": "0"},
-        {"pair_id": "record_a", "target_record_id": "target_a", "start_sample_500hz": "5000"},
-    ]
-    overall, details = evaluate_record_predictions(prediction, target, "task1", metadata)
-    assert overall["r_missing11"] < 1.0
-    assert np.isclose(_pearson(prediction[1, 1], target[1, 1]), 1.0)
-    expected_r = _pearson(prediction[:, 1].reshape(-1), target[:, 1].reshape(-1))
-    assert np.isclose(overall["r_missing11"], expected_r)
-    assert overall["evaluation_aggregation"] == "record_macro_after_chronological_window_stitch"
-    assert np.isclose(overall["missing11_mean_rmse_uV"], np.sqrt(5000.0))
-    assert len(details) == 11 and all("pearson_r" not in row for row in details)
-    summary, qc_details = evaluate_joint_anchor_predictions(
-        prediction, target, target[:, :1], "task2", metadata, np.ones((2, 12), dtype=bool))
-    assert np.isclose(summary["r_missing11"], overall["r_missing11"])
-    assert all(key not in summary for key in ("r_raw_12", "r_submit_12", "task1_r1", "task2_r2"))
-    assert np.array_equal(target[1], prediction[1] + 100)
-    # Record offsets must not be removed during evaluation: RMSE remains raw.
-    shifted_target = prediction + 100
-    shifted, _ = evaluate_record_predictions(prediction, shifted_target, "task1", metadata)
-    assert np.isclose(shifted["r_missing11"], 1)
-    assert np.isclose(shifted["missing11_mean_rmse_uV"], 100)
-    reordered, _ = evaluate_record_predictions(prediction[::-1], target[::-1], "task1", metadata[::-1])
-    assert np.isclose(reordered["r_missing11"], overall["r_missing11"])
-    # Identical targets paired with two contexts are separate scored samples.
-    two_pairs = [metadata[0], {**metadata[1], "pair_id": "record_b", "start_sample_500hz": "0"}]
-    separate, _ = evaluate_record_predictions(prediction, target, "task1", two_pairs)
-    assert separate["n_records"] == 2 and np.isclose(separate["r_missing11"], 1)
-    # Limb errors must not change the chest-only Task2 bonus RMSE.
-    limb_error = prediction.copy()
-    limb_error[:, 1:6] += 1000
-    chest_score, _ = evaluate_record_predictions(limb_error, prediction, "task2", metadata)
-    assert np.isclose(chest_score["task2_missing_lead_mean_rmse_uV"], 0)
-    assert chest_score["task2_rmse_scored_leads"] == "V1,V2,V3,V4,V5,V6"
-    assert chest_score["missing11_mean_rmse_uV"] > 0
-    # Averaging six per-lead RMSEs, not averaging their squared errors.
-    offsets = np.asarray([20, 40, 60, 80, 100, 120])
-    limb_error[:, 6:12] += offsets[None, :, None]
-    chest_score, _ = evaluate_record_predictions(limb_error, prediction, "task2", metadata)
-    assert np.isclose(chest_score["task2_missing_lead_mean_rmse_uV"], 70)
-    assert np.isclose(competition_score(.8, .6, chest_score["task2_missing_lead_mean_rmse_uV"])["task2_rmse_bonus_score"], 10)
-    assert competition_score(.8, .6, 70)["task2_rmse_bonus_score"] == 10
-    assert competition_score(.8, .6, 140)["task2_rmse_bonus_score"] == 5
-    broken = [metadata[0], {**metadata[1], "start_sample_500hz": "10000"}]
-    try:
-        evaluate_record_predictions(prediction, target, "task1", broken)
-        raise AssertionError("gapped record cache was accepted as official evaluation")
-    except ContractError:
-        pass
-    missing_tail = [{**metadata[0], "expected_window_count": "2"}]
-    try:
-        evaluate_record_predictions(prediction[:1], target[:1], "task1", missing_tail)
-        raise AssertionError("missing trailing window was accepted")
-    except ContractError:
-        pass
 
-    print("PASS: only record r_missing11; raw RMSE unchanged; sorted sample grouping; missing windows rejected")
+def main():
+    wave = np.sin(np.linspace(0, 8 * np.pi, 60000)).reshape(12, 5000)
+    target = np.broadcast_to(wave[:, None], (12, 12, 5000)).copy()
+    prediction = target.copy()
+    prediction[6:] += 100
+    rows = metadata("task1")
+    summary, _ = evaluate_record_predictions(prediction, target, "task1", rows)
+    assert summary["r_missing11"] < .1
+    assert np.isclose(summary["missing11_mean_rmse_uV"], np.sqrt(5000))
+    copied = prediction.copy()
+    evaluate_record_predictions(prediction, target, "task1", rows)
+    assert np.array_equal(prediction, copied)
+    reordered, _ = evaluate_record_predictions(prediction[::-1], target[::-1], "task1", rows[::-1])
+    assert np.isclose(reordered["r_missing11"], summary["r_missing11"])
+    # 4 machine records vs 1 body record: equal-device r, not 4:1 averaging.
+    y = np.concatenate([target] * 5)
+    p = y.copy()
+    all_rows = sum([metadata(f"machine_{i}", "ecg_machine_d6") for i in range(4)], []) + metadata("body", "body_scale_d6")
+    p[-12:, 1:] *= -1
+    result, details = evaluate_record_predictions(p, y, "task2", all_rows)
+    assert np.isclose(result["r_missing11"], 0, atol=1e-6)
+    assert result["ecg_machine_d6_n_records"] == 4 and result["body_scale_d6_n_records"] == 1
+    assert len(details) == 22
+    p = y.copy()
+    p[:, 1:6] += 1000  # limb errors never contribute to chest RMSE bonus
+    p[-12:, 6:] += 140
+    result, details = evaluate_record_predictions(p, y, "task2", all_rows)
+    assert np.isclose(result["r_missing11"], 1)
+    assert np.isclose(result["ecg_machine_d6_task2_missing_lead_mean_rmse_uV"], 0)
+    assert np.isclose(result["body_scale_d6_task2_missing_lead_mean_rmse_uV"], 140)
+    assert np.isclose(result["task2_missing_lead_mean_rmse_uV"], 70)  # diagnostic only
+    assert np.isclose(result["task2_rmse_bonus_score"], 7.5)  # NOT b(70)=10
+    score = competition_score(.8, result["r_missing11"], 0, 140)
+    assert np.isclose(score["task2_rmse_bonus_score"], 7.5)
+    assert rmse_bonus(70) == 10 and rmse_bonus(140) == 5
+    for bad_prediction, bad_target, bad_rows in (
+        (target[:11], target[:11], rows[:11]),
+        (target, target, [{**r, "start_sample_500hz": "10000"} if i == 1 else r for i, r in enumerate(rows)]),
+        (target, target, [{**r, "input_type": "ecg_machine_d6"} for r in rows]),
+    ):
+        task = "task2" if bad_rows[0]["input_type"] == "ecg_machine_d6" else "task1"
+        try:
+            evaluate_record_predictions(bad_prediction, bad_target, task, bad_rows)
+            raise AssertionError("Incomplete record/device group was accepted")
+        except ContractError:
+            pass
+    # Exercise CSV serialization and the actual cross-task summary consumer.
+    from ecg12gen.evaluate import write_report
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        task1, detail1 = evaluate_record_predictions(target, target, "task1", rows)
+        write_report(root / "task1", task1, detail1)
+        write_report(root / "task2", result, details)
+        run = subprocess.run([sys.executable, str(ROOT / "scripts/summarize_competition_score.py"),
+            "--task1-overall", str(root / "task1/overall_metrics.csv"), "--task2-overall", str(root / "task2/overall_metrics.csv"),
+            "--output-dir", str(root / "total")], capture_output=True, text=True)
+        assert run.returncode == 0, run.stderr
+        with (root / "total/competition_score.csv").open() as handle:
+            total = next(csv.DictReader(handle))
+        assert np.isclose(float(total["task2_rmse_bonus_score"]), 7.5)
+        assert np.isclose(float(total["competition_total_score"]), 8.5)
+    print("PASS: 120-second record r; 4:1 data still scored 1:1; per-device RMSE bonus=7.5, not 10; immutable raw inputs")
 
 
 if __name__ == "__main__":

@@ -89,6 +89,7 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=8)
     add_sampling_arguments(parser)
+    parser.add_argument("--allow-variable-length", action="store_true", help="Diagnostic compatibility only; official main targets are 120 seconds")
     parser.add_argument("--copy-observed-i", action="store_true", help="Submission-interface option only; evaluator never replaces I")
     parser.add_argument("--preprocessing-config", default=str(Path(__file__).resolve().parents[2] / "configs" / "preprocessing.yaml"))
     args = parser.parse_args()
@@ -108,6 +109,11 @@ def main() -> None:
     preprocessor = checkpoint_preprocessor(checkpoint, PreprocessingConfig.from_yaml(args.preprocessing_config))
     raw = np.load(args.anchor, allow_pickle=False)
     anchor, original_length = canonical_anchor(raw, args.input_fs, args.input_unit)
+    if not args.allow_variable_length:
+        if original_length < 120 * args.input_fs or anchor.shape[-1] < 60000:
+            raise ValueError("Official inference requires a real 120-second synchronous I; no hidden-target padding is allowed")
+        anchor = anchor[:, :60000]
+        original_length = 120 * args.input_fs
     metadata = json.loads(Path(args.metadata_json).read_text(encoding="utf-8-sig")) if args.metadata_json else {}
     if not isinstance(metadata, dict):
         raise ValueError("metadata-json must contain an object")
@@ -121,6 +127,7 @@ def main() -> None:
     np.save(output, prediction, allow_pickle=False)
     description = {"record_id": args.record_id, "unit": "uV", "sampling_rate_hz": output_fs,
                    "length": prediction.shape[-1], "lead_order": ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"],
+                   "context_used": False, "target_record_seconds": None if args.allow_variable_length else 120,
                    "sampling": settings, "sampling_config": str(Path(args.sampling_config).resolve()),
                    "copied_observed_i": args.copy_observed_i,
                    "condition_schema": checkpoint["condition_schema"], "field_available": demographics["field_mask"].tolist()}

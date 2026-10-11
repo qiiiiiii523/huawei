@@ -3,11 +3,11 @@ stage: finetune
 paths:
   data_root: data
   huawei_data_root: ..
-  demographics: ${data}/userinfobean.csv
+  demographics: metadata/userinfobean_utf8.csv
   common_config: configs/common.yaml
   preprocessing_config: configs/preprocessing.yaml
   scales: results/B5/shared/preprocessing_scales.npz
-  output_dir: results/B5/E2_finetune_meta
+  output_dir: results/B5/main_v2_finetune_meta
 model:
   channels: [64, 128, 256]
   time_dim: 128

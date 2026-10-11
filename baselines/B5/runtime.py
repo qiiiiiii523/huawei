@@ -16,16 +16,25 @@ import torch
 from torch.utils.data import DataLoader
 
 from ecg12gen.evaluate import competition_score, evaluate_record_predictions, write_competition_score, write_report
-from . import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION
+from . import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION, CACHE_PROTOCOL, EVALUATION_PROTOCOL
 from .checkpoint import atomic_save, load_checkpoint, pack_rng, restore_rng, scales_digest, scales_payload
 from .config import ModelConfig, resolve_path
-from .data import HuaweiTrainDataset, HuaweiValidationDataset, common_config, demographics_table, load_preprocessor
+from .data import HuaweiTrainDataset, HuaweiValidationDataset, common_config, demographics_table, demographics_path, load_preprocessor
 from .flow import sample
 from .losses import flow_loss
 from .model import B5UNet
 from .objective import file_sha256, validate_resume_loss
 
 INPUT_FIELDS = ("anchor", "numeric", "sex", "field_mask", "age_topcoded")
+
+
+def validate_resume_protocol(checkpoint: dict[str, Any], config: dict[str, Any]) -> None:
+    """Old-data weights may initialize a new run, but cannot resume its state."""
+    if (checkpoint.get("cache_protocol") != CACHE_PROTOCOL or
+            checkpoint.get("evaluation_protocol") != EVALUATION_PROTOCOL):
+        raise ValueError("Data/evaluation protocol changed; use --init-checkpoint and a new output directory, not --resume")
+    if checkpoint.get("sampling_config") != config["sampling"]:
+        raise ValueError("Resume changed validation sampling; use --init-checkpoint for a new run")
 
 
 
@@ -117,6 +126,8 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
         overall.update({"source_domain": "Huawei", "solver": settings["solver"],
                         "architecture_id": ARCHITECTURE_ID, "condition_schema": CONDITION_SCHEMA,
                         "metadata_enabled": model.config.metadata_enabled,
+                        "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL,
+                        "context_used": False,
                         "integration_steps": int(settings["steps"]), "samples": int(settings["samples"]),
                         "velocity_nfe_per_window": int(settings["steps"]) * int(settings["samples"]) *
                         (2 if settings["solver"] == "heun" else 1), "elapsed_seconds": time.perf_counter() - started})
@@ -130,7 +141,8 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
         del prediction, target
     if "task1" in summaries and "task2" in summaries:
         score = competition_score(summaries["task1"]["r_missing11"], summaries["task2"]["r_missing11"],
-                                  summaries["task2"]["task2_missing_lead_mean_rmse_uV"])
+                                  summaries["task2"]["ecg_machine_d6_task2_missing_lead_mean_rmse_uV"],
+                                  summaries["task2"]["body_scale_d6_task2_missing_lead_mean_rmse_uV"])
         write_competition_score(output_dir, score)
     return summaries
 
@@ -140,6 +152,8 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     """Called only by CLI after its explicit --execute-training gate."""
     if init_path and resume_path:
         raise ValueError("Choose either fine-tune initialization or exact resume")
+    if resume_path:
+        validate_resume_protocol(load_checkpoint(resume_path), config)
     if config["stage"] != "finetune":
         raise ValueError("The clean B5 branch only runs Huawei fine-tuning")
     if not (init_path or resume_path):
@@ -188,10 +202,19 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     manifests = {"train": train_data.manifest_digest,
                  **{name: data.manifest_digest for name, data in validation_data.items()}}
     import hashlib
-    manifests["demographics_csv"] = hashlib.sha256(resolve_path(config, "demographics").read_bytes()).hexdigest()
+    manifests["demographics_csv"] = hashlib.sha256(demographics_path(config).read_bytes()).hexdigest()
     common = common_config(config)
     for key in ("subject_split_csv", "device_interpretation_qc_csv"):
         manifests[key] = hashlib.sha256(common.path(key).read_bytes()).hexdigest()
+    # Bind actual target cache bytes as well as rows/QC, preventing a stale
+    # last.pt from resuming after data replacement at the same paths.
+    manifests["strict_index"] = file_sha256(Path(config["repository_root"])/"metadata/d12_strict_pretrain_index.csv")
+    for task in config["validation"]["tasks"]:
+        directory = common.path(f"{task}_output")
+        manifests[f"{task}_pair_manifest"] = file_sha256(common.path(f"{task}_pair_manifest_csv"))
+        manifests[f"{task}_window_metadata"] = file_sha256(directory/f"{task}_window_metadata.csv")
+        for split in ("train", "validation"):
+            manifests[f"{task}_{split}_target"] = file_sha256(directory/f"{task}_{split}_target.npy")
     selection = config["validation"]["selection_task"]
     if selection not in validation_data:
         raise ValueError("validation.selection_task must be included in validation.tasks")
@@ -210,6 +233,7 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     (output / "initialization.json").write_text(json.dumps({
         'initialization': initialization, 'scales_sha256': scales_digest(scale_payload),
         'manifests': manifests, 'selection_task': selection, 'architecture_hash': model_config.fingerprint,
+        'cache_protocol': CACHE_PROTOCOL, 'evaluation_protocol': EVALUATION_PROTOCOL,
         'loss_config': config['loss'], 'resumed': bool(resume_path)}, indent=2), encoding='utf-8')
     loader = DataLoader(train_data, batch_size=int(training["batch_size"]), shuffle=True, generator=generator,
                         num_workers=int(training["workers"]), collate_fn=collate, worker_init_fn=seed_worker,
@@ -217,7 +241,9 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     scale_tensor = torch.as_tensor(preprocessor.scale_uV_by_source["d12"], device=device)
 
     def checkpoint_payload(epoch: int) -> dict[str, Any]:
-        return {"format_version": 1, "architecture_id": ARCHITECTURE_ID,
+        return {"format_version": 2, "cache_protocol": CACHE_PROTOCOL,
+                "evaluation_protocol": EVALUATION_PROTOCOL, "sampling_config": dict(config["sampling"]),
+                "architecture_id": ARCHITECTURE_ID,
                 "architecture_hash": model_config.fingerprint, "model_config": asdict(model_config),
                 "condition_schema": CONDITION_SCHEMA, "preprocessing_version": PREPROCESSING_VERSION,
                 "scales": scale_payload, "scales_sha256": scales_digest(scale_payload),

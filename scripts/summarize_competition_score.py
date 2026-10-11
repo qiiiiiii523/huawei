@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ecg12gen.evaluate import competition_score, write_competition_score
+from ecg12gen.evaluate import competition_score, write_competition_score, TASK2_DEVICE_AGGREGATION
 
 
 def _read_first_row(path: Path) -> dict[str, str]:
@@ -32,10 +32,13 @@ def main() -> None:
         raise ValueError("Input reports must be task1 and task2 V0 overall reports respectively")
     if task2.get("task2_rmse_scored_leads") != "V1,V2,V3,V4,V5,V6":
         raise ValueError("Task2 report must score V1--V6 RMSE; regenerate old 11-lead RMSE reports")
+    if task2.get("task2_device_aggregation") != TASK2_DEVICE_AGGREGATION:
+        raise ValueError("Regenerate Task2 report: device-equal r and separately converted RMSE bonuses required")
     summary = competition_score(
         r1=float(task1["r_missing11"]),
         r2=float(task2["r_missing11"]),
-        missing_lead_rmse_uV=float(task2["task2_missing_lead_mean_rmse_uV"]),
+        machine_rmse_uV=float(task2["ecg_machine_d6_task2_missing_lead_mean_rmse_uV"]),
+        body_rmse_uV=float(task2["body_scale_d6_task2_missing_lead_mean_rmse_uV"]),
     )
     csv_path, markdown_path = write_competition_score(args.output_dir, summary)
     print("Wrote:", csv_path, markdown_path, sep="\n")

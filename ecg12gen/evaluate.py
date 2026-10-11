@@ -10,6 +10,8 @@ from .contracts import D12_LEADS, ContractError
 
 MISSING_11_LEAD_INDICES = np.arange(1, 12)
 TASK2_RMSE_LEADS = D12_LEADS[6:12]
+TASK2_DEVICES = ("ecg_machine_d6", "body_scale_d6")
+TASK2_DEVICE_AGGREGATION = "machine_body_equal_weight_score_v1"
 
 
 def _pearson(x: np.ndarray, y: np.ndarray) -> float:
@@ -49,11 +51,13 @@ def _record_groups(metadata_rows: list[dict[str, str]], expected_n: int) -> list
             raise ContractError("expected_window_count must be an integer") from error
         if len(expected) > 1 or (expected and len(ordered) != next(iter(expected))):
             raise ContractError(f"Validation sample {sample_id} has an inconsistent or incomplete window count")
+        if len(ordered) != 12:
+            raise ContractError(f"Validation sample {sample_id} must contain 12 real windows (120 seconds); rebuild old caches")
         groups.append([i for _, i in ordered])
     return groups
 
 
-def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task_id: str,
+def _evaluate_record_subset(prediction: np.ndarray, target: np.ndarray, task_id: str,
                                 metadata_rows: list[dict[str, str]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Stitch raw-uV windows, compute record r per lead, then average II--V6.
 
@@ -104,6 +108,61 @@ def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task
     return overall, details
 
 
+def rmse_bonus(rmse_uV: float) -> float:
+    if not np.isfinite(rmse_uV) or rmse_uV < 0:
+        raise ContractError("RMSE must be finite and nonnegative")
+    return 10.0 if rmse_uV <= 70 else 700.0 / rmse_uV
+
+
+def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task_id: str,
+                                metadata_rows: list[dict[str, str]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Task1 record r; Task2 scores each device independently, then weights 1:1.
+
+    Both device groups are mandatory. Bonus is mean(b(machine RMSE), b(body RMSE)),
+    never b(mean RMSE). No window- or sample-count weighting between devices.
+    """
+    if task_id != "task2":
+        return _evaluate_record_subset(prediction, target, task_id, metadata_rows)
+    prediction, target = np.asarray(prediction), np.asarray(target)
+    if prediction.ndim != 3 or prediction.shape != target.shape or prediction.shape[1:] != (12, 5000):
+        raise ContractError("Task2 requires matching raw-uV [N,12,5000] prediction/target arrays")
+    if len(metadata_rows) != len(prediction):
+        raise ContractError("Metadata count disagrees with predictions")
+    groups = _record_groups(metadata_rows, len(prediction))
+    for group in groups:
+        if len({metadata_rows[i].get("input_type") for i in group}) != 1:
+            raise ContractError("One target pair cannot mix context device types")
+    if any(r.get("input_type") not in TASK2_DEVICES for r in metadata_rows):
+        raise ContractError("Task2 metadata requires input_type: ecg_machine_d6 or body_scale_d6")
+    summaries, device_details = {}, {}
+    for device in TASK2_DEVICES:
+        indices = [i for i, r in enumerate(metadata_rows) if r["input_type"] == device]
+        if not indices:
+            raise ContractError(f"Task2 equal weighting requires both devices; missing {device}")
+        summaries[device], device_details[device] = _evaluate_record_subset(
+            prediction[indices], target[indices], task_id, [metadata_rows[i] for i in indices])
+    machine, body = (summaries[d] for d in TASK2_DEVICES)
+    result = {**machine,
+              "evaluation_aggregation": "device_equal_after_record_macro_after_chronological_window_stitch",
+              "rmse_aggregation": "per_device_point_weighted_per_lead_then_device_equal_diagnostic",
+              "n_windows": machine["n_windows"] + body["n_windows"],
+              "n_records": machine["n_records"] + body["n_records"],
+              "r_missing11": (machine["r_missing11"] + body["r_missing11"]) / 2,
+              "missing11_mean_rmse_uV": (machine["missing11_mean_rmse_uV"] + body["missing11_mean_rmse_uV"]) / 2,
+              "task2_missing_lead_mean_rmse_uV": (machine["task2_missing_lead_mean_rmse_uV"] + body["task2_missing_lead_mean_rmse_uV"]) / 2,
+              "task2_rmse_bonus_score": (rmse_bonus(machine["task2_missing_lead_mean_rmse_uV"]) + rmse_bonus(body["task2_missing_lead_mean_rmse_uV"])) / 2,
+              "task2_device_aggregation": TASK2_DEVICE_AGGREGATION,
+              "rmse_device_average_role": "diagnostic_only_never_convert_to_bonus",
+              "n_undefined_record_lead_correlations": machine["n_undefined_record_lead_correlations"] + body["n_undefined_record_lead_correlations"]}
+    details = []
+    for device in TASK2_DEVICES:
+        for field in ("r_missing11", "task2_missing_lead_mean_rmse_uV", "n_records"):
+            result[f"{device}_{field}"] = summaries[device][field]
+        result[f"{device}_rmse_bonus_score"] = rmse_bonus(summaries[device]["task2_missing_lead_mean_rmse_uV"])
+        details.extend({"input_type": device, **row} for row in device_details[device])
+    return result, details
+
+
 def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray,
                                       anchor_i_ecg: np.ndarray, task_id: str,
                                       metadata_rows: list[dict[str, str]],
@@ -120,13 +179,17 @@ def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.nda
     return evaluate_record_predictions(prediction, target, task_id, metadata_rows)
 
 
-def competition_score(r1: float, r2: float, missing_lead_rmse_uV: float) -> dict[str, float]:
-    if not np.isfinite([r1, r2, missing_lead_rmse_uV]).all() or missing_lead_rmse_uV < 0:
+def competition_score(r1: float, r2: float, machine_rmse_uV: float, body_rmse_uV: float) -> dict[str, float]:
+    """r2 must already be device-equal r; each device RMSE is converted separately."""
+    if not np.isfinite([r1, r2, machine_rmse_uV, body_rmse_uV]).all():
         raise ContractError("Scores must be finite and RMSE non-negative")
     main_score = 0.5 * r1 + 0.5 * r2
-    bonus = 10.0 if missing_lead_rmse_uV <= 70.0 else 700.0 / missing_lead_rmse_uV
+    machine_bonus, body_bonus = rmse_bonus(machine_rmse_uV), rmse_bonus(body_rmse_uV)
+    bonus = (machine_bonus + body_bonus) / 2
     return {"task1_r_missing11": float(r1), "task2_r_missing11": float(r2),
-            "task2_missing_lead_mean_rmse_uV": float(missing_lead_rmse_uV),
+            "ecg_machine_d6_task2_missing_lead_mean_rmse_uV": float(machine_rmse_uV),
+            "body_scale_d6_task2_missing_lead_mean_rmse_uV": float(body_rmse_uV),
+            "ecg_machine_d6_rmse_bonus_score": machine_bonus, "body_scale_d6_rmse_bonus_score": body_bonus,
             "main_score": main_score, "task2_rmse_bonus_score": bonus,
             "competition_total_score": main_score + bonus}
 
@@ -141,7 +204,7 @@ def write_competition_score(output_dir: str | Path, summary: dict[str, float]) -
         writer.writerow(summary)
     lines = ["# 比赛总分", "", "| 指标 | 数值 |", "|---|---:|"]
     lines.extend(f"| {key} | {value:.6f} |" for key, value in summary.items())
-    lines += ["", "主分 = 两任务 r_missing11 的平均；Task 2 V1–V6 平均 RMSE 加分 = 10（≤70 μV），否则为 700 / RMSE。"]
+    lines += ["", "Task 2 r为设备1:1平均；各设备V1–V6 RMSE先换算加分（≤70得10分，否则700/RMSE），再1:1平均。主分=两任务r平均。"]
     markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return csv_path, markdown
 
@@ -159,8 +222,8 @@ def write_report(output_dir: str | Path, overall: dict[str, Any], details: list[
     lines = [f"# {title}", "", "| Metric | Value |", "|---|---:|"]
     lines.extend(f"| {key} | {value} |" for key, value in overall.items())
     lines += ["", "输入为已还原的 μV。评估不减 median、不乘 scale、不滤波、不替换 I。",
-              "", "| Lead | RMSE (μV) |", "|---|---:|"]
-    lines.extend(f"| {row['lead']} | {row['rmse_uV']:.6f} |" for row in details)
+              "", "| Device | Lead | RMSE (μV) |", "|---|---|---:|"]
+    lines.extend(f"| {row.get('input_type', 'watch_ecg')} | {row['lead']} | {row['rmse_uV']:.6f} |" for row in details)
     markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return overall_csv, lead_csv, markdown
 

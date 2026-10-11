@@ -85,6 +85,7 @@ def build(raw_manifest: Path, data_root: Path) -> list[dict[str, str]]:
             "input_lead_mask": _mask_text(input_mask),
             "reliable_target_lead_count": str(reliable_target_count) if device_type == "ecg_machine_d12" else "",
             "d12_direct_supervision_eligible": str(device_type == "ecg_machine_d12" and reliable_target_count >= 6).lower(),
+            "anchor_i_training_eligible": str(device_type == "ecg_machine_d12" and target_mask[0]).lower(),
             "d6_context_training_eligible": str(device_type == "ecg_machine_d6" and not bad_observed).lower(),
         })
     return sorted(results, key=lambda item: item["record_id"])
@@ -101,7 +102,7 @@ def main() -> None:
         "record_id", "device_type", "source_path", "split", "interpretation_statements",
         "has_signal_quality_warning", "bad_leads_all", "bad_observed_input_leads",
         "target_lead_mask", "input_lead_mask", "reliable_target_lead_count",
-        "d12_direct_supervision_eligible", "d6_context_training_eligible",
+        "d12_direct_supervision_eligible", "d6_context_training_eligible", "anchor_i_training_eligible",
     ]
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

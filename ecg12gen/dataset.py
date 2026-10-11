@@ -36,7 +36,7 @@ class ECGDataConfig:
     def signal(self) -> dict[str, Any]:
         return self.raw["signal"]
 
-class JointAnchorDataset:
+class LegacyJointAnchorDataset:
     """Quality-gated context plus same-record/window d12-I anchor samples.
 
     Training and validation construct the anchor from target I solely to
@@ -197,3 +197,7 @@ class JointAnchorDataset:
         meta["target_bad_leads"] = target_qc["bad_leads_all"]
         sample = JointAnchorSample(context_ecg=context, context_source_type=input_type, anchor_i_ecg=target[:1].copy(), anchor_source_type="ecg_machine_i", Y_12lead=target, anchor_lead_mask=canonical_lead_mask(1), context_lead_mask=context_mask, task_id=self.task_id, split=self.split, subject_id=row["subject_id"], pair_id=row["pair_id"], target_record_id=row["target_record_id"], window_id=row["window_id"], target_record_baseline_uV=target_record_baseline.copy(), context_record_baseline_uV=context_record_baseline.copy(), meta=meta, input_type=input_type, target_quality_mask=target_quality_mask, input_quality_mask=input_quality_mask, context_time_mask=context_time_mask)
         sample.validate(); return sample
+
+
+# Default public interface uses independent records; legacy is explicit audit-only.
+from .record_dataset import JointAnchorDataset  # noqa: E402

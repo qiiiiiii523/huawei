@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from .sampling_settings import add_sampling_arguments, sampling_from_arguments
+from . import CACHE_PROTOCOL, EVALUATION_PROTOCOL
 
 
 def main() -> None:
@@ -39,12 +40,19 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     (output / "inference_sampling.json").write_text(json.dumps({
         "sampling": settings, "sampling_config": str(Path(args.sampling_config).resolve()),
-        "checkpoint": str(Path(args.checkpoint).resolve())}, indent=2), encoding="utf-8")
+        "checkpoint": str(Path(args.checkpoint).resolve()), "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL, "context_used": False}, indent=2), encoding="utf-8")
     for name, summary in summaries.items():
         print(name, "r_missing11=", summary["r_missing11"])
         if "task2_missing_lead_mean_rmse_uV" in summary:
-            print(name, "chest_rmse_uV=", summary["task2_missing_lead_mean_rmse_uV"])
+            print(name, "device_mean_chest_rmse_uV_diagnostic=", summary["task2_missing_lead_mean_rmse_uV"])
 
+        for device in ('ecg_machine_d6', 'body_scale_d6'):
+            for field in ('r_missing11', 'task2_missing_lead_mean_rmse_uV', 'rmse_bonus_score'):
+                key = f'{device}_{field}'
+                if key in summary:
+                    print(key, '=', summary[key])
+        if 'task2_rmse_bonus_score' in summary:
+            print('task2_equal_device_bonus=', summary['task2_rmse_bonus_score'])
 
 if __name__ == "__main__":
     main()

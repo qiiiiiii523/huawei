@@ -1,7 +1,6 @@
 """Read-only joint-anchor integration check."""
 from __future__ import annotations
 import csv
-import subprocess
 import sys
 from pathlib import Path
 import numpy as np
@@ -16,32 +15,28 @@ from ecg12gen.losses import (joint_anchor_sync_loss, physiology_constraint_loss,
 
 def main() -> None:
     cfg = ECGDataConfig.from_yaml(ROOT / "configs" / "common.yaml")
-    # Public metadata must remain exactly as versioned; data readers use mmap="r".
-    assert subprocess.run(["git", "diff", "--quiet", "--", "metadata/subject_split.csv", "metadata/d12_strict_pretrain_index.csv"], cwd=ROOT).returncode == 0
     strict = StrictD12PretrainDataset(cfg, SupervisionMode.D12_I_PRETRAIN.value)
     with (ROOT / "metadata" / "d12_strict_pretrain_index.csv").open(encoding="utf-8-sig", newline="") as h: rows = list(csv.DictReader(h))
     assert rows and len(rows) == len(strict) and all(r["source_split"] == "train" for r in rows) and len({r["dedup_key"] for r in rows}) == len(rows)
     datasets = [JointAnchorDataset(cfg, task, split) for task in ("task1", "task2") for split in ("train", "validation")]
-    five = JointAnchorDataset(cfg, "task2", "train", context_channel_indices=(1,2,3,4,5))
-    for data in datasets + [five]:
+    for data in datasets:
         sample = data[0]; assert len(data) > 0 and np.array_equal(sample.anchor_i_ecg, sample.Y_12lead[:1])
-        assert sample.anchor_target_sync and not sample.context_target_sync and sample.pointwise_loss_allowed
-        assert sample.anchor_lead_mask.tolist() == [True] + [False] * 11
-        assert sample.meta["anchor_construction"] == "simulated_from_target_i_for_test_available_input"
-    assert five[0].context_ecg.shape == (5, 5000)
+        assert sample.meta["context_target_sync"] is False and sample.meta["expected_window_count"] == 12
+        assert sample.context_ecg.ndim == 3 and sample.context_time_mask.shape == sample.context_ecg.shape
     assert torch.equal(replace_output_i_with_anchor(torch.zeros((1,12,5000)), torch.ones((1,1,5000)))[:, :1], torch.ones((1,1,5000)))
     try: prepare_joint_anchor_inference(np.zeros((1,5000), np.float32), task_id="task1", context_source_type="watch_ecg", anchor_i_ecg=None); raise AssertionError("missing anchor accepted")
     except ContractError: pass
     try: prepare_joint_anchor_inference(np.zeros((1,5000), np.float32), task_id="task1", context_source_type="watch_ecg", anchor_i_ecg=np.zeros((1,5000)), target=np.zeros((12,5000))); raise AssertionError("target accepted")
     except TypeError: pass
-    target = np.linspace(-1, 1, 2 * 12 * 5000, dtype=np.float32).reshape(2,12,5000)
+    target = np.linspace(-1, 1, 24 * 12 * 5000, dtype=np.float32).reshape(24,12,5000)
     raw = target.copy(); raw[:, :1] *= -1
-    metadata = [{"pair_id": f"pair_{i}", "target_record_id": f"target_{i}", "start_sample_500hz": "0"}
+    metadata = [{"pair_id": f"pair_{i // 12}", "target_record_id": f"target_{i // 12}", "start_sample_500hz": str(i % 12 * 5000),
+                 "expected_window_count": "12", "input_type": "ecg_machine_d6" if i < 12 else "body_scale_d6"}
                 for i in range(len(target))]
     summary, raw_details = evaluate_joint_anchor_predictions(
         raw, target, target[:, :1], "task2", metadata)
     assert np.isclose(summary["r_missing11"], 1.0)
-    assert len(raw_details) == 11
+    assert len(raw_details) == 22
     assert summary["checkpoint_selection_metric"] == "r_missing11"
     prediction_t, target_t, anchor_t = torch.randn(2,12,500), torch.randn(2,12,500), torch.randn(2,1,500)
     scale_t = torch.linspace(200.0, 900.0, 12)

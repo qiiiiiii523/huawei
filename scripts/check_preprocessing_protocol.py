@@ -80,7 +80,10 @@ def main() -> None:
     # Evaluation preserves record offsets in raw RMSE and never re-centers.
     target = _signals(3, 12, 0, 250) + np.asarray([0, 400, -600], dtype=np.float32)[:, None, None]
     prediction_without_baseline_head = _signals(3, 12, 0, 250)
-    metadata = [{"pair_id": f"record_{index}", "target_record_id": f"target_{index}", "start_sample_500hz": "0"}
+    target = np.repeat(target, 12, axis=0)
+    prediction_without_baseline_head = np.repeat(prediction_without_baseline_head, 12, axis=0)
+    metadata = [{"pair_id": f"record_{index // 12}", "target_record_id": f"target_{index // 12}",
+                 "start_sample_500hz": str(index % 12 * 5000), "expected_window_count": "12"}
                 for index in range(len(target))]
     raw_overall, _ = evaluate_record_predictions(
         prediction_without_baseline_head, target, "task1", metadata_rows=metadata)

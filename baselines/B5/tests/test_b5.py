@@ -218,10 +218,12 @@ class DataAndCheckpointTests(unittest.TestCase):
 
     def test_main_task2_bonus_is_chest_only_without_pcc_preprocessing(self) -> None:
         t = np.arange(5000, dtype=np.float32)
-        target = np.tile(np.sin(t * .01), (1, 12, 1)) * 100
+        target = np.tile(np.sin(t * .01), (24, 12, 1)) * 100
         prediction = target.copy()
         prediction[:, 1:6] += 300
-        rows = [{"pair_id": "pair", "target_record_id": "target", "start_sample_500hz": "0", "expected_window_count": "1"}]
+        rows = [{"pair_id": device, "target_record_id": device, "start_sample_500hz": str(i*5000),
+                 "expected_window_count": "12", "input_type": device}
+                for device in ("ecg_machine_d6", "body_scale_d6") for i in range(12)]
         summary, _ = evaluate_record_predictions(prediction, target, "task2", rows)
         self.assertAlmostEqual(summary["r_missing11"], 1., places=6)
         self.assertAlmostEqual(summary["task2_missing_lead_mean_rmse_uV"], 0.)
@@ -262,11 +264,13 @@ class RealHuaweiReadOnlyTests(unittest.TestCase):
         config = load_config(ROOT / "configs" / "experiments" / "b5_finetune_meta.yaml")
         config["paths"]["huawei_data_root"] = str(hw)
         config["paths"]["data_root"] = str(hw / "Data")
+        config["paths"]["demographics"] = str(hw / "Data" / "userinfobean.csv")
         processor, report = fit_huawei_scales(config)
         table = DemographicsTable(hw / "Data" / "userinfobean.csv")
         dataset = HuaweiTrainDataset(config, processor, table)
         self.assertGreater(len(dataset), 0)
         self.assertEqual(len(dataset), report["train_windows"])
+        self.assertEqual(len(dataset), 1872)
         item = dataset[0]
         raw = dataset.base[0].Y_12lead
         np.testing.assert_allclose(item["target"] * processor.scale_uV_by_source["d12"][:, None], raw, rtol=1e-6, atol=.001)
@@ -280,6 +284,9 @@ class RealHuaweiReadOnlyTests(unittest.TestCase):
                 value = validation[index]
                 targets.append(value["target_uV"])
                 metadata.append(value["evaluation_metadata"])
+            self.assertEqual(len(validation), 324 if task == "task1" else 780)
+            if task == "task2":
+                self.assertEqual({r['input_type'] for r in metadata}, {'ecg_machine_d6','body_scale_d6'})
             targets = np.stack(targets)
             summary, _ = evaluate_record_predictions(targets, targets, task, metadata)
             self.assertAlmostEqual(summary["r_missing11"], 1.)

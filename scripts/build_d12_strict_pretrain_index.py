@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecg12gen.dataset import ECGDataConfig
-from ecg12gen.device_qc import load_device_interpretation_qc
+from ecg12gen.device_qc import load_device_interpretation_qc, d12_target_mask
 
 FIELDS = [
     "strict_id", "source_task_id", "source_split", "source_array_index", "subject_id",
@@ -29,8 +29,8 @@ def rows_for_task(config: ECGDataConfig, task_id: str) -> list[dict[str, str]]:
         if row.get("split") != "train" or row.get("quality_status") != "usable":
             continue
         target_id = row.get("target_record_id", "")
-        start = row.get("start_sample_500hz", "")
-        end = row.get("end_sample_500hz_exclusive", "")
+        start = row.get("target_physical_start_sample_500hz") or row.get("start_sample_500hz", "")
+        end = str(int(start) + 5000) if start else ""
         if not target_id or not start or not end:
             raise ValueError(f"{task_id} row lacks d12 de-duplication fields: {row.get('window_id')}")
         result.append({
@@ -57,7 +57,8 @@ def build(config_path: str | Path, output_path: str | Path) -> list[dict[str, st
     candidates = rows_for_task(config, "task1") + rows_for_task(config, "task2")
     device_qc = load_device_interpretation_qc(config.path("device_interpretation_qc_csv"))
     candidates = [row for row in candidates
-                  if device_qc[row["target_record_id"]]["d12_direct_supervision_eligible"] == "true"]
+                  if device_qc[row["target_record_id"]]["d12_direct_supervision_eligible"] == "true"
+                  and d12_target_mask(device_qc[row["target_record_id"]])[0]]
     selected: dict[str, dict[str, str]] = {}
     # Deterministic preference avoids duplicate d12 windows while keeping one readable source array.
     for row in sorted(candidates, key=lambda item: (item["dedup_key"], item["source_task_id"], int(item["source_array_index"]))):

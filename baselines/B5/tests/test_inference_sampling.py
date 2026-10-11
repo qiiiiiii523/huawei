@@ -57,7 +57,7 @@ class InferenceSamplingTests(unittest.TestCase):
             anchor = root/'visible_I.npy'; np.save(anchor, np.linspace(-30, 40, 100, dtype=np.float32))
             output = root/'output.npy'
             legacy = {'config': {'sampling': dict(LEGACY)}, 'condition_schema': 'fixture'}
-            argv = ['predict', '--checkpoint', str(root/'old.pt'), '--anchor', str(anchor),
+            argv = ['predict', '--allow-variable-length', '--checkpoint', str(root/'old.pt'), '--anchor', str(anchor),
                     '--record-id', 'visible-record', '--output', str(output), '--device', 'cpu']
             with ExitStack() as stack:
                 stack.enter_context(patch.object(sys, 'argv', argv))

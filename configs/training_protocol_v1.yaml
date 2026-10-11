@@ -54,6 +54,9 @@ validation:
   primary_metric_task2: r_missing11
   task2_bonus_metric: task2_missing_lead_mean_rmse_uV
   task2_bonus_leads: [V1, V2, V3, V4, V5, V6]
+  target_record_seconds: 120
+  task2_device_weights: {ecg_machine_d6: 0.5, body_scale_d6: 0.5}
+  task2_bonus_aggregation: convert_each_device_rmse_then_equal_weight
   checkpoint_selection: maximize_validation_r_missing11
   checkpoint_metric: r_missing11
   required_metrics: [r_missing11]

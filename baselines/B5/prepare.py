@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config, resolve_path
-from .data import HuaweiTrainDataset, HuaweiValidationDataset, demographics_table, fit_huawei_scales, load_preprocessor
+from .data import HuaweiTrainDataset, HuaweiValidationDataset, demographics_table, fit_huawei_scales, load_preprocessor, demographics_path
 
 
 def preflight(config: dict[str, Any], fit_scales: bool = False) -> dict[str, Any]:
-    report = {'training_started': False, 'downloads_started': False, 'stage': config['stage'], 'errors': []}
+    from . import CACHE_PROTOCOL, EVALUATION_PROTOCOL
+    report = {'cache_protocol': CACHE_PROTOCOL, 'evaluation_protocol': EVALUATION_PROTOCOL, 'context_used': False, 'training_started': False, 'downloads_started': False, 'stage': config['stage'], 'errors': []}
     try:
         if fit_scales:
             path = resolve_path(config, 'scales')
@@ -26,6 +27,7 @@ def preflight(config: dict[str, Any], fit_scales: bool = False) -> dict[str, Any
         report['scales'] = {key: value.tolist() for key, value in preprocessor.scale_uV_by_source.items()}
         demographics = demographics_table(config)
         report['demographics'] = demographics.audit()
+        report['demographics_path'] = str(demographics_path(config))
         train = HuaweiTrainDataset(config, preprocessor, demographics)
         first = train[0]
         report['huawei_train'] = {'windows': len(train), 'subjects': len({row['subject_id'] for row in train.rows}),
@@ -36,7 +38,10 @@ def preflight(config: dict[str, Any], fit_scales: bool = False) -> dict[str, Any
             dataset = HuaweiValidationDataset(config, task, preprocessor, demographics)
             dataset[0]
             report['huawei_validation'][task] = {'windows': len(dataset),
-                'pairs': len({row['pair_id'] for row in dataset.rows}), 'manifest_sha256': dataset.manifest_digest}
+                'pairs': len({row['pair_id'] for row in dataset.rows}), 'manifest_sha256': dataset.manifest_digest,
+                'devices': {source: len({row['pair_id'] for row in dataset.rows if row['input_type'] == source})
+                            for source in sorted({row['input_type'] for row in dataset.rows})},
+                'expected_windows_per_pair': 12}
     except (OSError, ValueError) as exc:
         report['errors'].append(f'Huawei/scales: {exc}')
     report['ready'] = not report['errors']
