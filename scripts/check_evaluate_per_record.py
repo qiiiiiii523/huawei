@@ -51,6 +51,10 @@ def main():
     assert np.isclose(result["task2_rmse_bonus_score"], 7.5)  # NOT b(70)=10
     score = competition_score(.8, result["r_missing11"], 0, 140)
     assert np.isclose(score["task2_rmse_bonus_score"], 7.5)
+    assert np.isclose(score["main_correlation"], .9)
+    assert np.isclose(score["main_score"], 45)
+    assert np.isclose(score["competition_total_score"], 52.5)
+    assert competition_score(1, 1, 0, 0)["competition_total_score"] == 60
     assert rmse_bonus(70) == 10 and rmse_bonus(140) == 5
     for bad_prediction, bad_target, bad_rows in (
         (target[:11], target[:11], rows[:11]),
@@ -77,8 +81,8 @@ def main():
         with (root / "total/competition_score.csv").open() as handle:
             total = next(csv.DictReader(handle))
         assert np.isclose(float(total["task2_rmse_bonus_score"]), 7.5)
-        assert np.isclose(float(total["competition_total_score"]), 8.5)
-    print("PASS: 120-second record r; 4:1 data still scored 1:1; per-device RMSE bonus=7.5, not 10; immutable raw inputs")
+        assert np.isclose(float(total["competition_total_score"]), 57.5)
+    print("PASS: correlation50+bonus10=60 max; full records; equal devices; per-device bonus=7.5; immutable raw inputs")
 
 
 if __name__ == "__main__":

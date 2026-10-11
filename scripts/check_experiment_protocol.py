@@ -130,7 +130,7 @@ def main() -> None:
             assert experiment["joint_stage"]["mutually_exclusive_context_source_variants"] is True
             assert "both" not in yaml.safe_dump(experiment).lower()
     score = competition_score(0.8, 0.6, 140.0, 140.0)
-    assert score["main_score"] == 0.7 and score["task2_rmse_bonus_score"] == 5.0 and score["competition_total_score"] == 5.7
+    assert score["main_correlation"] == 0.7 and score["main_score"] == 35.0 and score["task2_rmse_bonus_score"] == 5.0 and score["competition_total_score"] == 40.0
     state = seed_everything(42, deterministic=True)
     print("PASS: joint-anchor protocol; frozen preprocessing; preserved patient splits; seed=42;", state)
 

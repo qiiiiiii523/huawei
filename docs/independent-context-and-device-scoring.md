@@ -102,7 +102,7 @@ Task2加分 = 0.5 × b(machine_RMSE) + 0.5 × b(body_RMSE)
 
 summary包含两个设备的r、胸导联RMSE、加分和记录数，以及等权后的r_missing11、task2_rmse_bonus_score与协议标记。CSV总分脚本拒绝旧的混合设备报告。
 
-`competition_score(r1, r2, machine_rmse_uV, body_rmse_uV)` 已改为四参数；r2传设备等权结果。旧三参数调用必须修改。主分仍为0.5×r1+0.5×r2，总分加上设备等权RMSE加分。
+`competition_score(r1, r2, machine_rmse_uV, body_rmse_uV)` 使用四参数；r2传设备等权结果。主分为50×(0.5×r1+0.5×r2)，最高50分；总分加上设备等权RMSE加分，最高60分。`main_correlation`保留未乘50的相关性均值，`main_score`以分为单位。旧报告的1.x总分需要重算，但r/RMSE无需重跑。
 
 评估只接收还原后的μV，不再次减median、乘scale、滤波或替换I。
 

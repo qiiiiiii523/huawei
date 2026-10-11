@@ -12,6 +12,7 @@ MISSING_11_LEAD_INDICES = np.arange(1, 12)
 TASK2_RMSE_LEADS = D12_LEADS[6:12]
 TASK2_DEVICES = ("ecg_machine_d6", "body_scale_d6")
 TASK2_DEVICE_AGGREGATION = "machine_body_equal_weight_score_v1"
+COMPETITION_SCORE_PROTOCOL = "correlation50_bonus10_v1"
 
 
 def _pearson(x: np.ndarray, y: np.ndarray) -> float:
@@ -179,22 +180,24 @@ def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.nda
     return evaluate_record_predictions(prediction, target, task_id, metadata_rows)
 
 
-def competition_score(r1: float, r2: float, machine_rmse_uV: float, body_rmse_uV: float) -> dict[str, float]:
-    """r2 must already be device-equal r; each device RMSE is converted separately."""
+def competition_score(r1: float, r2: float, machine_rmse_uV: float, body_rmse_uV: float) -> dict[str, Any]:
+    """50 correlation points plus 10 bonus points; r2 is already device-equal."""
     if not np.isfinite([r1, r2, machine_rmse_uV, body_rmse_uV]).all():
         raise ContractError("Scores must be finite and RMSE non-negative")
-    main_score = 0.5 * r1 + 0.5 * r2
+    main_correlation = 0.5 * r1 + 0.5 * r2
+    main_score = 50.0 * main_correlation
     machine_bonus, body_bonus = rmse_bonus(machine_rmse_uV), rmse_bonus(body_rmse_uV)
     bonus = (machine_bonus + body_bonus) / 2
     return {"task1_r_missing11": float(r1), "task2_r_missing11": float(r2),
             "ecg_machine_d6_task2_missing_lead_mean_rmse_uV": float(machine_rmse_uV),
             "body_scale_d6_task2_missing_lead_mean_rmse_uV": float(body_rmse_uV),
             "ecg_machine_d6_rmse_bonus_score": machine_bonus, "body_scale_d6_rmse_bonus_score": body_bonus,
-            "main_score": main_score, "task2_rmse_bonus_score": bonus,
+            "main_correlation": main_correlation, "main_score": main_score, "task2_rmse_bonus_score": bonus,
+            "competition_score_protocol": COMPETITION_SCORE_PROTOCOL,
             "competition_total_score": main_score + bonus}
 
 
-def write_competition_score(output_dir: str | Path, summary: dict[str, float]) -> tuple[Path, Path]:
+def write_competition_score(output_dir: str | Path, summary: dict[str, Any]) -> tuple[Path, Path]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     csv_path, markdown = output / "competition_score.csv", output / "competition_score.md"
@@ -203,8 +206,8 @@ def write_competition_score(output_dir: str | Path, summary: dict[str, float]) -
         writer.writeheader()
         writer.writerow(summary)
     lines = ["# 比赛总分", "", "| 指标 | 数值 |", "|---|---:|"]
-    lines.extend(f"| {key} | {value:.6f} |" for key, value in summary.items())
-    lines += ["", "Task 2 r为设备1:1平均；各设备V1–V6 RMSE先换算加分（≤70得10分，否则700/RMSE），再1:1平均。主分=两任务r平均。"]
+    lines.extend(f"| {key} | {format(value, '.6f') if isinstance(value, (int, float)) else value} |" for key, value in summary.items())
+    lines += ["", "主分=50×(0.5×r1+0.5×r2)，最高50分；Task 2 r为设备1:1平均。各设备V1–V6 RMSE先换算加分（≤70得10分，否则700/RMSE），再1:1平均，最高10分；此模型评分总计最高60分。main_correlation保留0.5×r1+0.5×r2的原始相关性值。"]
     markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return csv_path, markdown
 
