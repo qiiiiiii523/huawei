@@ -1,0 +1,6 @@
+base: b5_base.yaml
+experiment_id: B5-main-v2-Huawei-only-scratch-meta
+stage: local
+paths:
+  demographics: ${data}/userinfobean.csv
+  output_dir: results/B5/main_v2_scratch_meta

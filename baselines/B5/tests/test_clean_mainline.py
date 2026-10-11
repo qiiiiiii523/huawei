@@ -26,16 +26,16 @@ class CleanMainlineTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_mainline_loss({'slow_trend': value})
 
-    def test_training_cannot_start_from_scratch(self):
+    def test_invalid_or_missing_initialization_is_rejected(self):
         from baselines.B5.runtime import run_training
         with self.assertRaisesRegex(ValueError, 'requires'):
             run_training({'stage': 'finetune'}, 'cpu')
         with self.assertRaisesRegex(ValueError, 'only runs'):
-            run_training({'stage': 'local'}, 'cpu')
+            run_training({'stage': 'unsupported'}, 'cpu')
 
     def test_only_mainline_experiment_configs_remain(self):
         self.assertEqual({p.name for p in (ROOT/'configs/experiments').glob('b5_*.yaml')},
-                         {'b5_base.yaml', 'b5_finetune_meta.yaml'})
+                         {'b5_base.yaml', 'b5_finetune_meta.yaml', 'b5_main_v2_scratch_meta.yaml', 'b5_main_v2_public_finetune_meta.yaml'})
 
 
 if __name__ == '__main__':

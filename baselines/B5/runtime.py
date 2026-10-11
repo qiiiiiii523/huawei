@@ -19,6 +19,7 @@ from ecg12gen.evaluate import competition_score, evaluate_record_predictions, wr
 from . import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION, CACHE_PROTOCOL, EVALUATION_PROTOCOL
 from .checkpoint import atomic_save, load_checkpoint, pack_rng, restore_rng, scales_digest, scales_payload
 from .config import ModelConfig, resolve_path
+from .cli import validate_training_start
 from .data import HuaweiTrainDataset, HuaweiValidationDataset, common_config, demographics_table, demographics_path, load_preprocessor
 from .flow import sample
 from .losses import flow_loss
@@ -150,14 +151,9 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
 def run_training(config: dict[str, Any], device_name: str, init_path: str | None = None,
                  resume_path: str | None = None) -> None:
     """Called only by CLI after its explicit --execute-training gate."""
-    if init_path and resume_path:
-        raise ValueError("Choose either fine-tune initialization or exact resume")
+    validate_training_start(config, init_path, resume_path)
     if resume_path:
         validate_resume_protocol(load_checkpoint(resume_path), config)
-    if config["stage"] != "finetune":
-        raise ValueError("The clean B5 branch only runs Huawei fine-tuning")
-    if not (init_path or resume_path):
-        raise ValueError("Fine-tuning requires --init-checkpoint or --resume")
     device = device_from_name(device_name)
     training = config["training"]
     seed_all(int(training["seed"]), bool(training["deterministic"]))
@@ -175,6 +171,9 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     checkpoint = load_checkpoint(resume_path or init_path) if (resume_path or init_path) else None
     initialization = {"type": "random", "source_checkpoint": None}
     if checkpoint:
+        allowed = config.get("initialization", {}).get("allowed_source_stage")
+        if init_path and allowed and checkpoint["stage"] != allowed:
+            raise ValueError(f"This paired experiment requires a {allowed} initializer, got {checkpoint['stage']}")
         if checkpoint["architecture_hash"] != model_config.fingerprint:
             raise ValueError("Cannot initialize a different architecture/condition configuration")
         if checkpoint["scales_sha256"] != scales_digest(scale_payload):

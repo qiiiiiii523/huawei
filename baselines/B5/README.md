@@ -8,10 +8,14 @@
 
 旧raw-target B5 checkpoint可用于新数据初始化或新验证集评估，尺度必须复用原checkpoint对应的文件。新数据不能直接resume旧last.pt；必须开新输出目录，重新建立验证最佳分数。新checkpoint绑定数据缓存字节、索引、配对、QC、人口学与采样/评分协议。
 
-服务器上传目录、预检、重新评估、微调、续训、推理命令及旧新成绩的比较限制，见 [最新版main接入说明](../../docs/b5_main_v2_migration.md)。本分支仅保留 `b5_base.yaml` 和 `b5_finetune_meta.yaml`，最终采样配置为 `configs/b5_inference.yaml`。
+服务器上传目录、预检、重新评估、微调、续训、推理命令及旧新成绩的比较限制，见 [最新版main接入说明](../../docs/b5_main_v2_migration.md)。基础配置为 `b5_base.yaml` 和 `b5_finetune_meta.yaml`；双实验另提供两份入口配置，最终采样配置为 `configs/b5_inference.yaml`。
 
 CPU功能测试不运行optimizer更新：
 
 ```bash
 python -m unittest discover -s baselines/B5/tests -v
 ```
+
+## 新版华为双实验
+
+当前支持同配置的华为从头训练与公开权重初始化微调。原网络、损失、100轮、每5轮验证K1、最终Heun16/K16均保留；两组只改变初始化来源和输出目录。入口与命令见 [双实验说明](../../docs/b5_main_v2_public_vs_scratch.md)。

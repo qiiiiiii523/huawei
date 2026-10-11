@@ -1,4 +1,4 @@
-"""Huawei fine-tuning of compatible pretrained weights, never import-time training."""
+"""Huawei scratch training or fine-tuning of compatible pretrained weights, never import-time training."""
 from .cli import training_cli
 
 if __name__ == '__main__':

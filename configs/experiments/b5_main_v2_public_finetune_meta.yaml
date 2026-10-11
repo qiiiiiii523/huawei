@@ -1,0 +1,8 @@
+base: b5_base.yaml
+experiment_id: B5-main-v2-public-pretrained-Huawei-finetune-meta
+stage: finetune
+initialization:
+  allowed_source_stage: public
+paths:
+  demographics: ${data}/userinfobean.csv
+  output_dir: results/B5/main_v2_public_finetune_meta

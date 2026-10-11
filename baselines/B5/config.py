@@ -79,8 +79,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
     config = _read(path, set())
     config["repository_root"] = str(repository_root(path))
     config["config_path"] = str(path)
-    if config.get("stage") != "finetune":
-        raise ValueError("The clean B5 branch only accepts finetune configurations")
+    if config.get("stage") not in {"local", "finetune"}:
+        raise ValueError("B5 only accepts Huawei local or finetune configurations")
     ModelConfig.from_dict(config.get("model", {}))
     training = config["training"]
     for key in ("epochs", "batch_size", "gradient_accumulation", "validate_every"):

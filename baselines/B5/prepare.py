@@ -27,12 +27,24 @@ def preflight(config: dict[str, Any], fit_scales: bool = False) -> dict[str, Any
         report['scales'] = {key: value.tolist() for key, value in preprocessor.scale_uV_by_source.items()}
         demographics = demographics_table(config)
         report['demographics'] = demographics.audit()
-        report['demographics_path'] = str(demographics_path(config))
+        report['demographics_path'] = str(demographics.path.resolve())
+        from .metadata import read_csv, FIELDS
+        from .objective import file_sha256
+        report['demographics_csv_rows'] = len(read_csv(demographics.path))
+        report['demographics_sha256'] = file_sha256(demographics.path)
+
+        def coverage(rows):
+            subjects = sorted({row['subject_id'] for row in rows})
+            masks = [demographics.get(subject)['field_mask'] for subject in subjects]
+            return {'dataset_subjects': len(subjects),
+                    'subjects_with_any_observed_field': sum(bool(mask.any()) for mask in masks),
+                    'subjects_with_all_fields': sum(bool(mask.all()) for mask in masks),
+                    'field_coverage': {field: sum(bool(mask[i]) for mask in masks) for i,field in enumerate(FIELDS)}}
         train = HuaweiTrainDataset(config, preprocessor, demographics)
         first = train[0]
         report['huawei_train'] = {'windows': len(train), 'subjects': len({row['subject_id'] for row in train.rows}),
             'manifest_sha256': train.manifest_digest, 'anchor_shape': list(first['anchor'].shape),
-            'target_shape': list(first['target'].shape)}
+            'target_shape': list(first['target'].shape), 'demographics_coverage': coverage(train.rows)}
         report['huawei_validation'] = {}
         for task in config['validation']['tasks']:
             dataset = HuaweiValidationDataset(config, task, preprocessor, demographics)
@@ -41,7 +53,7 @@ def preflight(config: dict[str, Any], fit_scales: bool = False) -> dict[str, Any
                 'pairs': len({row['pair_id'] for row in dataset.rows}), 'manifest_sha256': dataset.manifest_digest,
                 'devices': {source: len({row['pair_id'] for row in dataset.rows if row['input_type'] == source})
                             for source in sorted({row['input_type'] for row in dataset.rows})},
-                'expected_windows_per_pair': 12}
+                'expected_windows_per_pair': 12, 'demographics_coverage': coverage(dataset.rows)}
     except (OSError, ValueError) as exc:
         report['errors'].append(f'Huawei/scales: {exc}')
     report['ready'] = not report['errors']

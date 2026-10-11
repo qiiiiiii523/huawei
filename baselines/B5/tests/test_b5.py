@@ -233,7 +233,7 @@ class DataAndCheckpointTests(unittest.TestCase):
         for path in sorted((ROOT / "configs" / "experiments").glob("b5_*.yaml")):
             config = load_config(path)
             self.assertEqual(len(config["model"]["channels"]), 3)
-            self.assertEqual(config["stage"], "finetune")
+            self.assertIn(config["stage"], {"local", "finetune"})
 
     def test_training_cli_requires_explicit_opt_in_before_loading_config(self) -> None:
         for module in ("train_huawei",):
