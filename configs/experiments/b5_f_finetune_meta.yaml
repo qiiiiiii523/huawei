@@ -1,0 +1,15 @@
+base: b5_finetune_meta.yaml
+experiment_id: B5-F-weighted-multiscale-decoder
+model:
+  fusion_enabled: true
+  fusion_dimension: 64
+training:
+  epochs: 20
+  validate_initial: true
+sampling:
+  steps: 16
+  samples: 16
+  solver: heun
+  seed: 42
+paths:
+  output_dir: results/B5-F/fusion

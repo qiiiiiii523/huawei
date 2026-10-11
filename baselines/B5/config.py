@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from .objective import validate_mainline_loss
+from . import ARCHITECTURE_ID, FUSION_ARCHITECTURE_ID
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,9 @@ class ModelConfig:
     metadata_field_dropout: float = 0.05
     dilations: tuple[int, ...] = (1, 2, 4, 8)
 
+    fusion_enabled: bool = False
+    fusion_dimension: int = 64
+
     def __post_init__(self) -> None:
         if len(self.channels) != 3 or any(c < 4 for c in self.channels):
             raise ValueError("B5-U requires three positive channel widths >=4")
@@ -30,6 +34,11 @@ class ModelConfig:
             raise ValueError("time_dim must be even; embedding dimensions must be >=4")
         if not 0 <= self.metadata_dropout < 1 or not 0 <= self.metadata_field_dropout < 1 or not self.dilations or any(d < 1 for d in self.dilations):
             raise ValueError("Invalid dropout or dilation configuration")
+
+        if not isinstance(self.fusion_enabled, bool):
+            raise ValueError("fusion_enabled must be a boolean")
+        if isinstance(self.fusion_dimension, bool) or not isinstance(self.fusion_dimension, int) or self.fusion_dimension < 4:
+            raise ValueError("fusion_dimension must be an integer >=4")
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ModelConfig":
@@ -40,8 +49,20 @@ class ModelConfig:
         return cls(**args)
 
     @property
+    def core_dict(self) -> dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if not key.startswith("fusion_")}
+
+    @property
+    def checkpoint_dict(self) -> dict[str, Any]:
+        return asdict(self) if self.fusion_enabled else self.core_dict
+
+    @property
+    def architecture_id(self) -> str:
+        return FUSION_ARCHITECTURE_ID if self.fusion_enabled else ARCHITECTURE_ID
+
+    @property
     def fingerprint(self) -> str:
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()
+        return hashlib.sha256(json.dumps(self.checkpoint_dict, sort_keys=True).encode()).hexdigest()
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -100,6 +121,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if float(config["loss"]["huber_delta"]) <= 0:
         raise ValueError("Huber delta must be positive")
     validate_mainline_loss(config["loss"])
+    if not isinstance(training.get("validate_initial", False), bool):
+        raise ValueError("training.validate_initial must be a boolean")
     tasks = config["validation"]["tasks"]
     if not tasks or len(set(tasks)) != len(tasks) or any(task not in {"task1", "task2"} for task in tasks):
         raise ValueError("validation.tasks must contain distinct task1/task2 entries")

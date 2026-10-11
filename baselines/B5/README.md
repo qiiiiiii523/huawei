@@ -94,3 +94,8 @@ python -m unittest discover -s baselines/B5/tests -v
 ```
 
 测试不运行优化器更新，覆盖网络/条件/缺失mask、原始电压尺度、ODE、旧checkpoint、默认K16、参数覆盖、推理尾段、采样率和main评分合同。best-score保存方式、共享main、网络参数布局均未修改。
+
+## B5-F 解码融合实验
+
+当前分支从稳定 B5 创建，只增加两级解码器的三尺度加权融合残差。配置开关关闭时保留原 B5 网络与 checkpoint hash。
+完整结构、预检、对照训练及 best/last 评估命令见 [b5_decoder_fusion.md](../../docs/b5_decoder_fusion.md)。

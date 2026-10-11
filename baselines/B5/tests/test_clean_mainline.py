@@ -35,7 +35,7 @@ class CleanMainlineTests(unittest.TestCase):
 
     def test_only_mainline_experiment_configs_remain(self):
         self.assertEqual({p.name for p in (ROOT/'configs/experiments').glob('b5_*.yaml')},
-                         {'b5_base.yaml', 'b5_finetune_meta.yaml'})
+                         {'b5_base.yaml', 'b5_finetune_meta.yaml', 'b5_f_control.yaml', 'b5_f_finetune_meta.yaml'})
 
 
 if __name__ == '__main__':

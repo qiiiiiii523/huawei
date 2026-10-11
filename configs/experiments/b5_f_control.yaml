@@ -1,0 +1,6 @@
+base: b5_f_finetune_meta.yaml
+experiment_id: B5-F-control-original-B5
+model:
+  fusion_enabled: false
+paths:
+  output_dir: results/B5-F/control

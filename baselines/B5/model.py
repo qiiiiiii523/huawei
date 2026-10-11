@@ -10,6 +10,7 @@ from torch import nn
 
 from .conditions import FiLM, MetadataEncoder, TimeEmbedding
 from .config import ModelConfig
+from .decoder_fusion import DecoderFusion
 
 
 def norm(channels: int) -> nn.GroupNorm:
@@ -65,6 +66,11 @@ class B5UNet(nn.Module):
         self.condition_enc = nn.ModuleList([nn.Conv1d(c, c, 1) for c in config.channels])
         self.condition_dec = nn.ModuleList([nn.Conv1d(c, c, 1) for c in config.channels[:2]])
         self.output = nn.Conv1d(c0, 11, 1)
+        self.fusion_branch = None
+        if config.fusion_enabled:
+            # Do not advance the baseline noise/dropout RNG during construction.
+            with torch.random.fork_rng(devices=[]):
+                self.fusion_branch = DecoderFusion(config.channels, config.fusion_dimension)
 
     def encode_conditions(self, anchor: torch.Tensor, numeric: torch.Tensor, sex: torch.Tensor,
                           field_mask: torch.Tensor, age_topcoded: torch.Tensor) -> ConditionCache:
@@ -98,11 +104,16 @@ class B5UNet(nn.Module):
         skip1 = self._blocks(self.encode1, h, t, condition.metadata)
         h = self.down2(skip1) + self.condition_enc[2](f2)
         h = self._blocks(self.bottleneck, h, t, condition.metadata)
+        multiscale = (skip0, skip1, h)
         h = self.up1(F.interpolate(h, size=skip1.shape[-1], mode="nearest"))
         h = self.merge1(torch.cat((h, skip1), dim=1)) + self.condition_dec[1](f1)
+        if self.fusion_branch is not None:
+            h = h + self.fusion_branch.at_half(multiscale, skip1.shape[-1])
         h = self._blocks(self.decode1, h, t, condition.metadata)
         h = self.up0(F.interpolate(h, size=skip0.shape[-1], mode="nearest"))
         h = self.merge0(torch.cat((h, skip0), dim=1)) + self.condition_dec[0](f0)
+        if self.fusion_branch is not None:
+            h = h + self.fusion_branch.at_full(multiscale, skip0.shape[-1])
         return self.output(self._blocks(self.decode0, h, t, condition.metadata))
 
     def forward(self, state: torch.Tensor, time: torch.Tensor, anchor: torch.Tensor,

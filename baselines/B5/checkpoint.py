@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from ecg12gen.preprocessing import ECGPreprocessor, PreprocessingConfig
-from . import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION
+from . import ARCHITECTURE_ID, FUSION_ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION
 from .config import ModelConfig
 from .model import B5UNet
 
@@ -56,11 +56,13 @@ def atomic_save(path: str | Path, payload: dict[str, Any]) -> None:
 
 def load_checkpoint(path: str | Path) -> dict[str, Any]:
     value = torch.load(Path(path), map_location="cpu", weights_only=True)
-    if not isinstance(value, dict) or value.get("architecture_id") != ARCHITECTURE_ID:
-        raise ValueError("Expected a B5-U checkpoint, not a diffusion or arbitrary model checkpoint")
+    if not isinstance(value, dict) or value.get("architecture_id") not in {ARCHITECTURE_ID, FUSION_ARCHITECTURE_ID}:
+        raise ValueError("Expected a B5-U or B5-F checkpoint")
     if value.get("condition_schema") != CONDITION_SCHEMA or value.get("preprocessing_version") != PREPROCESSING_VERSION:
         raise ValueError("Checkpoint condition/preprocessing protocol mismatch")
     config = ModelConfig.from_dict(value["model_config"])
+    if value.get("architecture_id") != config.architecture_id:
+        raise ValueError("Checkpoint architecture ID disagrees with fusion configuration")
     if value.get("architecture_hash") != config.fingerprint:
         raise ValueError("Checkpoint architecture hash mismatch")
     if value.get("scales_sha256") != scales_digest(value["scales"]):
@@ -84,3 +86,35 @@ def model_from_checkpoint(checkpoint: dict[str, Any], device: torch.device, use_
     model = B5UNet(ModelConfig.from_dict(checkpoint["model_config"]))
     model.load_state_dict(checkpoint["ema"] if use_ema else checkpoint["model"], strict=True)
     return model.to(device).eval()
+
+def initialize_model(model: B5UNet, checkpoint: dict[str, Any], use_ema: bool = True) -> dict[str, Any]:
+    """Strict same-architecture load or explicitly audited B5 -> zero-branch B5-F."""
+    source_config = ModelConfig.from_dict(checkpoint['model_config'])
+    if checkpoint.get('architecture_id') != source_config.architecture_id or checkpoint.get('architecture_hash') != source_config.fingerprint:
+        raise ValueError('Unverified initialization checkpoint architecture')
+    if checkpoint.get('condition_schema') != CONDITION_SCHEMA or checkpoint.get('preprocessing_version') != PREPROCESSING_VERSION:
+        raise ValueError('Initialization condition/preprocessing protocol mismatch')
+    state = checkpoint['ema'] if use_ema else checkpoint['model']
+    destination = model.state_dict()
+    new_keys = sorted(key for key in destination if key.startswith('fusion_branch.'))
+    if source_config.fingerprint == model.config.fingerprint:
+        model.load_state_dict(state, strict=True)
+        return {'mode': 'strict_same_architecture', 'source_architecture_id': source_config.architecture_id,
+                'target_architecture_id': model.config.architecture_id, 'loaded_keys': len(state), 'new_keys': []}
+    if not model.config.fusion_enabled or source_config.fusion_enabled:
+        raise ValueError('Only B5 -> B5-F initialization is allowed; exact resume requires the same architecture')
+    if ModelConfig.from_dict(model.config.core_dict).fingerprint != source_config.fingerprint:
+        raise ValueError('B5 -> B5-F requires identical original backbone and condition configuration')
+    expected = set(destination)-set(new_keys)
+    if set(state) != expected:
+        raise ValueError('B5 source keys differ from the unchanged backbone; refusing partial loading')
+    for key in expected:
+        if state[key].shape != destination[key].shape:
+            raise ValueError(f'Initialization tensor shape mismatch: {key}')
+    incompatibility = model.load_state_dict(state, strict=False)
+    if set(incompatibility.missing_keys) != set(new_keys) or incompatibility.unexpected_keys:
+        raise ValueError('Only new fusion-branch keys may be missing')
+    model.fusion_branch.reset_output_projections()
+    return {'mode': 'B5_to_B5F_zero_residual', 'source_architecture_id': source_config.architecture_id,
+            'target_architecture_id': model.config.architecture_id, 'loaded_keys': len(state),
+            'new_keys': new_keys, 'output_projection_zero_initialized': True}
