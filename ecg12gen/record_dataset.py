@@ -17,8 +17,10 @@ class JointAnchorDataset:
             raise ContractError("Independent caches require 500 Hz, 5000-point windows and canonical d12 order")
         if task_id not in {"task1", "task2"} or split not in {"train", "validation"}:
             raise ContractError("Invalid task/split")
-        if body_scale_variant != "A_raw_window" or context_channel_indices is not None:
-            raise ContractError("Independent context requires canonical channels; variants need separate caches")
+        if (body_scale_variant not in {"A_raw_window", "B_detrend_0p2Hz_then_window"} or
+                (task_id != "task2" and body_scale_variant != "A_raw_window") or context_channel_indices is not None):
+            raise ContractError("Independent context requires canonical channels and a supported task2 A/B variant")
+        self.body_scale_variant = body_scale_variant
         self.task_id, self.split = task_id, split
         directory = self.config.path(f"{task_id}_output")
         context_csv = directory / f"{task_id}_context_window_metadata.csv"
@@ -56,6 +58,10 @@ class JointAnchorDataset:
                     raise ContractError("Target pair mixes identities")
         self._prepared_context = {}
         self._indices = [i for i, r in enumerate(self._rows) if self._eligible(r)]
+        self._body_b = None
+        if body_scale_variant == "B_detrend_0p2Hz_then_window":
+            from .body_scale_ablation import BodyScaleBContextStore
+            self._body_b = BodyScaleBContextStore(self.config, split)
 
     def _eligible(self, row):
         if self._subject_split.get(row["subject_id"]) != self.split:
@@ -82,6 +88,10 @@ class JointAnchorDataset:
         key = row["input_type"], row["input_record_id"]
         if key in self._prepared_context:
             return self._prepared_context[key]
+        if self._body_b is not None and key[0] == "body_scale_d6":
+            result = self._body_b.context(key[1], row["subject_id"])
+            self._prepared_context[key] = result
+            return result
         c = CONTEXT_CHANNELS[key[0]]
         rows = sorted(self._context_groups.get(key, []), key=lambda r: int(r["start_sample_500hz"]))
         if not rows:
@@ -113,6 +123,8 @@ class JointAnchorDataset:
         """Release read-only mmap handles, especially before deleting test caches on Windows."""
         for array in (self._targets, self._contexts, self._masks):
             array._mmap.close()
+        if self._body_b is not None:
+            self._body_b.close()
 
     @property
     def excluded_rows(self):
@@ -135,6 +147,9 @@ class JointAnchorDataset:
         item = RecordContextSample(context, source, raw[:1].copy(), raw, d12_target_mask(self._qc[row["target_record_id"]]), mask,
             self.task_id, self.split, row["subject_id"], row["pair_id"], row["target_record_id"], row["input_record_id"], row["window_id"],
             {"start_sample_500hz": int(row["start_sample_500hz"]), "expected_window_count": 12, "context_target_sync": False,
-             "context_relation": "independent_record_condition", "input_type": source, "context_record_id": row["input_record_id"]})
+             "context_relation": "independent_record_condition", "input_type": source, "context_record_id": row["input_record_id"],
+             "body_scale_variant": self.body_scale_variant if source == "body_scale_d6" else "A_raw_window",
+             "body_filter_protocol": self._body_b.manifest["filter"]["protocol"]
+             if self._body_b is not None and source == "body_scale_d6" else "none"})
         item.validate()
         return item

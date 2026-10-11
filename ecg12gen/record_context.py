@@ -80,11 +80,21 @@ def transform_context_windows(context: ContextWindows, source_type: str, preproc
 
 def prepare_record_context_inference(anchor_uV: np.ndarray, context_uV: np.ndarray | None,
                                      source_type: str, preprocessor: Any,
-                                     context_valid_mask: np.ndarray | None = None) -> dict[str, Any]:
+                                     context_valid_mask: np.ndarray | None = None,
+                                     body_scale_variant: str = "A_raw_window") -> dict[str, Any]:
     """Target-free 120-second inference input; context length is entirely independent."""
     anchor = np.asarray(anchor_uV, dtype=np.float32)
     if anchor.ndim != 2 or anchor.shape[0] != 1 or anchor.shape[1] < 60000 or not np.isfinite(anchor[:, :60000]).all():
         raise ContractError("A real finite 120-second synchronous I is required")
+    if body_scale_variant not in {"A_raw_window", "B_detrend_0p2Hz_then_window"}:
+        raise ContractError("Unknown body-scale inference variant")
+    use_b = source_type == "body_scale_d6" and body_scale_variant == "B_detrend_0p2Hz_then_window"
+    filter_protocol = "none"
+    if use_b:
+        from .body_scale_detrend import FILTER_PROTOCOL, detrend_body_scale_record
+        filter_protocol = FILTER_PROTOCOL
+        if context_uV is not None:
+            context_uV, context_valid_mask, _ = detrend_body_scale_record(context_uV, context_valid_mask)
     context = window_context_record(context_uV, source_type, context_valid_mask)
     signal = (transform_context_windows(context, source_type, preprocessor)
               if context.window_mask.any() else np.zeros_like(context.raw_uV))
@@ -93,7 +103,9 @@ def prepare_record_context_inference(anchor_uV: np.ndarray, context_uV: np.ndarr
             "context": signal, "context_time_mask": context.time_mask,
             "context_window_mask": context.window_mask, "context_valid_lengths": context.valid_lengths,
             "context_window_weights": counts / max(float(counts.sum()), 1),
-            "context_available": bool(context.window_mask.any()), "context_source_type": source_type}
+            "context_available": bool(context.window_mask.any()), "context_source_type": source_type,
+            "body_scale_variant": body_scale_variant if use_b else "A_raw_window",
+            "body_filter_protocol": filter_protocol}
 
 
 @dataclass(frozen=True)

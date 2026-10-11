@@ -21,7 +21,7 @@ task2: d6 context    + machine-I anchor -> d12 target
 |---|---|---|
 | 严格预训练数据 | `ecg12gen/d12_pretrain.py` | `d12 I -> d12`，只读 train-only strict index |
 | joint 数据 | `ecg12gen/dataset.py` | 读取 `context_ecg`、`anchor_i_ecg`、`Y_12lead` 和独立 masks |
-| task2 A/B | `ecg12gen/body_scale.py` | body-scale A/B、五导联 context 消融 |
+| task2 A/B | `ecg12gen/body_scale.py`、`body_scale_detrend.py` | 独立记录body A/B；B只替换体脂秤context，机器/anchor/target不变 |
 | 推理输入检查 | `prepare_joint_anchor_inference()` | 测试必须显式传入 machine-I anchor；没有 target 参数 |
 | 预处理 | `ecg12gen/preprocessing.py` | train-only frozen scale；anchor/target 保留 raw 电压，context 减记录 median |
 | loss | `ecg12gen/losses.py` | `joint_anchor_sync_loss()`、`replace_output_i_with_anchor()` |
@@ -148,6 +148,11 @@ context独立切窗，保留尾窗、缺口mask、有效长度及记录median。
 task1_record_context_v3 / task2_record_context_v3；旧缓存保留。
 可训练窗口：Task1 1152，Task2 3156；strict去重1872窗/156条记录。
 详见 [新数据处理结果](docs/data-refresh-20261010.md)。
+
+2026-10-11新增体脂秤B可选对照：新数据整记录0.2 Hz高通，保留独立尾窗/有效mask，
+不改机器context、anchor、target、划分或评分；默认仍A。Dataset与测试helper均支持
+`body_scale_variant="B_detrend_0p2Hz_then_window"`。缓存与接入见
+[新版体脂秤A/B](docs/body-scale-record-ablation.md)。旧五导联选择仍需独立adapter，不在新版Dataset中默认启用。
 
 1. 使用 `ECGPreprocessor`；不要自己重新定义归一化。
 2. 固定 μV、500 Hz、10 秒、5000 点和 canonical d12 顺序。
