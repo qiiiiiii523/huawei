@@ -18,3 +18,4 @@ results/
 reports/data_backups/
 metadata/userinfobean_utf8.csv
 data/userinfobean.csv
+.transfer_archives/
