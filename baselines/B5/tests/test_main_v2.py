@@ -113,6 +113,9 @@ class MainV2Tests(unittest.TestCase):
             def __init__(self,devices):
                 self.rows=[]
                 for pair,device in enumerate(devices):
+                    # Two watch pairs reuse one physical target; runtime keeps
+                    # both outputs while the common scorer assigns one target weight.
+                    target_id='watch_shared' if device=='watch_ecg' else f'target:{pair}'
                     for window in range(12):
                         key=f'{pair}:{device}:{window}'
                         raw=np.tile(wave,(12,1))
@@ -122,11 +125,11 @@ class MainV2Tests(unittest.TestCase):
                         predictions[key]=torch.from_numpy(pred/processor.scale_uV_by_source['d12'][:,None])
                         self.rows.append({'anchor':raw[:1]/processor.scale_uV_by_source['ecg_machine_i'][:,None],
                             'target_uV':raw,**encode_demographics(None),'key':key,
-                            'evaluation_metadata':{'pair_id':f'{device}:{pair}','target_record_id':f'target:{pair}',
+                            'evaluation_metadata':{'pair_id':f'{device}:{pair}','target_record_id':target_id,
                                 'start_sample_500hz':window*5000,'expected_window_count':12,'input_type':device}})
             def __len__(self):return len(self.rows)
             def __getitem__(self,i):return self.rows[i]
-        datasets={'task1':Dataset(['watch_ecg']),
+        datasets={'task1':Dataset(['watch_ecg','watch_ecg']),
                   'task2':Dataset(['ecg_machine_d6','ecg_machine_d6','body_scale_d6'])}
         def generated(model,inputs,keys,*unused):return torch.stack([predictions[k] for k in keys])
         with tempfile.TemporaryDirectory() as tmp, patch('baselines.B5.runtime.sample',side_effect=generated):
@@ -136,6 +139,8 @@ class MainV2Tests(unittest.TestCase):
             self.assertAlmostEqual(float(score['task2_rmse_bonus_score']),7.5,places=5)
             self.assertAlmostEqual(float(score['competition_total_score']),57.5,places=5)
         self.assertEqual(summary['task2']['ecg_machine_d6_n_records'],2)
+        self.assertEqual(summary['task1']['n_pairs'],2)
+        self.assertEqual(summary['task1']['n_unique_target_records'],1)
         self.assertEqual(summary['task2']['body_scale_d6_n_records'],1)
         self.assertEqual(summary['task2']['task2_device_aggregation'],EVALUATION_PROTOCOL)
         self.assertFalse(summary['task2']['context_used'])

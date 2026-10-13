@@ -12,6 +12,7 @@ from baselines.B5.config import load_config
 from baselines.B5.selection import (SELECTION_PROTOCOL, empty_best_metrics, restore_best_metrics,
     update_best_metrics, save_selected_checkpoints, scores_from_summaries)
 from baselines.B5.runtime import validate_resume_protocol
+from baselines.B5 import EVALUATION_PROTOCOL
 
 ROOT=Path(__file__).resolve().parents[3]
 
@@ -96,8 +97,14 @@ class SelectionTests(unittest.TestCase):
                     {**cp,'competition_score_protocol':'old'}, {**cp,'checkpoint_role':'main_correlation'}]:
             with self.assertRaises(ValueError):restore_best_metrics(bad)
         cfg=load_config(ROOT/'configs/experiments/b5_main_v2_scratch_meta.yaml')
-        cp.update(cache_protocol='independent-record-context-v1',evaluation_protocol='machine_body_equal_weight_score_v1',sampling_config=copy.deepcopy(cfg['sampling']))
+        cp.update(cache_protocol='independent-record-context-v1',evaluation_protocol=EVALUATION_PROTOCOL,sampling_config=copy.deepcopy(cfg['sampling']))
         validate_resume_protocol(cp,cfg)
+        old_eval={**cp,'evaluation_protocol':'machine_body_equal_weight_score_v1'}
+        with self.assertRaisesRegex(ValueError,'protocol changed'):
+            validate_resume_protocol(old_eval,cfg)
+        old_score={**cp,'competition_score_protocol':'correlation50_bonus10_v1'}
+        with self.assertRaisesRegex(ValueError,'Legacy'):
+            validate_resume_protocol(old_score,cfg)
         cp['sampling_config']['samples']=1
         with self.assertRaisesRegex(ValueError,'sampling'):validate_resume_protocol(cp,cfg)
 

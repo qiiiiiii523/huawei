@@ -4,7 +4,7 @@
 
 训练使用新版strict去重索引；验证使用新版独立记录Dataset的全部target窗，context仅用于组织正式配对和设备来源，不输入网络。不要把这个基准称为已经完成context融合的P1模型。
 
-最终推理默认EMA、Heun16、K16、seed42。每个正式target为真实120秒，Task2分别评分机器与体脂秤并1:1汇总，胸导联加分分别换算后再等权。
+最终推理默认EMA、Heun16、K16、seed42。每个正式target为真实120秒；评分先平均同一target的各pair，再让独立target等权。Task2在各设备内部按target汇总后1:1合并，胸导联加分分别换算后再等权。参见[目标记录等权评分](../../docs/target_record_scoring.md)。旧权重仍可重新评估，旧评分状态不能直接resume到新协议。
 
 旧raw-target B5 checkpoint可用于新数据初始化或新验证集评估，尺度必须复用原checkpoint对应的文件。新数据不能直接resume旧last.pt；必须开新输出目录，重新建立验证最佳分数。新checkpoint绑定数据缓存字节、索引、配对、QC、人口学与采样/评分协议。
 
