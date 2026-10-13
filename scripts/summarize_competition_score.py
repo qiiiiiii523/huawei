@@ -9,7 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ecg12gen.evaluate import competition_score, write_competition_score, TASK2_DEVICE_AGGREGATION
+from ecg12gen.evaluate import (competition_score, write_competition_score,
+                             TASK2_DEVICE_AGGREGATION, TARGET_RECORD_AGGREGATION)
 
 
 def _read_first_row(path: Path) -> dict[str, str]:
@@ -30,6 +31,8 @@ def main() -> None:
     task2 = _read_first_row(Path(args.task2_overall))
     if task1.get("task_id") != "task1" or task2.get("task_id") != "task2":
         raise ValueError("Input reports must be task1 and task2 V0 overall reports respectively")
+    if any(task.get("target_record_aggregation") != TARGET_RECORD_AGGREGATION for task in (task1, task2)):
+        raise ValueError("Regenerate both reports using target-equal scoring; do not mix old pair-weighted reports")
     if task2.get("task2_rmse_scored_leads") != "V1,V2,V3,V4,V5,V6":
         raise ValueError("Task2 report must score V1--V6 RMSE; regenerate old 11-lead RMSE reports")
     if task2.get("task2_device_aggregation") != TASK2_DEVICE_AGGREGATION:

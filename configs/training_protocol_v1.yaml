@@ -49,7 +49,8 @@ validation:
   run_on: validation_only
   input_contract: joint_anchor_test_like
   official_view: raw_uV
-  aggregation: record_macro_after_chronological_window_stitch
+  aggregation: target_macro_after_pair_mean_after_chronological_window_stitch
+  target_record_aggregation: target_record_equal_after_pair_mean_v1
   primary_metric_task1: r_missing11
   primary_metric_task2: r_missing11
   task2_bonus_metric: task2_missing_lead_mean_rmse_uV
