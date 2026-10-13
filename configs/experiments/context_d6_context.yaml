@@ -1,0 +1,9 @@
+base: context_d6_base.yaml
+experiment_id: context_d6-context-v1
+context:
+  enabled: true
+  dimension: 128
+  dropout: 0.1
+paths:
+  output_dir: results/context_d6/context
+

@@ -1,0 +1,9 @@
+base: context_d6_base.yaml
+experiment_id: context_d6-control-v1
+context:
+  enabled: false
+  dimension: 128
+  dropout: 0.0
+paths:
+  output_dir: results/context_d6/control
+
