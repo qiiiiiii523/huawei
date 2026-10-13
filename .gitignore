@@ -15,5 +15,6 @@ venv/
 .env
 
 results/
+data/
 reports/data_backups/
 metadata/userinfobean_utf8.csv

@@ -98,12 +98,17 @@ class B5UNet(nn.Module):
         skip1 = self._blocks(self.encode1, h, t, condition.metadata)
         h = self.down2(skip1) + self.condition_enc[2](f2)
         h = self._blocks(self.bottleneck, h, t, condition.metadata)
+        h = self._condition_bottleneck(h, condition)
         h = self.up1(F.interpolate(h, size=skip1.shape[-1], mode="nearest"))
         h = self.merge1(torch.cat((h, skip1), dim=1)) + self.condition_dec[1](f1)
         h = self._blocks(self.decode1, h, t, condition.metadata)
         h = self.up0(F.interpolate(h, size=skip0.shape[-1], mode="nearest"))
         h = self.merge0(torch.cat((h, skip0), dim=1)) + self.condition_dec[0](f0)
         return self.output(self._blocks(self.decode0, h, t, condition.metadata))
+
+    def _condition_bottleneck(self, features: torch.Tensor, condition: ConditionCache) -> torch.Tensor:
+        """Optional condition adapter; identity for the original B5 model."""
+        return features
 
     def forward(self, state: torch.Tensor, time: torch.Tensor, anchor: torch.Tensor,
                 numeric: torch.Tensor, sex: torch.Tensor, field_mask: torch.Tensor,

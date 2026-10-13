@@ -12,7 +12,8 @@ from .objective import validate_mainline_loss
 
 def flow_loss(model: B5UNet, batch: dict[str, torch.Tensor], weights: dict[str, Any],
               d12_scale: torch.Tensor, noise: torch.Tensor | None = None,
-              time: torch.Tensor | None = None) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+              time: torch.Tensor | None = None, *,
+              body_context: bool = False) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     validate_mainline_loss(weights)
     target = batch["target"]
     mask = batch["quality_mask"].bool()
@@ -24,8 +25,14 @@ def flow_loss(model: B5UNet, batch: dict[str, torch.Tensor], weights: dict[str, 
     noise = torch.randn_like(missing) if noise is None else noise
     time = torch.rand(len(target), device=target.device) if time is None else time
     state, true_velocity = linear_path(missing, mask[:, 1:], noise, time)
-    predicted, anchor_prediction = model(state, time, batch["anchor"], batch["numeric"], batch["sex"],
-                                         batch["field_mask"], batch["age_topcoded"])
+    base_inputs = (batch["anchor"], batch["numeric"], batch["sex"], batch["field_mask"],
+                   batch["age_topcoded"])
+    if body_context:
+        predicted, anchor_prediction = model.forward_body(
+            state, time, *base_inputs, batch["context"], batch["context_time_mask"],
+            batch["context_window_weights"], batch["context_available"])
+    else:
+        predicted, anchor_prediction = model(state, time, *base_inputs)
     velocity_weight = mask[:, 1:].unsqueeze(-1)
     fm = torch.where(velocity_weight, (predicted - true_velocity).square(), 0.).sum()
     fm = fm / (mask[:, 1:].sum().clamp_min(1) * target.shape[-1])
