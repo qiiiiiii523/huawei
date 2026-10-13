@@ -11,7 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ecg12gen.evaluate import competition_score
+from ecg12gen.evaluate import competition_score, TARGET_RECORD_AGGREGATION
 from ecg12gen.training import load_training_protocol, seed_everything
 
 
@@ -44,7 +44,8 @@ def main() -> None:
     assert preprocessing["baseline"]["method"] == "context_only_per_record_per_lead_median"
     assert preprocessing["scaling"]["clip_model_signal"] is None
     assert protocol["model_input_output"]["target_view"] == "raw_scaled_d12"
-    assert protocol["validation"]["aggregation"] == "record_macro_after_chronological_window_stitch"
+    assert protocol["validation"]["aggregation"] == "target_macro_after_pair_mean_after_chronological_window_stitch"
+    assert protocol["validation"]["target_record_aggregation"] == TARGET_RECORD_AGGREGATION
     assert protocol["validation"]["task2_device_weights"] == {"ecg_machine_d6": .5, "body_scale_d6": .5}
     assert protocol["validation"]["task2_bonus_aggregation"] == "convert_each_device_rmse_then_equal_weight"
     assert common["joint_anchor"]["context_layout"] == "independent_record_windows"
