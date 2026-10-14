@@ -175,10 +175,21 @@ def run(args):
         score_rows.append({'method': method, **score})
     csv_write(output / 'raw_score_comparison.csv', score_rows)
     plot_manifest = plot_examples(output, records, metadata) if not args.no_plots else []
+    # Extra paired-stage diagnostics are read-only and do not change score rules.
+    if checkpoint['config'].get('experiment_protocol'):
+        from .loss_metrics import Reference, plot_fast_details
+        reference = Reference(prepared, info)
+        detail_rows, diagnostic_rows = reference.diagnostics(learned, masks)
+        csv_write(output / 'wave_record_lead.csv', detail_rows)
+        csv_write(output / 'wave_summary.csv', diagnostic_rows)
+        if not args.no_plots:
+            plot_manifest.extend(plot_fast_details(output, records, metadata))
     json_write(output / 'plot_manifest.json', plot_manifest)
     result = {'protocol': PROTOCOL, 'completed': True, 'context_seconds': checkpoint['config']['context_seconds'],
               'probe_checkpoint': str(Path(args.checkpoint).resolve()), 'probe_checkpoint_sha256': sha(args.checkpoint),
               'epoch': checkpoint['epoch'], 'prepared_sha256': sha(prepared / 'prepared.json'),
+              'experiment_protocol': checkpoint['config'].get('experiment_protocol'),
+              'group': checkpoint['config'].get('group'),
               'B5_checkpoint_sha256': info['checkpoint_sha256'], 'target_used_at_inference': False,
               'FM_model_modified': False, 'slow_filter_width': 501,
               'slow_diagnostic_reference_pair': 'machine pair preferred per unique target',
