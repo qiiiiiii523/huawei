@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .sampling_settings import add_sampling_arguments, sampling_from_arguments
 from . import CACHE_PROTOCOL, EVALUATION_PROTOCOL
+from ecg12gen.evaluate import QC_COMPETITION_SCORE_PROTOCOL
 
 
 def main() -> None:
@@ -40,7 +41,7 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     (output / "inference_sampling.json").write_text(json.dumps({
         "sampling": settings, "sampling_config": str(Path(args.sampling_config).resolve()),
-        "checkpoint": str(Path(args.checkpoint).resolve()), "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL, "context_used": False}, indent=2), encoding="utf-8")
+        "checkpoint": str(Path(args.checkpoint).resolve()), "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL, "competition_score_protocol": QC_COMPETITION_SCORE_PROTOCOL, "context_used": False}, indent=2), encoding="utf-8")
     for name, summary in summaries.items():
         print(name, "r_missing11=", summary["r_missing11"])
         if "task2_missing_lead_mean_rmse_uV" in summary:

@@ -14,7 +14,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from ecg12gen.evaluate import competition_score, evaluate_record_predictions, write_competition_score, write_report, COMPETITION_SCORE_PROTOCOL
+from ecg12gen.evaluate import (evaluate_record_predictions, write_competition_score, write_report,
+                             QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL)
 from . import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION, CACHE_PROTOCOL, EVALUATION_PROTOCOL
 from .checkpoint import load_checkpoint, pack_rng, restore_rng, scales_digest, scales_payload
 from .config import ModelConfig, resolve_path
@@ -109,6 +110,8 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
         shape = (len(dataset), 12, 5000)
         prediction = np.lib.format.open_memmap(output / "prediction_uV.npy", mode="w+", dtype=np.float32, shape=shape)
         target = np.lib.format.open_memmap(output / "target_uV.npy", mode="w+", dtype=np.float32, shape=shape)
+        quality = np.lib.format.open_memmap(output / "target_quality_mask.npy", mode="w+", dtype=bool,
+                                            shape=(len(dataset), 12))
         loader = DataLoader(dataset, batch_size=int(config["validation"]["batch_size"]), shuffle=False,
                             num_workers=int(config["training"]["workers"]), collate_fn=collate,
                             worker_init_fn=seed_worker)
@@ -121,17 +124,23 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
             size = len(generated)
             prediction[offset:offset + size] = generated.float().cpu().numpy() * scale
             target[offset:offset + size] = batch["target_uV"]
+            if "quality_mask" not in batch:
+                raise ValueError("B5 QC validation dataset did not return quality_mask")
+            quality[offset:offset + size] = batch["quality_mask"].cpu().numpy()
             rows.extend(batch["evaluation_metadata"])
             offset += size
         prediction.flush()
         target.flush()
+        quality.flush()
         task_id = name
-        overall, details = evaluate_record_predictions(prediction, target, task_id, rows)
+        overall, details = evaluate_record_predictions(prediction, target, task_id, rows, target_quality_mask=quality)
         overall.update({"source_domain": "Huawei", "solver": settings["solver"],
                         "architecture_id": ARCHITECTURE_ID, "condition_schema": CONDITION_SCHEMA,
                         "metadata_enabled": model.config.metadata_enabled,
                         "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL,
                         "context_used": False, "competition_score_protocol": COMPETITION_SCORE_PROTOCOL,
+                        "target_quality_mask_sha256": file_sha256(output / "target_quality_mask.npy"),
+                        "device_interpretation_qc_sha256": file_sha256(common_config(config).path("device_interpretation_qc_csv")),
                         "integration_steps": int(settings["steps"]), "samples": int(settings["samples"]),
                         "velocity_nfe_per_window": int(settings["steps"]) * int(settings["samples"]) *
                         (2 if settings["solver"] == "heun" else 1), "elapsed_seconds": time.perf_counter() - started})
@@ -142,11 +151,9 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
             writer.writeheader()
             writer.writerows(rows)
         summaries[name] = overall
-        del prediction, target
+        del prediction, target, quality
     if "task1" in summaries and "task2" in summaries:
-        score = competition_score(summaries["task1"]["r_missing11"], summaries["task2"]["r_missing11"],
-                                  summaries["task2"]["ecg_machine_d6_task2_missing_lead_mean_rmse_uV"],
-                                  summaries["task2"]["body_scale_d6_task2_missing_lead_mean_rmse_uV"])
+        score = scores_from_summaries(summaries)
         write_competition_score(output_dir, score)
     return summaries
 

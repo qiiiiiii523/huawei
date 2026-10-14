@@ -7,7 +7,8 @@ import unittest
 
 import torch
 
-from ecg12gen.evaluate import competition_score, COMPETITION_SCORE_PROTOCOL
+from ecg12gen.evaluate import (competition_score as shared_competition_score,
+    QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL, TARGET_LEAD_QC_PROTOCOL)
 from baselines.B5.config import load_config
 from baselines.B5.selection import (SELECTION_PROTOCOL, empty_best_metrics, restore_best_metrics,
     update_best_metrics, save_selected_checkpoints, scores_from_summaries)
@@ -15,6 +16,10 @@ from baselines.B5.runtime import validate_resume_protocol
 from baselines.B5 import EVALUATION_PROTOCOL
 
 ROOT=Path(__file__).resolve().parents[3]
+
+
+def competition_score(*args):
+    return shared_competition_score(*args, score_protocol=COMPETITION_SCORE_PROTOCOL)
 
 
 def payload(best, epoch=0):
@@ -32,11 +37,22 @@ class SelectionTests(unittest.TestCase):
         self.assertAlmostEqual(s['task2_rmse_bonus_score'],7.5)
         self.assertAlmostEqual(s['competition_total_score'],42.5)
         self.assertEqual(competition_score(1,1,0,70)['competition_total_score'],60)
-        derived=scores_from_summaries({'task1':{'r_missing11':.8},'task2':{'r_missing11':.6,
+        qc={'competition_score_protocol':COMPETITION_SCORE_PROTOCOL,'target_lead_qc_protocol':TARGET_LEAD_QC_PROTOCOL,'quality_mask_applied':True}
+        derived=scores_from_summaries({'task1':{**qc,'r_missing11':.8},'task2':{**qc,'task2_device_aggregation':EVALUATION_PROTOCOL,'r_missing11':.6,
             'ecg_machine_d6_task2_missing_lead_mean_rmse_uV':70,
             'body_scale_d6_task2_missing_lead_mean_rmse_uV':140,
             'task2_missing_lead_mean_rmse_uV':105}})
         self.assertEqual(derived,s)
+
+    def test_mixed_or_legacy_scores_cannot_select_new_best(self):
+        qc={'competition_score_protocol':COMPETITION_SCORE_PROTOCOL,'target_lead_qc_protocol':TARGET_LEAD_QC_PROTOCOL,'quality_mask_applied':True}
+        summaries={'task1':{**qc,'r_missing11':.8},'task2':{**qc,'task2_device_aggregation':EVALUATION_PROTOCOL,'r_missing11':.6,
+            'ecg_machine_d6_task2_missing_lead_mean_rmse_uV':70,'body_scale_d6_task2_missing_lead_mean_rmse_uV':140}}
+        scores_from_summaries(summaries)
+        del summaries['task1']['quality_mask_applied']
+        with self.assertRaisesRegex(ValueError,'QC protocol'):scores_from_summaries(summaries)
+        with self.assertRaisesRegex(ValueError,'cannot mix'):
+            update_best_metrics(empty_best_metrics(),shared_competition_score(.8,.6,70,140),5)
 
     def test_three_selected_files_update_independently_and_last_always_updates(self):
         best=empty_best_metrics()

@@ -20,7 +20,7 @@ from baselines.B5.data import HuaweiValidationDataset, common_config, demographi
 from baselines.B5.metadata import encode_demographics
 from baselines.B5.runtime import validate, validate_resume_protocol
 from baselines.B5.selection import SELECTION_PROTOCOL, empty_best_metrics
-from ecg12gen.evaluate import COMPETITION_SCORE_PROTOCOL
+from ecg12gen.evaluate import QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL
 from baselines.B5.tests.test_b5 import preprocessor, tiny_model
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -73,7 +73,8 @@ class MainV2Tests(unittest.TestCase):
     def test_validation_adapter_keeps_device_and_raw_labels_without_context_inputs(self):
         config=load_config(ROOT/'configs/experiments/b5_finetune_meta.yaml')
         raw=np.tile(np.arange(5000,dtype=np.float32),(12,1))+950
-        sample=SimpleNamespace(anchor_i_ecg=raw[:1],Y_12lead=raw,subject_id='patient',target_record_id='target')
+        quality=np.ones(12,dtype=bool);quality[9]=False
+        sample=SimpleNamespace(anchor_i_ecg=raw[:1],Y_12lead=raw,subject_id='patient',target_record_id='target',target_quality_mask=quality)
         row={'pair_id':'pair','target_record_id':'target','subject_id':'patient','start_sample_500hz':'0',
              'expected_window_count':'12','input_type':'body_scale_d6'}
         class Base:
@@ -85,11 +86,21 @@ class MainV2Tests(unittest.TestCase):
             dataset=HuaweiValidationDataset(config,'task2',preprocessor(),table)
             item=dataset[0]
         np.testing.assert_array_equal(item['target_uV'],raw)
+        np.testing.assert_array_equal(item['quality_mask'],quality)
+        self.assertEqual(item['evaluation_metadata']['target_lead_mask'],'1|1|1|1|1|1|1|1|1|0|1|1')
+        item['quality_mask'][9]=True
+        self.assertFalse(sample.target_quality_mask[9])
         self.assertEqual(item['evaluation_metadata']['input_type'],'body_scale_d6')
         self.assertFalse(item['evaluation_metadata']['context_used'])
         self.assertEqual(item['evaluation_metadata']['expected_window_count'],'12')
         self.assertNotIn('context',item)
         np.testing.assert_allclose(item['anchor']*preprocessor().scale_uV_by_source['ecg_machine_i'][:,None],raw[:1],atol=.001)
+
+        # QC must be explicit; do not silently replace missing/invalid masks by all-good.
+        for invalid in (None, np.ones(11,dtype=bool), np.full(12,2)):
+            sample.target_quality_mask=invalid
+            with self.assertRaisesRegex(ValueError,'quality mask'):
+                dataset[0]
 
     def test_demographics_primary_and_raw_upload_fallback(self):
         config=load_config(ROOT/'configs/experiments/b5_finetune_meta.yaml')
@@ -122,9 +133,13 @@ class MainV2Tests(unittest.TestCase):
                         pred=raw.copy()
                         if device in ['ecg_machine_d6','body_scale_d6']:
                             pred[6:]+=70 if device=='ecg_machine_d6' else 140
+                        quality=np.ones(12,dtype=bool)
+                        if device=='ecg_machine_d6' and pair==0:
+                            quality[9]=False
+                            pred[9]=-raw[9]+10000  # Explicitly bad V4 must not affect scoring.
                         predictions[key]=torch.from_numpy(pred/processor.scale_uV_by_source['d12'][:,None])
                         self.rows.append({'anchor':raw[:1]/processor.scale_uV_by_source['ecg_machine_i'][:,None],
-                            'target_uV':raw,**encode_demographics(None),'key':key,
+                            'target_uV':raw,'quality_mask':quality,**encode_demographics(None),'key':key,
                             'evaluation_metadata':{'pair_id':f'{device}:{pair}','target_record_id':target_id,
                                 'start_sample_500hz':window*5000,'expected_window_count':12,'input_type':device}})
             def __len__(self):return len(self.rows)
@@ -132,12 +147,16 @@ class MainV2Tests(unittest.TestCase):
         datasets={'task1':Dataset(['watch_ecg','watch_ecg']),
                   'task2':Dataset(['ecg_machine_d6','ecg_machine_d6','body_scale_d6'])}
         def generated(model,inputs,keys,*unused):return torch.stack([predictions[k] for k in keys])
-        with tempfile.TemporaryDirectory() as tmp, patch('baselines.B5.runtime.sample',side_effect=generated):
+        with tempfile.TemporaryDirectory() as tmp, patch('baselines.B5.runtime.sample',side_effect=generated), patch('baselines.B5.runtime.common_config',return_value=SimpleNamespace(path=lambda key:ROOT/'metadata/device_interpretation_qc.csv')):
             summary=validate(model,datasets,config,processor,torch.device('cpu'),Path(tmp))
             import csv
             with (Path(tmp)/'competition_score.csv').open() as h:score=next(csv.DictReader(h))
             self.assertAlmostEqual(float(score['task2_rmse_bonus_score']),7.5,places=5)
             self.assertAlmostEqual(float(score['competition_total_score']),57.5,places=5)
+            q=np.load(Path(tmp)/'task2'/'target_quality_mask.npy')
+            self.assertEqual(q.shape,(36,12));self.assertFalse(q[0,9]);self.assertTrue(q[12,9])
+            self.assertEqual(summary['task2']['n_qc_excluded_target_leads'],1)
+            self.assertEqual(score['competition_score_protocol'],COMPETITION_SCORE_PROTOCOL)
         self.assertEqual(summary['task2']['ecg_machine_d6_n_records'],2)
         self.assertEqual(summary['task1']['n_pairs'],2)
         self.assertEqual(summary['task1']['n_unique_target_records'],1)

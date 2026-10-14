@@ -8,4 +8,4 @@ CONDITION_SCHEMA = "b5-demographics-v1-age90plus"
 ARCHITECTURE_ID = "B5-U-v1"
 
 CACHE_PROTOCOL = "independent-record-context-v1"
-EVALUATION_PROTOCOL = "machine_body_equal_weight_target_record_score_v2"
+EVALUATION_PROTOCOL = "machine_body_equal_weight_target_record_qc_score_v3"

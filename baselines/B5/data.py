@@ -116,9 +116,16 @@ class HuaweiValidationDataset:
         metadata = {key: row[key] for key in ("pair_id", "target_record_id", "subject_id", "start_sample_500hz", "input_type")}
         if row.get("expected_window_count"):
             metadata["expected_window_count"] = row["expected_window_count"]
-        metadata.update({"context_used": False, "cache_protocol": CACHE_PROTOCOL})
+        if sample.target_quality_mask is None:
+            raise ValueError("B5 QC validation requires an explicit target lead quality mask")
+        quality = np.asarray(sample.target_quality_mask)
+        if quality.shape != (12,) or not np.isin(quality, [0, 1]).all():
+            raise ValueError("B5 target quality mask must be canonical boolean/0-1 [12]")
+        quality = quality.astype(bool, copy=True)
+        metadata.update({"context_used": False, "cache_protocol": CACHE_PROTOCOL,
+                         "target_lead_mask": "|".join(str(int(v)) for v in quality)})
         return {"anchor": self.preprocessor.transform_window(sample.anchor_i_ecg, "ecg_machine_i").model_signal,
-                "target_uV": sample.Y_12lead.copy(), **self.demographics.get(sample.subject_id),
+                "target_uV": sample.Y_12lead.copy(), "quality_mask": quality, **self.demographics.get(sample.subject_id),
                 "key": sample.target_record_id + ":" + row["start_sample_500hz"], "evaluation_metadata": metadata}
 
 

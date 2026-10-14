@@ -1,5 +1,7 @@
 # B5：对齐最新 main 的条件 Flow Matching 基准
 
+当前B5已启用**目标导联QC验证协议**：按main设备QC的`target_lead_mask`逐记录、逐导联排除明确标差的目标；其他正常导联保留。周期验证、最终validate及三份best选模统一使用QC评分，60分公式不变。有效目标/样本数及排除数量随报告导出。旧完整导联成绩不可直接与QC成绩混比。详见[QC评分及兼容说明](../../docs/b5_target_lead_qc.md)。
+
 已接入 main `6dcb01c`（新规则新数据V2）。网络仍为64/128/256条件1D U-Net，同步I多尺度条件＋人口学FiLM；FM路径、原损失与参数布局不变。没有T/F分支，也没有异步context编码器。
 
 训练使用新版strict去重索引；验证使用新版独立记录Dataset的全部target窗，context仅用于组织正式配对和设备来源，不输入网络。不要把这个基准称为已经完成context融合的P1模型。

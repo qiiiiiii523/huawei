@@ -11,7 +11,7 @@ from baselines.B5.cli import training_cli, validate_training_start
 from baselines.B5.config import load_config, resolve_path
 from baselines.B5.prepare import preflight
 from baselines.B5.sampling_settings import inference_sampling
-from ecg12gen.evaluate import COMPETITION_SCORE_PROTOCOL
+from ecg12gen.evaluate import QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL
 
 ROOT=Path(__file__).resolve().parents[3]
 

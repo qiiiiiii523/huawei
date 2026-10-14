@@ -13,7 +13,7 @@ from .data import HuaweiTrainDataset, HuaweiValidationDataset, demographics_tabl
 def preflight(config: dict[str, Any], fit_scales: bool = False) -> dict[str, Any]:
     from . import CACHE_PROTOCOL, EVALUATION_PROTOCOL
     from .sampling_settings import inference_sampling
-    from ecg12gen.evaluate import COMPETITION_SCORE_PROTOCOL
+    from ecg12gen.evaluate import QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL
     report = {'cache_protocol': CACHE_PROTOCOL, 'evaluation_protocol': EVALUATION_PROTOCOL, 'context_used': False, 'training_started': False, 'downloads_started': False, 'stage': config['stage'], 'errors': []}
     report.update({'sampling': dict(config['sampling']), 'final_sampling': inference_sampling(),
                    'sampling_matches_final_default': config['sampling'] == inference_sampling(),
