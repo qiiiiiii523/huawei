@@ -62,6 +62,21 @@ def cross_subject_rotation(pairs):
     raise ValueError("Could not create a cross-subject context derangement")
 
 
+def cross_subject_permutation(pairs, seed: int):
+    """Seeded record-level derangement for independent context controls."""
+    names = sorted(pairs)
+    if len(names) < 2:
+        raise ValueError("Need at least two validation pairs to shuffle context")
+    rng = np.random.default_rng(seed)
+    for _ in range(1000):
+        donors = rng.permutation(names)
+        mapping = dict(zip(names, donors))
+        if all(pairs[name].subject_id != pairs[donor].subject_id
+               for name, donor in mapping.items()):
+            return mapping
+    raise ValueError("Could not sample a cross-subject context derangement")
+
+
 class InterventionCollator:
     def __init__(self, adapter, mode: str, pairs, mapping):
         self.adapter, self.mode, self.pairs, self.mapping = adapter, mode, pairs, mapping
@@ -159,7 +174,11 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--steps", type=int, default=16)
     parser.add_argument("--samples", type=int, default=16)
+    parser.add_argument("--shuffle-seed", type=int, default=None,
+                        help="Independent A_shuffled donor permutation; omitted preserves legacy mapping")
     args = parser.parse_args()
+    if args.shuffle_seed is not None and args.mode != "A_shuffled":
+        parser.error("--shuffle-seed is only valid for A_shuffled")
     if min(args.batch_size, args.steps, args.samples) < 1:
         parser.error("Batch size, steps and samples must be positive")
     if not args.preflight and (args.steps != 16 or args.samples != 16):
@@ -176,7 +195,8 @@ def main():
     try:
         pairs = body_pairs(dataset)
         check_existing_roster(pairs)
-        mapping = cross_subject_rotation(pairs)
+        mapping = (cross_subject_permutation(pairs, args.shuffle_seed)
+                   if args.shuffle_seed is not None else cross_subject_rotation(pairs))
         demographics = DemographicsTable(ROOT / "data/userinfobean.csv")
         adapter = BatchAdapter(preprocessor, demographics, 0.0, seed=42)
         collator = InterventionCollator(adapter, args.mode, pairs, mapping)
@@ -196,6 +216,7 @@ def main():
                 "source_checkpoint_sha256": file_sha256(SOURCE),
                 "model_checkpoint_sha256": file_sha256(SOURCE if args.mode == "base" else A_CHECKPOINT),
                 "context_variant": "A_raw_window",
+                "shuffle_seed": args.shuffle_seed if args.mode == "A_shuffled" else None,
                 "shuffle_mapping": mapping if args.mode == "A_shuffled" else None}
         if args.preflight:
             inputs = on_device(first, torch.device("cpu"))
@@ -216,7 +237,9 @@ def main():
                               "smoke_shape": list(smoke.shape)},
                              ensure_ascii=False))
             return
-        output = ROOT / "results/context_body/diagnostics" / args.mode
+        output_name = (f"A_shuffled_seed_{args.shuffle_seed}"
+                       if args.shuffle_seed is not None else args.mode)
+        output = ROOT / "results/context_body/diagnostics" / output_name
         if output.exists():
             raise FileExistsError(f"Diagnostic output already exists: {output}")
         loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0,
