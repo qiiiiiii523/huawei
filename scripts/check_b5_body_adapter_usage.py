@@ -31,7 +31,7 @@ def describe(values: torch.Tensor) -> dict[str, float]:
 
 
 @torch.no_grad()
-def inspect(device: torch.device) -> dict:
+def inspect(device: torch.device, checkpoint_kind: str = "A") -> dict:
     source = load_checkpoint(SOURCE)
     base = checkpoint_preprocessor(source, PreprocessingConfig.from_yaml(ROOT / "configs/preprocessing.yaml"))
     preprocessor = with_context_scales(
@@ -43,7 +43,7 @@ def inspect(device: torch.device) -> dict:
         check_existing_roster(pairs)
         adapter = BatchAdapter(preprocessor, DemographicsTable(ROOT / "data/userinfobean.csv"),
                                0.0, seed=42)
-        model = load_model("A_true", source, device)
+        model = load_model("A_true", source, device, checkpoint_kind=checkpoint_kind)
         original = model._condition_bottleneck
         feature_rms, modulation_ratio = [], []
 
@@ -85,7 +85,8 @@ def inspect(device: torch.device) -> dict:
         cosine = F.normalize(vectors, dim=1) @ F.normalize(vectors, dim=1).T
         off_diagonal = cosine[~torch.eye(len(vectors), dtype=torch.bool)]
         return {
-            "checkpoint": "A/epoch_0015/best.pt", "n_pairs": len(pairs),
+            "checkpoint": ("A/epoch_0015/best.pt" if checkpoint_kind == "A"
+                           else "A_frozen_adapter_v1/best.pt"), "n_pairs": len(pairs),
             "embedding_norm": describe(vectors.norm(dim=1)),
             "embedding_mean_dimension_std": float(vectors.std(dim=0).mean()),
             "embedding_pairwise_cosine": describe(off_diagonal),
@@ -105,16 +106,19 @@ def inspect(device: torch.device) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
-    parser.add_argument("--output", type=Path,
-                        default=ROOT / "results/context_body/diagnostics/adapter_usage.json")
+    parser.add_argument("--checkpoint-kind", choices=("A", "frozen"), default="A")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.device == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA unavailable; select --device cpu")
-    report = inspect(torch.device(args.device))
-    if args.output.exists():
-        raise FileExistsError(f"Audit output already exists: {args.output}")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    output = args.output or (ROOT / "results/context_body" /
+                             ("diagnostics" if args.checkpoint_kind == "A"
+                              else "A_frozen_adapter_v1/diagnostics") / "adapter_usage.json")
+    if output.exists():
+        raise FileExistsError(f"Audit output already exists: {output}")
+    report = inspect(torch.device(args.device), checkpoint_kind=args.checkpoint_kind)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))
 
 

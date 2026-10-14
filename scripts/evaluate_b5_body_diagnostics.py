@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODES = ("base", "A_true", "A_disabled", "A_shuffled")
 SOURCE = ROOT / "results/B5/context_start/best.pt"
 A_CHECKPOINT = ROOT / "results/context_body/A/best.pt"
+FROZEN_CHECKPOINT = ROOT / "results/context_body/A_frozen_adapter_v1/best.pt"
 
 
 def body_pairs(dataset: BodySubset):
@@ -97,17 +98,33 @@ class InterventionCollator:
         return batch
 
 
-def load_model(mode: str, source, device):
-    if mode == "base":
+def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
+    if mode == "base" and checkpoint_kind == "A":
         return model_from_checkpoint(source, device, use_ema=True)
-    payload = torch.load(A_CHECKPOINT, map_location="cpu", weights_only=True)
+    if mode == "base":
+        raise ValueError("Frozen-adapter diagnostics do not support base mode")
+    path = A_CHECKPOINT if checkpoint_kind == "A" else FROZEN_CHECKPOINT
+    payload = torch.load(path, map_location="cpu", weights_only=True)
     settings = payload.get("run_config", {})
-    if (payload.get("format") != "b5-body-subset-v1"
-            or settings.get("group") != "A"
-            or settings.get("checkpoint_sha256") != file_sha256(SOURCE)
-            or settings.get("steps") != 16 or settings.get("samples") != 16
-            or payload.get("epoch") != 15):
-        raise ValueError("A checkpoint does not match the first A ablation")
+    if checkpoint_kind == "A":
+        if (payload.get("format") != "b5-body-subset-v1"
+                or settings.get("group") != "A"
+                or settings.get("checkpoint_sha256") != file_sha256(SOURCE)
+                or settings.get("steps") != 16 or settings.get("samples") != 16
+                or payload.get("epoch") != 15):
+            raise ValueError("A checkpoint does not match the first A ablation")
+    elif checkpoint_kind == "frozen":
+        if (payload.get("format") != "b5-body-frozen-adapter-v1"
+                or settings.get("experiment") != "A_frozen_adapter_v1"
+                or settings.get("source_checkpoint_sha256") != file_sha256(SOURCE)
+                or settings.get("steps") != 16 or settings.get("samples") != 16
+                or not settings.get("frozen_backbone") or payload.get("epoch") not in (5, 10)):
+            raise ValueError("Frozen adapter checkpoint does not match the pilot")
+        for name, tensor in source["ema"].items():
+            if not torch.equal(payload["ema"][name].cpu(), tensor):
+                raise ValueError(f"Frozen B5 tensor differs from source: {name}")
+    else:
+        raise ValueError(f"Unknown checkpoint kind: {checkpoint_kind}")
     model = B5BodyContext(ModelConfig.from_dict(source["model_config"]))
     model.load_state_dict(payload["ema"], strict=True)
     return model.to(device).eval()
@@ -169,6 +186,7 @@ def evaluate(model, loader, preprocessor, mode: str, device, output: Path,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=MODES, required=True)
+    parser.add_argument("--checkpoint-kind", choices=("A", "frozen"), default="A")
     parser.add_argument("--preflight", action="store_true", help="Check data/model only; no inference/output")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--batch-size", type=int, default=4)
@@ -179,6 +197,8 @@ def main():
     args = parser.parse_args()
     if args.shuffle_seed is not None and args.mode != "A_shuffled":
         parser.error("--shuffle-seed is only valid for A_shuffled")
+    if args.checkpoint_kind == "frozen" and args.mode == "base":
+        parser.error("Frozen checkpoint cannot be used with base mode")
     if min(args.batch_size, args.steps, args.samples) < 1:
         parser.error("Batch size, steps and samples must be positive")
     if not args.preflight and (args.steps != 16 or args.samples != 16):
@@ -200,7 +220,8 @@ def main():
         demographics = DemographicsTable(ROOT / "data/userinfobean.csv")
         adapter = BatchAdapter(preprocessor, demographics, 0.0, seed=42)
         collator = InterventionCollator(adapter, args.mode, pairs, mapping)
-        model = load_model(args.mode, source, torch.device("cpu" if args.preflight else args.device))
+        model = load_model(args.mode, source, torch.device("cpu" if args.preflight else args.device),
+                           checkpoint_kind=args.checkpoint_kind)
         first = collator([dataset[0]])
         if args.mode == "A_disabled" and first["context_available"].any():
             raise ValueError("Disabled context is still available")
@@ -212,9 +233,12 @@ def main():
             torch.testing.assert_close(first["target"], original["target"], rtol=0, atol=0)
             if args.mode == "A_shuffled" and torch.equal(first["context"], original["context"]):
                 raise ValueError("Shuffled context is identical to the real context")
-        info = {"mode": args.mode, "windows": len(dataset), "pairs": len(pairs),
+        checkpoint_path = (SOURCE if args.mode == "base" else
+                           A_CHECKPOINT if args.checkpoint_kind == "A" else FROZEN_CHECKPOINT)
+        info = {"mode": args.mode, "checkpoint_kind": args.checkpoint_kind,
+                "windows": len(dataset), "pairs": len(pairs),
                 "source_checkpoint_sha256": file_sha256(SOURCE),
-                "model_checkpoint_sha256": file_sha256(SOURCE if args.mode == "base" else A_CHECKPOINT),
+                "model_checkpoint_sha256": file_sha256(checkpoint_path),
                 "context_variant": "A_raw_window",
                 "shuffle_seed": args.shuffle_seed if args.mode == "A_shuffled" else None,
                 "shuffle_mapping": mapping if args.mode == "A_shuffled" else None}
@@ -239,7 +263,9 @@ def main():
             return
         output_name = (f"A_shuffled_seed_{args.shuffle_seed}"
                        if args.shuffle_seed is not None else args.mode)
-        output = ROOT / "results/context_body/diagnostics" / output_name
+        output_root = (ROOT / "results/context_body/diagnostics" if args.checkpoint_kind == "A"
+                       else ROOT / "results/context_body/A_frozen_adapter_v1/diagnostics")
+        output = output_root / output_name
         if output.exists():
             raise FileExistsError(f"Diagnostic output already exists: {output}")
         loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0,
