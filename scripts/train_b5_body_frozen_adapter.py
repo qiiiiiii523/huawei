@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from baselines.B5.checkpoint import atomic_save, checkpoint_preprocessor, load_checkpoint, pack_rng, restore_rng
 from baselines.B5.config import ModelConfig
 from baselines.B5.context_body import B5BodyContext
+from baselines.B5.context_body_meanstd import B5BodyContextMeanStd
 from baselines.B5.losses import flow_loss
 from baselines.B5.metadata import DemographicsTable
 from baselines.B5.objective import file_sha256
@@ -19,6 +20,7 @@ from scripts.prepare_task2_context_scales import with_context_scales
 from scripts.train_b5_body_context import BatchAdapter, BodySubset, LOSS, ROOT, on_device, validate
 
 NAME = "A_frozen_adapter_v1"
+MEANSTD_NAME = "A_frozen_meanstd_v1"
 SOURCE = ROOT / "results/B5/context_start/best.pt"
 OUTPUT = ROOT / "results/context_body" / NAME
 
@@ -33,8 +35,11 @@ def assert_frozen(model: B5BodyContext, source: dict) -> None:
             raise ValueError(f"Frozen B5 tensor changed: {name}")
 
 
-def make_model(source: dict, device: torch.device) -> B5BodyContext:
-    model = B5BodyContext(ModelConfig.from_dict(source["model_config"]))
+def make_model(source: dict, device: torch.device, encoder_variant: str = "mean") -> B5BodyContext:
+    if encoder_variant not in ("mean", "mean_std"):
+        raise ValueError(f"Unknown encoder variant: {encoder_variant}")
+    model_class = B5BodyContext if encoder_variant == "mean" else B5BodyContextMeanStd
+    model = model_class(ModelConfig.from_dict(source["model_config"]))
     missing, unexpected = model.load_state_dict(source["ema"], strict=False)
     if unexpected or not missing or not all(adapter_name(name) for name in missing):
         raise ValueError("B5/adapter state mismatch")
@@ -55,7 +60,10 @@ def run(args) -> None:
     base = checkpoint_preprocessor(source, PreprocessingConfig.from_yaml(ROOT / "configs/preprocessing.yaml"))
     preprocessor = with_context_scales(base, ROOT / "results/B5/context_params/body_A_scales.npz",
                                        "body_scale_d6", "A_raw_window")
-    model = make_model(source, device)
+    encoder_variant = getattr(args, "encoder_variant", "mean")
+    experiment_name = NAME if encoder_variant == "mean" else MEANSTD_NAME
+    output = ROOT / "results/context_body" / experiment_name
+    model = make_model(source, device, encoder_variant)
     trainable = [p for p in model.parameters() if p.requires_grad]
     if not trainable or not any(p.requires_grad for p in model.body_encoder.parameters()) or not any(
             p.requires_grad for p in model.body_film.parameters()):
@@ -88,7 +96,7 @@ def run(args) -> None:
                           "trainable_parameters": sum(p.numel() for p in trainable)}), flush=True)
         if args.preflight:
             return
-        settings = {"experiment": NAME, "source_checkpoint_sha256": file_sha256(SOURCE),
+        settings = {"experiment": experiment_name, "source_checkpoint_sha256": file_sha256(SOURCE),
                     "variant": "A_raw_window", "train_windows": len(train_data),
                     "validation_windows": len(val_data), "epochs": args.epochs,
                     "batch_size": args.batch_size, "accumulation": args.accumulation,
@@ -96,20 +104,22 @@ def run(args) -> None:
                     "steps": 16, "samples": 16, "seed": 42, "context_dropout": 0.1,
                     "loss": LOSS, "optimizer": "AdamW_adapter_only", "ema_decay": 0.999,
                     "frozen_backbone": True, "backbone_mode": "eval_with_gradients"}
-        ledger = OUTPUT / "run_config.json"
+        if encoder_variant == "mean_std":
+            settings["encoder_variant"] = encoder_variant
+        ledger = output / "run_config.json"
         if args.resume:
             if not ledger.is_file() or json.loads(ledger.read_text(encoding="utf-8")) != settings:
                 raise ValueError("Resume configuration mismatch")
         else:
-            if OUTPUT.exists() and any(OUTPUT.iterdir()):
-                raise FileExistsError(f"Experiment output already exists: {OUTPUT}")
-            OUTPUT.mkdir(parents=True, exist_ok=True)
+            if output.exists() and any(output.iterdir()):
+                raise FileExistsError(f"Experiment output already exists: {output}")
+            output.mkdir(parents=True, exist_ok=True)
             ledger.write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8")
         optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate, weight_decay=0.01)
         ema = {name: value.detach().clone() for name, value in model.state_dict().items()}
         start_epoch, updates, best_r = 0, 0, float("-inf")
         if args.resume:
-            saved = torch.load(OUTPUT / "last.pt", map_location=device, weights_only=True)
+            saved = torch.load(output / "last.pt", map_location=device, weights_only=True)
             if saved.get("run_config") != settings:
                 raise ValueError("Resume checkpoint mismatch")
             model.load_state_dict(saved["model"], strict=True)
@@ -148,10 +158,10 @@ def run(args) -> None:
                       "train_loss": running / len(train_loader)}
             improved = False
             if (epoch + 1) % args.validate_every == 0 or epoch + 1 == args.epochs:
-                evaluation = make_model(source, device)
+                evaluation = make_model(source, device, encoder_variant)
                 evaluation.load_state_dict(ema, strict=True)
-                summary = validate(evaluation, val_loader, preprocessor, NAME, device,
-                                   OUTPUT / "validation" / f"epoch_{epoch + 1:04d}", 16, 16)
+                summary = validate(evaluation, val_loader, preprocessor, experiment_name, device,
+                                   output / "validation" / f"epoch_{epoch + 1:04d}", 16, 16)
                 record["validation"] = summary
                 improved = summary["r_missing11"] > best_r
                 if improved:
@@ -164,9 +174,9 @@ def run(args) -> None:
                        "loader_rng": generator.get_state(),
                        "collate_rng": train_adapter.rng.bit_generator.state}
             if improved:
-                atomic_save(OUTPUT / "best.pt", payload)
-            atomic_save(OUTPUT / "last.pt", payload)
-            with (OUTPUT / "history.jsonl").open("a", encoding="utf-8") as handle:
+                atomic_save(output / "best.pt", payload)
+            atomic_save(output / "last.pt", payload)
+            with (output / "history.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             print(json.dumps({"epoch": epoch + 1, "updates": updates,
                               "loss": record["train_loss"], "best_body_r": best_r}), flush=True)
@@ -183,6 +193,7 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--validate-every", type=int, default=5)
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    parser.add_argument("--encoder-variant", choices=("mean", "mean_std"), default="mean")
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--resume", action="store_true")
     run(parser.parse_args())

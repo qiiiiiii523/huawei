@@ -85,8 +85,9 @@ def inspect(device: torch.device, checkpoint_kind: str = "A") -> dict:
         cosine = F.normalize(vectors, dim=1) @ F.normalize(vectors, dim=1).T
         off_diagonal = cosine[~torch.eye(len(vectors), dtype=torch.bool)]
         return {
-            "checkpoint": ("A/epoch_0015/best.pt" if checkpoint_kind == "A"
-                           else "A_frozen_adapter_v1/best.pt"), "n_pairs": len(pairs),
+            "checkpoint": {"A": "A/epoch_0015/best.pt", "frozen": "A_frozen_adapter_v1/best.pt",
+                           "frozen_meanstd": "A_frozen_meanstd_v1/best.pt"}[checkpoint_kind],
+            "n_pairs": len(pairs),
             "embedding_norm": describe(vectors.norm(dim=1)),
             "embedding_mean_dimension_std": float(vectors.std(dim=0).mean()),
             "embedding_pairwise_cosine": describe(off_diagonal),
@@ -106,14 +107,15 @@ def inspect(device: torch.device, checkpoint_kind: str = "A") -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
-    parser.add_argument("--checkpoint-kind", choices=("A", "frozen"), default="A")
+    parser.add_argument("--checkpoint-kind", choices=("A", "frozen", "frozen_meanstd"), default="A")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.device == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA unavailable; select --device cpu")
     output = args.output or (ROOT / "results/context_body" /
-                             ("diagnostics" if args.checkpoint_kind == "A"
-                              else "A_frozen_adapter_v1/diagnostics") / "adapter_usage.json")
+                             {"A": "diagnostics", "frozen": "A_frozen_adapter_v1/diagnostics",
+                              "frozen_meanstd": "A_frozen_meanstd_v1/diagnostics"}[args.checkpoint_kind]
+                             / "adapter_usage.json")
     if output.exists():
         raise FileExistsError(f"Audit output already exists: {output}")
     report = inspect(torch.device(args.device), checkpoint_kind=args.checkpoint_kind)

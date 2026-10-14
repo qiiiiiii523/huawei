@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from baselines.B5.checkpoint import checkpoint_preprocessor, load_checkpoint, model_from_checkpoint
 from baselines.B5.config import ModelConfig
 from baselines.B5.context_body import B5BodyContext, sample_body
+from baselines.B5.context_body_meanstd import B5BodyContextMeanStd
 from baselines.B5.flow import sample
 from baselines.B5.metadata import DemographicsTable
 from baselines.B5.objective import file_sha256
@@ -34,6 +35,7 @@ MODES = ("base", "A_true", "A_disabled", "A_shuffled")
 SOURCE = ROOT / "results/B5/context_start/best.pt"
 A_CHECKPOINT = ROOT / "results/context_body/A/best.pt"
 FROZEN_CHECKPOINT = ROOT / "results/context_body/A_frozen_adapter_v1/best.pt"
+FROZEN_MEANSTD_CHECKPOINT = ROOT / "results/context_body/A_frozen_meanstd_v1/best.pt"
 
 
 def body_pairs(dataset: BodySubset):
@@ -103,7 +105,10 @@ def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
         return model_from_checkpoint(source, device, use_ema=True)
     if mode == "base":
         raise ValueError("Frozen-adapter diagnostics do not support base mode")
-    path = A_CHECKPOINT if checkpoint_kind == "A" else FROZEN_CHECKPOINT
+    path = {"A": A_CHECKPOINT, "frozen": FROZEN_CHECKPOINT,
+            "frozen_meanstd": FROZEN_MEANSTD_CHECKPOINT}.get(checkpoint_kind)
+    if path is None:
+        raise ValueError(f"Unknown checkpoint kind: {checkpoint_kind}")
     payload = torch.load(path, map_location="cpu", weights_only=True)
     settings = payload.get("run_config", {})
     if checkpoint_kind == "A":
@@ -113,19 +118,23 @@ def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
                 or settings.get("steps") != 16 or settings.get("samples") != 16
                 or payload.get("epoch") != 15):
             raise ValueError("A checkpoint does not match the first A ablation")
-    elif checkpoint_kind == "frozen":
+    elif checkpoint_kind in ("frozen", "frozen_meanstd"):
+        expected_experiment = ("A_frozen_adapter_v1" if checkpoint_kind == "frozen"
+                               else "A_frozen_meanstd_v1")
         if (payload.get("format") != "b5-body-frozen-adapter-v1"
-                or settings.get("experiment") != "A_frozen_adapter_v1"
+                or settings.get("experiment") != expected_experiment
                 or settings.get("source_checkpoint_sha256") != file_sha256(SOURCE)
                 or settings.get("steps") != 16 or settings.get("samples") != 16
-                or not settings.get("frozen_backbone") or payload.get("epoch") not in (5, 10)):
+                or not settings.get("frozen_backbone") or payload.get("epoch") not in (5, 10)
+                or (checkpoint_kind == "frozen_meanstd" and settings.get("encoder_variant") != "mean_std")):
             raise ValueError("Frozen adapter checkpoint does not match the pilot")
         for name, tensor in source["ema"].items():
             if not torch.equal(payload["ema"][name].cpu(), tensor):
                 raise ValueError(f"Frozen B5 tensor differs from source: {name}")
     else:
         raise ValueError(f"Unknown checkpoint kind: {checkpoint_kind}")
-    model = B5BodyContext(ModelConfig.from_dict(source["model_config"]))
+    model_class = B5BodyContextMeanStd if checkpoint_kind == "frozen_meanstd" else B5BodyContext
+    model = model_class(ModelConfig.from_dict(source["model_config"]))
     model.load_state_dict(payload["ema"], strict=True)
     return model.to(device).eval()
 
@@ -186,7 +195,7 @@ def evaluate(model, loader, preprocessor, mode: str, device, output: Path,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=MODES, required=True)
-    parser.add_argument("--checkpoint-kind", choices=("A", "frozen"), default="A")
+    parser.add_argument("--checkpoint-kind", choices=("A", "frozen", "frozen_meanstd"), default="A")
     parser.add_argument("--preflight", action="store_true", help="Check data/model only; no inference/output")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--batch-size", type=int, default=4)
@@ -197,7 +206,7 @@ def main():
     args = parser.parse_args()
     if args.shuffle_seed is not None and args.mode != "A_shuffled":
         parser.error("--shuffle-seed is only valid for A_shuffled")
-    if args.checkpoint_kind == "frozen" and args.mode == "base":
+    if args.checkpoint_kind != "A" and args.mode == "base":
         parser.error("Frozen checkpoint cannot be used with base mode")
     if min(args.batch_size, args.steps, args.samples) < 1:
         parser.error("Batch size, steps and samples must be positive")
@@ -234,7 +243,8 @@ def main():
             if args.mode == "A_shuffled" and torch.equal(first["context"], original["context"]):
                 raise ValueError("Shuffled context is identical to the real context")
         checkpoint_path = (SOURCE if args.mode == "base" else
-                           A_CHECKPOINT if args.checkpoint_kind == "A" else FROZEN_CHECKPOINT)
+                           {"A": A_CHECKPOINT, "frozen": FROZEN_CHECKPOINT,
+                            "frozen_meanstd": FROZEN_MEANSTD_CHECKPOINT}[args.checkpoint_kind])
         info = {"mode": args.mode, "checkpoint_kind": args.checkpoint_kind,
                 "windows": len(dataset), "pairs": len(pairs),
                 "source_checkpoint_sha256": file_sha256(SOURCE),
@@ -263,8 +273,9 @@ def main():
             return
         output_name = (f"A_shuffled_seed_{args.shuffle_seed}"
                        if args.shuffle_seed is not None else args.mode)
-        output_root = (ROOT / "results/context_body/diagnostics" if args.checkpoint_kind == "A"
-                       else ROOT / "results/context_body/A_frozen_adapter_v1/diagnostics")
+        output_root = ROOT / "results/context_body" / {
+            "A": "diagnostics", "frozen": "A_frozen_adapter_v1/diagnostics",
+            "frozen_meanstd": "A_frozen_meanstd_v1/diagnostics"}[args.checkpoint_kind]
         output = output_root / output_name
         if output.exists():
             raise FileExistsError(f"Diagnostic output already exists: {output}")
