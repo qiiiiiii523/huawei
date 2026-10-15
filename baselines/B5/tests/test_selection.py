@@ -1,135 +1,75 @@
-from __future__ import annotations
-
+"""R-only policy replaces the retired 60-point checkpoint policy in this branch."""
 import copy
 from pathlib import Path
 import tempfile
 import unittest
-
+from unittest.mock import patch
 import torch
-
-from ecg12gen.evaluate import (competition_score as shared_competition_score,
-    QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL, TARGET_LEAD_QC_PROTOCOL)
+from baselines.B5_best import SCORE_PROTOCOL
+from baselines.B5_best.scoring import correlation_score
+from baselines.B5.selection import (SELECTION_PROTOCOL, empty_best_metrics, update_best_metrics,
+                                   restore_best_metrics, save_selected_checkpoints)
 from baselines.B5.config import load_config
-from baselines.B5.selection import (SELECTION_PROTOCOL, empty_best_metrics, restore_best_metrics,
-    update_best_metrics, save_selected_checkpoints, scores_from_summaries)
-from baselines.B5.runtime import validate_resume_protocol
-from baselines.B5 import EVALUATION_PROTOCOL
-
-ROOT=Path(__file__).resolve().parents[3]
-
-
-def competition_score(*args):
-    return shared_competition_score(*args, score_protocol=COMPETITION_SCORE_PROTOCOL)
 
 
 def payload(best, epoch=0):
-    return {'selection_protocol':SELECTION_PROTOCOL,'competition_score_protocol':COMPETITION_SCORE_PROTOCOL,
-            'selection_metric':'competition_total_score','best_metrics':best,'checkpoint_role':'last',
-            'best_score':None if best['competition_total_score'] is None else best['competition_total_score']['value'],
-            'epoch':epoch,'model':{'marker':torch.tensor(epoch)},'ema':{'marker':torch.tensor(epoch)}}
+    return {"selection_protocol": SELECTION_PROTOCOL, "score_protocol": SCORE_PROTOCOL,
+            "selection_metric": "main_correlation", "best_metrics": best, "checkpoint_role": "last",
+            "best_score": None if best["main_correlation"] is None else best["main_correlation"]["value"],
+            "epoch": epoch, "model": {"x": torch.tensor(epoch)}, "ema": {"x": torch.tensor(epoch)}}
 
 
 class SelectionTests(unittest.TestCase):
-    def test_official_points_and_separate_device_bonus(self):
-        s=competition_score(.8,.6,70,140)
-        self.assertAlmostEqual(s['main_correlation'],.7)
-        self.assertAlmostEqual(s['main_score'],35)
-        self.assertAlmostEqual(s['task2_rmse_bonus_score'],7.5)
-        self.assertAlmostEqual(s['competition_total_score'],42.5)
-        self.assertEqual(competition_score(1,1,0,70)['competition_total_score'],60)
-        qc={'competition_score_protocol':COMPETITION_SCORE_PROTOCOL,'target_lead_qc_protocol':TARGET_LEAD_QC_PROTOCOL,'quality_mask_applied':True}
-        derived=scores_from_summaries({'task1':{**qc,'r_missing11':.8},'task2':{**qc,'task2_device_aggregation':EVALUATION_PROTOCOL,'r_missing11':.6,
-            'ecg_machine_d6_task2_missing_lead_mean_rmse_uV':70,
-            'body_scale_d6_task2_missing_lead_mean_rmse_uV':140,
-            'task2_missing_lead_mean_rmse_uV':105}})
-        self.assertEqual(derived,s)
-
-    def test_mixed_or_legacy_scores_cannot_select_new_best(self):
-        qc={'competition_score_protocol':COMPETITION_SCORE_PROTOCOL,'target_lead_qc_protocol':TARGET_LEAD_QC_PROTOCOL,'quality_mask_applied':True}
-        summaries={'task1':{**qc,'r_missing11':.8},'task2':{**qc,'task2_device_aggregation':EVALUATION_PROTOCOL,'r_missing11':.6,
-            'ecg_machine_d6_task2_missing_lead_mean_rmse_uV':70,'body_scale_d6_task2_missing_lead_mean_rmse_uV':140}}
-        scores_from_summaries(summaries)
-        del summaries['task1']['quality_mask_applied']
-        with self.assertRaisesRegex(ValueError,'QC protocol'):scores_from_summaries(summaries)
-        with self.assertRaisesRegex(ValueError,'cannot mix'):
-            update_best_metrics(empty_best_metrics(),shared_competition_score(.8,.6,70,140),5)
-
-    def test_three_selected_files_update_independently_and_last_always_updates(self):
-        best=empty_best_metrics()
-        candidates=[(5,.9,700),(10,.88,140),(15,.91,1400),(20,.7,70)]
+    def test_only_best_r_and_last_are_saved_and_resume_preserves_best(self):
+        best = empty_best_metrics()
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp)
-            for epoch,r,rmse in candidates:
-                s=competition_score(r,r,rmse,rmse)
-                best,changed=update_best_metrics(best,s,epoch)
-                save_selected_checkpoints(root,payload(best,epoch),changed)
-            self.assertEqual({p.name for p in root.iterdir()},{'best.pt','best_r.pt','best_bonus.pt','last.pt'})
-            expected={'best.pt':10,'best_r.pt':15,'best_bonus.pt':20,'last.pt':20}
-            for file,epoch in expected.items():
-                cp=torch.load(root/file,weights_only=True)
-                self.assertEqual(cp['epoch'],epoch)
-                self.assertEqual(cp['model']['marker'].item(),epoch)
-                self.assertEqual(cp['ema']['marker'].item(),epoch)
-            restored=restore_best_metrics(torch.load(root/'last.pt',weights_only=True))
-            self.assertEqual(restored,best)
-            self.assertEqual(best['competition_total_score']['epoch'],10)
-            self.assertEqual(best['main_correlation']['epoch'],15)
-            self.assertEqual(best['task2_rmse_bonus_score']['epoch'],20)
+            out = Path(tmp)
+            save_selected_checkpoints(out, payload(best), [])
+            self.assertEqual({p.name for p in out.iterdir()}, {"last.pt"})
+            for epoch, a, b in [(1,.8,.6),(2,.7,.9),(3,.9,.5)]:
+                best, improved = update_best_metrics(best, correlation_score(a,b), epoch)
+                save_selected_checkpoints(out, payload(best,epoch), improved)
+            self.assertEqual({p.name for p in out.iterdir()}, {"best_r.pt","last.pt"})
+            self.assertEqual(torch.load(out/"best_r.pt",weights_only=True)["epoch"],2)
+            last = torch.load(out/"last.pt",weights_only=True)
+            self.assertEqual(last["epoch"],3)
+            self.assertEqual(restore_best_metrics(last),best)
 
-    def test_resume_keeps_best_records_and_no_validation_does_not_create_fake_best(self):
-        best=empty_best_metrics()
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp)
-            save_selected_checkpoints(root,payload(best),[])
-            self.assertEqual({p.name for p in root.iterdir()},{'last.pt'})
-            self.assertEqual(restore_best_metrics(torch.load(root/'last.pt',weights_only=True)),best)
-            best,changed=update_best_metrics(best,competition_score(.8,.8,70,70),5)
-            save_selected_checkpoints(root,payload(best,5),changed)
-            resumed=restore_best_metrics(torch.load(root/'last.pt',weights_only=True))
-            original=copy.deepcopy(resumed)
-            resumed,changed=update_best_metrics(resumed,competition_score(.7,.7,140,140),10)
-            self.assertEqual(changed,[]);self.assertEqual(resumed,original)
-            save_selected_checkpoints(root,payload(resumed,10),changed)
-            self.assertEqual(torch.load(root/'best.pt',weights_only=True)['epoch'],5)
-            self.assertEqual(torch.load(root/'last.pt',weights_only=True)['epoch'],10)
+    def test_ties_and_rmse_fields_do_not_change_selection(self):
+        s=correlation_score(.8,.6)
+        best,_=update_best_metrics(empty_best_metrics(),s,1)
+        original=copy.deepcopy(best)
+        s.update(competition_total_score=60,task2_rmse_bonus_score=10)
+        best,changed=update_best_metrics(best,s,2)
+        self.assertEqual(best,original);self.assertEqual(changed,[])
 
-    def test_ties_do_not_replace_existing_selected_models(self):
-        s=competition_score(.8,.6,70,140)
-        best,_=update_best_metrics(empty_best_metrics(),s,5)
-        state,changed=update_best_metrics(best,s,10)
-        self.assertEqual(changed,[]);self.assertEqual(state,best)
-
-    def test_nonfinite_metrics_are_rejected_without_mutating_state(self):
-        best=empty_best_metrics();s=competition_score(.8,.6,70,140)
-        s['main_correlation']=float('nan')
-        with self.assertRaises(FloatingPointError):update_best_metrics(best,s,5)
-        self.assertEqual(best,empty_best_metrics())
-
-    def test_legacy_and_invalid_resume_state_are_rejected(self):
-        with self.assertRaisesRegex(ValueError,'Legacy'):
-            restore_best_metrics({'best_score':.66,'selection_metric':'r_missing11'})
+    def test_legacy_and_selected_checkpoints_cannot_exact_resume(self):
+        with self.assertRaisesRegex(ValueError,"Legacy"):
+            restore_best_metrics({"selection_metric":"competition_total_score"})
         cp=payload(empty_best_metrics())
-        for bad in [{**cp,'best_score':1}, {**cp,'best_metrics':{}},
-                    {**cp,'competition_score_protocol':'old'}, {**cp,'checkpoint_role':'main_correlation'}]:
-            with self.assertRaises(ValueError):restore_best_metrics(bad)
-        cfg=load_config(ROOT/'configs/experiments/b5_main_v2_scratch_meta.yaml')
-        cp.update(cache_protocol='independent-record-context-v1',evaluation_protocol=EVALUATION_PROTOCOL,sampling_config=copy.deepcopy(cfg['sampling']))
-        validate_resume_protocol(cp,cfg)
-        old_eval={**cp,'evaluation_protocol':'machine_body_equal_weight_score_v1'}
-        with self.assertRaisesRegex(ValueError,'protocol changed'):
-            validate_resume_protocol(old_eval,cfg)
-        old_score={**cp,'competition_score_protocol':'correlation50_bonus10_v1'}
-        with self.assertRaisesRegex(ValueError,'Legacy'):
-            validate_resume_protocol(old_score,cfg)
-        cp['sampling_config']['samples']=1
-        with self.assertRaisesRegex(ValueError,'sampling'):validate_resume_protocol(cp,cfg)
+        with self.assertRaises(ValueError):restore_best_metrics({**cp,"checkpoint_role":"main_correlation"})
+        with self.assertRaises(ValueError):restore_best_metrics({**cp,"best_score":35})
+        with self.assertRaises(ValueError):update_best_metrics(empty_best_metrics(),{"main_correlation":.8},1)
+        with self.assertRaises(FloatingPointError):
+            update_best_metrics(empty_best_metrics(),{"score_protocol":SCORE_PROTOCOL,"main_correlation":float("nan")},1)
 
-    def test_new_run_outputs_and_sampling_policy_are_explicit(self):
-        for name in ['b5_main_v2_scratch_meta.yaml','b5_main_v2_public_finetune_meta.yaml']:
-            c=load_config(ROOT/'configs/experiments'/name)
-            self.assertIn('score60_k16',c['paths']['output_dir'])
-            self.assertEqual(c['validation']['selection_metric'],'competition_total_score')
-            self.assertEqual(c['sampling']['samples'],16)  # match final generation
+    def test_new_configs_select_mean_r_and_use_separate_outputs(self):
+        root=Path(__file__).resolve().parents[3]
+        for name in ["b5_main_v2_scratch_meta.yaml","b5_main_v2_public_finetune_meta.yaml"]:
+            cfg=load_config(root/"configs/experiments"/name)
+            self.assertEqual(cfg["validation"]["selection_metric"],"main_correlation")
+            self.assertIn("results/B5-best/",cfg["paths"]["output_dir"])
+            self.assertEqual(cfg["sampling"]["samples"],16)
+
+    def test_old_checkout_config_is_read_only_data_input_not_legacy_resume(self):
+        root=Path(__file__).resolve().parents[3]
+        path=root/"configs/experiments/b5_finetune_meta.yaml"
+        old=load_config(path)
+        old["validation"]["selection_metric"]="competition_total_score"
+        with patch("baselines.B5.config._read",side_effect=lambda *args:copy.deepcopy(old)):
+            with self.assertRaisesRegex(ValueError,"main_correlation"):load_config(path)
+            self.assertEqual(load_config(path,data_only=True)["validation"]["selection_metric"],"main_correlation")
+        self.assertEqual(old["validation"]["selection_metric"],"competition_total_score")
 
 
-if __name__=='__main__':unittest.main()
+if __name__=="__main__":unittest.main()

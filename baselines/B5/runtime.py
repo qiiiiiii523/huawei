@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from ecg12gen.evaluate import (evaluate_record_predictions, write_competition_score, write_report,
+from ecg12gen.evaluate import (evaluate_record_predictions, write_report,
                              QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL)
 from . import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION, CACHE_PROTOCOL, EVALUATION_PROTOCOL
 from .checkpoint import load_checkpoint, pack_rng, restore_rng, scales_digest, scales_payload
@@ -25,6 +25,9 @@ from .flow import sample
 from .losses import flow_loss
 from .model import B5UNet
 from .objective import file_sha256, validate_resume_loss
+
+from baselines.B5_best import SCORE_PROTOCOL
+from baselines.B5_best.scoring import write_score_report as write_competition_score, diagnostic_summary
 
 from .selection import (SELECTION_PROTOCOL, METRIC_FILES, empty_best_metrics, restore_best_metrics,
                         scores_from_summaries, update_best_metrics, save_selected_checkpoints)
@@ -134,6 +137,7 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
         quality.flush()
         task_id = name
         overall, details = evaluate_record_predictions(prediction, target, task_id, rows, target_quality_mask=quality)
+        overall = diagnostic_summary(overall)
         overall.update({"source_domain": "Huawei", "solver": settings["solver"],
                         "architecture_id": ARCHITECTURE_ID, "condition_schema": CONDITION_SCHEMA,
                         "metadata_enabled": model.config.metadata_enabled,
@@ -226,9 +230,9 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
         manifests[f"{task}_window_metadata"] = file_sha256(directory/f"{task}_window_metadata.csv")
         for split in ("train", "validation"):
             manifests[f"{task}_{split}_target"] = file_sha256(directory/f"{task}_{split}_target.npy")
-    selection = "competition"
+    selection = "task1_task2_mean_r"
     if not {"task1", "task2"}.issubset(validation_data):
-        raise ValueError("Total/correlation/bonus selection requires both task validation datasets")
+        raise ValueError("Mean-r selection requires both task validation datasets")
     if resume_path:
         if checkpoint["manifests"] != manifests or checkpoint["selection_task"] != selection:
             raise ValueError("Resume changed data manifest or checkpoint-selection population")
@@ -243,8 +247,8 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     (output / "resolved_config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
     (output / "initialization.json").write_text(json.dumps({
         'initialization': initialization, 'scales_sha256': scales_digest(scale_payload),
-        'manifests': manifests, 'selection_task': selection, 'selection_metric': 'competition_total_score',
-        'selection_protocol': SELECTION_PROTOCOL, 'competition_score_protocol': COMPETITION_SCORE_PROTOCOL,
+        'manifests': manifests, 'selection_task': selection, 'selection_metric': 'main_correlation',
+        'selection_protocol': SELECTION_PROTOCOL, 'score_protocol': SCORE_PROTOCOL, 'competition_score_protocol': COMPETITION_SCORE_PROTOCOL,
         'architecture_hash': model_config.fingerprint,
         'cache_protocol': CACHE_PROTOCOL, 'evaluation_protocol': EVALUATION_PROTOCOL,
         'loss_config': config['loss'], 'resumed': bool(resume_path)}, indent=2), encoding='utf-8')
@@ -254,15 +258,15 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     scale_tensor = torch.as_tensor(preprocessor.scale_uV_by_source["d12"], device=device)
 
     def checkpoint_payload(epoch: int) -> dict[str, Any]:
-        return {"format_version": 3, "selection_protocol": SELECTION_PROTOCOL,
+        return {"format_version": 4, "selection_protocol": SELECTION_PROTOCOL, "score_protocol": SCORE_PROTOCOL,
                 "competition_score_protocol": COMPETITION_SCORE_PROTOCOL, "best_metrics": best_metrics, "cache_protocol": CACHE_PROTOCOL,
                 "evaluation_protocol": EVALUATION_PROTOCOL, "sampling_config": dict(config["sampling"]),
                 "architecture_id": ARCHITECTURE_ID,
                 "architecture_hash": model_config.fingerprint, "model_config": asdict(model_config),
                 "condition_schema": CONDITION_SCHEMA, "preprocessing_version": PREPROCESSING_VERSION,
                 "scales": scale_payload, "scales_sha256": scales_digest(scale_payload),
-                "stage": config["stage"], "epoch": epoch, "updates": updates, "best_score": None if best_metrics["competition_total_score"] is None else best_metrics["competition_total_score"]["value"],
-                "selection_task": selection, "selection_metric": "competition_total_score", "model": model.state_dict(),
+                "stage": config["stage"], "epoch": epoch, "updates": updates, "best_score": None if best_metrics["main_correlation"] is None else best_metrics["main_correlation"]["value"],
+                "selection_task": selection, "selection_metric": "main_correlation", "model": model.state_dict(),
                 "ema": ema, "optimizer": optimizer.state_dict(), "grad_scaler": scaler.state_dict(),
                 "rng": pack_rng(), "loader_rng": generator.get_state(), "manifests": manifests,
                 "training_config": training, "loss_config": config['loss'], "config": config,
@@ -305,9 +309,9 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
                                  output / "validation" / f"epoch_{epoch + 1:04d}")
             scores = scores_from_summaries(summaries)
             best_metrics, improved = update_best_metrics(best_metrics, scores, epoch + 1)
-            record.update({"validation": summaries, "competition": scores, "selection_task": selection,
-                           "selection_metric": "competition_total_score",
-                           "selection_value": scores["competition_total_score"],
+            record.update({"validation": summaries, "correlation": scores, "selection_task": selection,
+                           "selection_metric": "main_correlation",
+                           "selection_value": scores["main_correlation"],
                            "selected_checkpoints": [METRIC_FILES[key] for key in improved]})
             row = {"epoch": epoch + 1, "updates": updates, **config["sampling"], **scores}
             table = output / "validation_metrics.csv"
@@ -324,6 +328,4 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
         with (output / "history.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         print(json.dumps({"epoch": epoch + 1, "updates": updates, "loss": record["train"]["loss"],
-                          "best_competition_total_score": None if best_metrics["competition_total_score"] is None else best_metrics["competition_total_score"]["value"],
-                          "best_main_correlation": None if best_metrics["main_correlation"] is None else best_metrics["main_correlation"]["value"],
-                          "best_task2_bonus_score": None if best_metrics["task2_rmse_bonus_score"] is None else best_metrics["task2_rmse_bonus_score"]["value"]}, ensure_ascii=False), flush=True)
+                          "best_main_correlation": None if best_metrics["main_correlation"] is None else best_metrics["main_correlation"]["value"]}, ensure_ascii=False), flush=True)

@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from baselines.B5 import CACHE_PROTOCOL, EVALUATION_PROTOCOL
+from baselines.B5_best import SCORE_PROTOCOL
 from baselines.B5.config import load_config
 from baselines.B5.data import HuaweiValidationDataset, common_config, demographics_path
 from baselines.B5.metadata import encode_demographics
@@ -63,7 +64,7 @@ class MainV2Tests(unittest.TestCase):
             validate_resume_protocol({'config':config}, config)
         cp = {'cache_protocol':CACHE_PROTOCOL,'evaluation_protocol':EVALUATION_PROTOCOL,
               'sampling_config':copy.deepcopy(config['sampling']), 'selection_protocol':SELECTION_PROTOCOL,
-              'competition_score_protocol':COMPETITION_SCORE_PROTOCOL, 'selection_metric':'competition_total_score',
+              'competition_score_protocol':COMPETITION_SCORE_PROTOCOL, 'selection_metric':'main_correlation', 'score_protocol':SCORE_PROTOCOL,
               'best_metrics':empty_best_metrics(), 'best_score':None, 'checkpoint_role':'last'}
         validate_resume_protocol(cp,config)
         cp['sampling_config']['samples'] += 1
@@ -150,13 +151,14 @@ class MainV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch('baselines.B5.runtime.sample',side_effect=generated), patch('baselines.B5.runtime.common_config',return_value=SimpleNamespace(path=lambda key:ROOT/'metadata/device_interpretation_qc.csv')):
             summary=validate(model,datasets,config,processor,torch.device('cpu'),Path(tmp))
             import csv
-            with (Path(tmp)/'competition_score.csv').open() as h:score=next(csv.DictReader(h))
-            self.assertAlmostEqual(float(score['task2_rmse_bonus_score']),7.5,places=5)
-            self.assertAlmostEqual(float(score['competition_total_score']),57.5,places=5)
+            with (Path(tmp)/'correlation_score.csv').open() as h:score=next(csv.DictReader(h))
+            self.assertAlmostEqual(float(score['main_correlation']),1.,places=5)
+            self.assertNotIn('task2_rmse_bonus_score',score)
+            self.assertNotIn('competition_total_score',score)
             q=np.load(Path(tmp)/'task2'/'target_quality_mask.npy')
             self.assertEqual(q.shape,(36,12));self.assertFalse(q[0,9]);self.assertTrue(q[12,9])
             self.assertEqual(summary['task2']['n_qc_excluded_target_leads'],1)
-            self.assertEqual(score['competition_score_protocol'],COMPETITION_SCORE_PROTOCOL)
+            self.assertEqual(score['score_protocol'],SCORE_PROTOCOL)
         self.assertEqual(summary['task2']['ecg_machine_d6_n_records'],2)
         self.assertEqual(summary['task1']['n_pairs'],2)
         self.assertEqual(summary['task1']['n_unique_target_records'],1)

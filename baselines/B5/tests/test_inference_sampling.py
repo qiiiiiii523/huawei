@@ -89,8 +89,10 @@ class InferenceSamplingTests(unittest.TestCase):
                 captured = {}
                 def evaluate(model, datasets, cfg, preprocessor, device, output):
                     captured.update(copy.deepcopy(cfg['sampling']))
-                    return {'task1': {'r_missing11': .5},
-                            'task2': {'r_missing11': .5, 'task2_missing_lead_mean_rmse_uV': 700.}}
+                    from ecg12gen.evaluate import QC_COMPETITION_SCORE_PROTOCOL, TARGET_LEAD_QC_PROTOCOL, QC_TASK2_DEVICE_AGGREGATION
+                    qc={'competition_score_protocol':QC_COMPETITION_SCORE_PROTOCOL,'target_lead_qc_protocol':TARGET_LEAD_QC_PROTOCOL,'quality_mask_applied':True}
+                    return {'task1': {**qc,'r_missing11': .5},
+                            'task2': {**qc,'r_missing11': .5,'task2_device_aggregation':QC_TASK2_DEVICE_AGGREGATION}}
                 argv = ['validate', '--config', str(ROOT/'configs/experiments/b5_finetune_meta.yaml'),
                         '--checkpoint', str(root/'old.pt'), '--device', 'cpu', '--output-dir', str(root/'out'), *explicit]
                 with ExitStack() as stack:

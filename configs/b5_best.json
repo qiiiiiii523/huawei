@@ -1,0 +1,11 @@
+{
+  "bundle_protocol": "B5-best-output-hybrid-v1",
+  "fm_checkpoint": "/home/qht/huawei/results/B5/main_v2_score60_k16_public_finetune_meta_20261012_001711_2114239/best.pt",
+  "slow_checkpoint": "/home/qht/huawei/results/B5-exp/slow_context_s50_f_v1/S50_F/checkpoints/best_score.pt",
+  "prepared_info": "/home/qht/huawei/results/B5-exp/slow_probe_parallel_v1/prepared/prepared.json",
+  "fm_sha256": "11dfcb8de1b90bfe5b33b320c4a243b3693d329e04c44ccb9cb9221d8cc70ca7",
+  "slow_sha256": "10fedeedb50fb2a74a25a5c8e85de4df0d53925364844914109b63ab347479c2",
+  "sampling": {"seed": 42, "solver": "heun", "steps": 16, "samples": 16},
+  "reference_qc_r": {"task1_r_missing11": 0.6958553635393026, "task2_r_missing11": 0.6894033429678901},
+  "reference_tolerance": 0.00002
+}

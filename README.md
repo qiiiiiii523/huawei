@@ -1,3 +1,7 @@
+# B5-best：当前稳定组合
+
+当前分支的使用入口见 [docs/b5_best.md](docs/b5_best.md)。方案是原B5 FM快残差＋冻结S50-F慢曲线，统一导出、验证、新记录推理；Heun16/K16，按两个任务平均r选模，不使用RMSE加分。新训练仅保留best_r.pt、last.pt和历史。下面保留公共底座的历史说明，不代表当前B5-best的评分入口。
+
 # ECG-12 joint-anchor 公共主干
 
 `main` 是供组员创建 baseline 分支的公共底座。它提供数据、预处理、loss、评估和检查；**不提供网络、训练循环、checkpoint 或预测结果**。

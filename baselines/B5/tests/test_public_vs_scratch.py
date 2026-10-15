@@ -25,9 +25,9 @@ class PublicVsScratchTests(unittest.TestCase):
         self.assertFalse(report['training_started'])
         self.assertEqual(report['sampling'],inference_sampling())
         self.assertTrue(report['sampling_matches_final_default'])
-        self.assertEqual(report['selection_metric'],'competition_total_score')
-        self.assertEqual(report['competition_score_protocol'],COMPETITION_SCORE_PROTOCOL)
-        self.assertIn('score60_k16',report['output_dir'])
+        self.assertEqual(report['selection_metric'],'main_correlation')
+        self.assertEqual(report['metric_aggregation_protocol'],COMPETITION_SCORE_PROTOCOL)
+        self.assertIn('mean_r_k16',report['output_dir'])
 
     def test_paired_settings_match_except_initialization_and_output(self):
         scratch=load_config(ROOT/'configs/experiments/b5_main_v2_scratch_meta.yaml')
