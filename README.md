@@ -1,4 +1,8 @@
-# B5-best：当前稳定组合
+# B5-scratch：公开初始化，从华为微调第1轮加入慢条件
+
+新实验操作见 [docs/b5_scratch.md](docs/b5_scratch.md)。代码与结果独立于正在续训的B5-S50；本分支不启动任何训练。B5-scratch这个名字不表示随机初始化，默认复用已有公开预训练权重。
+
+## 继承的B5-best稳定组合
 
 当前分支的使用入口见 [docs/b5_best.md](docs/b5_best.md)。方案是原B5 FM快残差＋冻结S50-F慢曲线，统一导出、验证、新记录推理；Heun16/K16，按两个任务平均r选模，不使用RMSE加分。新训练仅保留best_r.pt、last.pt和历史。下面保留公共底座的历史说明，不代表当前B5-best的评分入口。
 

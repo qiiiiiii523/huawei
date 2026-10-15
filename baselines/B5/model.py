@@ -35,6 +35,7 @@ class ConditionCache:
     anchor_features: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     metadata: torch.Tensor
     anchor_prediction: torch.Tensor
+    slow_bottleneck: torch.Tensor | None = None
 
 
 class B5UNet(nn.Module):
@@ -97,6 +98,10 @@ class B5UNet(nn.Module):
         h = self.down1(skip0) + self.condition_enc[1](f1)
         skip1 = self._blocks(self.encode1, h, t, condition.metadata)
         h = self.down2(skip1) + self.condition_enc[2](f2)
+        if condition.slow_bottleneck is not None:
+            if condition.slow_bottleneck.shape != h.shape:
+                raise ValueError("Slow bottleneck condition shape mismatch")
+            h = h + condition.slow_bottleneck
         h = self._blocks(self.bottleneck, h, t, condition.metadata)
         h = self.up1(F.interpolate(h, size=skip1.shape[-1], mode="nearest"))
         h = self.merge1(torch.cat((h, skip1), dim=1)) + self.condition_dec[1](f1)
