@@ -6,4 +6,4 @@
 
 独立实验名为 `A_frozen_meanstd_v1`。训练协议与 `A_frozen_adapter_v1` 一致：体脂秤 `A_raw_window`、10 epoch、batch 4、累积 2、学习率 1e-4、context dropout 0.1、seed 42；第 5/10 轮按 25 配对/300 窗口的 `r_missing11` 选最佳，Heun16/K16。之后用同一最佳权重做禁用 context、跨患者打乱 seed 101/202，以及 embedding/FiLM 审计。**不以 embedding 更分散本身作为成功标准**；主要看真实配对是否稳定优于禁用和打乱，同时记录胸导联 RMSE。
 
-本地已通过合成数据测试和真实数据 CPU 单批次预检；尚未上传远程、训练或生成新权重。待远程恢复后，先上传代码并再次做 GPU 预检，再启动独立输出目录；训练结束后将权重、预测、日志备份回本地并做完整性校验。
+本地合成数据检查、真实数据 CPU 单批次预检和远程 GPU 单批次预检均已通过。代码已上传到 04，10 轮训练及禁用/打乱 context 对照、适配器审计均已完成；结果与结论见 `docs/context_body_meanstd_results.md`。
