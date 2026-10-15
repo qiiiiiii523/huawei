@@ -23,6 +23,8 @@ def implementation_hashes():
     paths += [package.parent / 'B5/runtime.py', package.parents[1] / 'ecg12gen/evaluate.py']
     paths += [package / name for name in ('context_audit.py', 'legacy_context.py', 'check_s50.py', 'compare_context.py')]
     paths += [package.parents[1] / 'configs/experiments/b5_exp_s50_reference.json']
+    paths += [package / name for name in ('s50_f_audit.py', 'check_s50_f.py', 'compare_s50_f.py')]
+    paths += [package.parents[1] / 'configs/experiments/b5_exp_s50_f_reference.json']
     # Git may check out CRLF on Windows and LF on Linux; these are the same code.
     return {str(path.relative_to(package.parents[1])).replace('\\', '/'):
             hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest() for path in paths}

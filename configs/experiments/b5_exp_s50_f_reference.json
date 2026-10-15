@@ -1,0 +1,20 @@
+{
+  "source_branch": "B5-exp-S50",
+  "source_commit": "3d503ce2a3eab5c7081811d9f7747f691ca88ec2",
+  "implementation_sha256": {
+    "baselines/B5_exp/core.py": "5c86f52b442095c86e39045288432d1d56d6f871e4d1bf67100fa7c061eeb291",
+    "baselines/B5_exp/losses.py": "58527fa87909d05aac6037b3579302b4b08673cbf8cfa06448cd11588b9d7587",
+    "baselines/B5_exp/train_loss.py": "d56ee747cc3d796a2da34fd724141c2d575ca851f5b289359f20252e88d96248",
+    "baselines/B5_exp/check_loss.py": "2ce8b7f5b72860eb7ed9460cde6cc49765915372a22c57f8cdde9b2f02e4ff97",
+    "baselines/B5_exp/loss_metrics.py": "0ae8617a6778a97558b298a2f86ce7c06fa0517409889124474c7e465b781b36",
+    "baselines/B5_exp/evaluate.py": "16dd1fe8657f3ac4e9294852a5bf3f1299b1aa2bb03b0f6776e7da35ab80646f",
+    "baselines/B5_exp/compare_loss.py": "5bbe908a18c44f03b623d19360b56874372428039617cea536e0b19cc7523e70",
+    "baselines/B5/runtime.py": "c67089b2c803e7a4ef12cebce036d9b5f018d4dc06606b7d794a70db74c0053d",
+    "ecg12gen/evaluate.py": "acbbb256ccdb3fca0a0887719db9e2b3b4675bbf6702f6e03583507e60426fff",
+    "baselines/B5_exp/context_audit.py": "a1553f5eb9cbca3b29fe10a1387686cd9024cf8ba97fd9958792b6497e4078ed",
+    "baselines/B5_exp/legacy_context.py": "5a42bf557da797c5bd060e1591297925ae21b4f4046adc7682d3888be0c09040",
+    "baselines/B5_exp/check_s50.py": "9d0501bba49575f1dac3e842a7ffdd8a8d2662fc1c885671c355d7d807e87732",
+    "baselines/B5_exp/compare_context.py": "4cdee81ba425803f49e74a7c3c20cc544b975cab77bc3f35e65596865811f578",
+    "configs/experiments/b5_exp_s50_reference.json": "52b8df25c3955fc61cf08c4b965862887a4d7f4d497729a11300ecd47ced2d9f"
+  }
+}

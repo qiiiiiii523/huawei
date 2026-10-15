@@ -36,8 +36,9 @@ def configuration(args, prepared):
     seconds = getattr(args, 'context_seconds', 30)
     if seconds not in (30, 50):
         raise ValueError('Continuation supports 30 or 50 second input contexts')
-    if seconds == 50 and (args.group != 'C' or not calibration.get('s50_compatibility', {}).get('ready')):
-        raise ValueError('S50 requires original loss (group C) and the check_s50 compatibility preflight')
+    paired_f = args.group == 'F' and calibration.get('s50_f_pair', {}).get('ready')
+    if seconds == 50 and not (paired_f or (args.group == 'C' and calibration.get('s50_compatibility', {}).get('ready'))):
+        raise ValueError('S50 requires original loss (group C) with check_s50, or group F with check_s50_f preflight')
     weights = calibration['weights']
     if not all(np.isfinite(weights[k]) and .01 <= weights[k] <= 10 for k in ('mean', 'residual')):
         raise ValueError('Invalid calibrated weights')
@@ -65,6 +66,17 @@ def configuration(args, prepared):
         if canonical(config) != proof['control_canonical_config']:
             raise ValueError('Context experiment changed initialization, data, loss or optimization from C control')
         verify_control_files(proof['control_reference'])
+    if calibration.get('s50_f_pair'):
+        from .s50_f_audit import PAIR_PROTOCOL, canonical, verify_control, verify_unchanged_code
+        proof = calibration['s50_f_pair']
+        if not paired_f or seconds != 50 or proof.get('protocol') != PAIR_PROTOCOL:
+            raise ValueError('S50-F preflight requires group F and context_seconds=50')
+        verify_unchanged_code(config['implementation_sha256'])
+        config['s50_f_protocol'] = proof['protocol']
+        config['s50_f_control_reference'] = proof['control_reference']
+        if canonical(config) != proof['canonical_control']:
+            raise ValueError('S50-F changed more than fixed residual loss activation')
+        verify_control(proof['control_reference'])
     return config
 
 
@@ -175,6 +187,8 @@ def run(args):
     json_write(output / 'resolved_config.json', config)
     if config.get('context_extension_protocol'):
         json_write(output / 'context_preflight.json', json.loads(Path(args.calibration).read_text(encoding='utf-8')))
+    if config.get('s50_f_protocol'):
+        json_write(output / 'pair_preflight.json', json.loads(Path(args.calibration).read_text(encoding='utf-8')))
 
     def save_epoch(epoch, record, changed):
         candidate = {'protocol': PROTOCOL, 'experiment_protocol': LOSS_PROTOCOL, 'config': config,
@@ -203,6 +217,9 @@ def run(args):
                       'optimizer_initialization': 'fresh' if not args.resume else 'exact_resume'}), flush=True)
     if not args.resume:
         report = validation(model, val_loader, device, reference, config['context_seconds'])
+        if config.get('s50_f_protocol'):
+            from .s50_f_audit import assert_initial_equal
+            assert_initial_equal(report, json.loads((Path(config['s50_f_control_reference']['path'])/'initial_evaluation.json').read_text(encoding='utf-8')))
         changed = update_bests(best, report, 0)
         record = {'epoch': 0, 'phase': 'common_initializer', 'validation': report, 'best': best}
         json_write(output / 'initial_evaluation.json', report)
