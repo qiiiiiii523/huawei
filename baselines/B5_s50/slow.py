@@ -7,14 +7,33 @@ from torch.nn import functional as F
 DILATIONS = (1, 2, 4, 8, 16, 32, 64, 128)
 
 
-def load_slow(checkpoint,device):
+def load_slow(checkpoint,device,variant='slow'):
     if checkpoint.get('protocol')!='B5-slow-probe-v1' or checkpoint['config'].get('context_seconds')!=50:
         raise ValueError('Requires an S50 SlowCNN checkpoint, not an FM model or S30 model')
-    if checkpoint['config'].get('group')!='C' or checkpoint['config'].get('model_channels',48)!=48:
-        raise ValueError('This experiment freezes the selected original-loss S50 CNN')
+    expected={'slow':'C','slow_f':'F'}
+    if variant not in expected or checkpoint['config'].get('group')!=expected[variant] or checkpoint['config'].get('model_channels',48)!=48:
+        raise ValueError('Slow source/group mismatch: slow requires C, slow_f requires F, both 48 channels')
     model=SlowCNN()
     model.load_state_dict(checkpoint['model'],strict=True)
     return model.to(device).requires_grad_(False).eval()
+
+
+def validate_slow_pair(checkpoints):
+    """F was applied to the pretrained slow CNN, never to the new FM loss."""
+    a,b=(checkpoints[key]['config'] for key in ('slow','slow_f'))
+    matched=('prepared_sha256','context_seconds','model_channels','init_checkpoint_sha256',
+        'initial_weights_sha256','seed','epochs','batch_records','validate_every',
+        'learning_rate','weight_decay','huber_weight','pcc_weight')
+    for key in matched:
+        if key not in a or key not in b or a[key]!=b[key]:
+            raise ValueError('S50/S50-F pretraining pair differs: '+key)
+    if a['context_seconds']!=50 or a['epochs']!=20:
+        raise ValueError('Requires the matched 50s/20-epoch slow experiment')
+    if a.get('group')!='C' or b.get('group')!='F': raise ValueError('Expected original-loss C and residual-supervised F')
+    if float(a.get('mean_weight',0))!=0 or float(b.get('mean_weight',0))!=0:
+        raise ValueError('This comparison does not include the M mean loss')
+    if float(a.get('residual_weight',0))!=0 or not np.isfinite(float(b.get('residual_weight',0))) or float(b.get('residual_weight',0))<=0:
+        raise ValueError('Requires no F in S50 and a positive fixed F weight in S50-F')
 
 
 @torch.no_grad()

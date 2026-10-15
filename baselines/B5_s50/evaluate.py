@@ -14,7 +14,7 @@ from .runtime import run_config,datasets,validate
 
 
 def fingerprint(checkpoint):
-    return {key:checkpoint[key] for key in ('group','model_ema_sha256','slow_state_sha256','sampling')} | {
+    return {key:checkpoint[key] for key in ('group','model_ema_sha256','slow_state_sha256','sampling','score_protocol','slow_variant')} | {
         'shared_sha256':checkpoint['config']['shared_sha256']}
 
 
@@ -45,13 +45,13 @@ def evaluate(args):
         result=read(output/'metrics.json')
     else:
         device=device_from_name(args.device)
-        _,validation,_=datasets(shared,info)
+        _,validation,_=datasets(shared,info,checkpoint['group'])
         result=validate(model_from(checkpoint,device),validation,shared,info,device,output,args.plots)
     write(output/'evaluation.json',{'completed':True,'fingerprint':identity,'epoch':checkpoint['epoch'],
         'checkpoint':str(Path(args.checkpoint).resolve()),'checkpoint_sha256':sha(args.checkpoint),
         'plots':bool(args.plots) or bool(reused and read(reused/'evaluation.json').get('plots')),
         'reused_identical_ema_from':str(reused) if reused else None,'target_used_at_inference':False,
-        'score':result['score']})
+        'score':result['score'],'full_score':result['full_score']})
     print(result['score'],flush=True)
 
 

@@ -27,7 +27,7 @@ def predict_record(checkpoint,anchor_uV,metadata,record_key,device):
     meta=encode_demographics(metadata)
     model=model_from(checkpoint,device)
     native=None
-    if checkpoint['group']=='slow':
+    if checkpoint['group']!='control':
         network=SlowCNN().to(device).requires_grad_(False).eval()
         network.load_state_dict(checkpoint['slow_state'],strict=True)
         # Mean raw I first, then normalize, exactly as the S50 prepared interface.
@@ -63,6 +63,7 @@ def main():
     np.save(output/'prediction_uV.npy',result)
     write(output/'inference.json',{'checkpoint_sha256':sha(args.checkpoint),'record_key':args.record_key,
         'shape':list(result.shape),'unit':'uV','sampling':checkpoint['sampling'],'group':checkpoint['group'],
+        'slow_variant':checkpoint['slow_variant'],'slow_state_sha256':checkpoint['slow_state_sha256'],
         'target_used_at_inference':False,'prepared_data_required':False,'slow_checkpoint_embedded':True})
 
 

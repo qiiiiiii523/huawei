@@ -7,6 +7,7 @@ from torch.nn import functional as F
 
 from baselines.B5.model import B5UNet
 from baselines.B5.config import ModelConfig
+from . import GROUPS
 
 
 class B5S50UNet(B5UNet):
@@ -50,8 +51,8 @@ class BoundModel:
 
 
 def make_model(config,group,source_ema):
-    if group not in ('control','slow'): raise ValueError('Group must be control or slow')
-    model = B5S50UNet(config) if group=='slow' else B5UNet(config)
+    if group not in GROUPS: raise ValueError('Group must be control, slow or slow_f')
+    model = B5UNet(config) if group=='control' else B5S50UNet(config)
     incompatible = model.load_state_dict(source_ema,strict=False)
     allowed = [key for key in model.state_dict() if key.startswith('slow_adapter.')]
     if sorted(incompatible.missing_keys)!=sorted(allowed) or incompatible.unexpected_keys:

@@ -1,19 +1,21 @@
-"""Explicit full-population v2 scoring; latest B5 QC defaults are not used here."""
+"""QC v3 selection plus full-population v2 on the same predictions."""
 from __future__ import annotations
 
 import numpy as np
-from ecg12gen.evaluate import competition_score,COMPETITION_SCORE_PROTOCOL
-from . import SCORE_PROTOCOL
+from ecg12gen.evaluate import competition_score
+from baselines.B5.selection import scores_from_summaries
+from . import FULL_SCORE_PROTOCOL
 from .common import csv_write,write,finite_json
 
 LEADS=('II','III','aVR','aVL','aVF','V1','V2','V3','V4','V5','V6')
 
 
-def score_tasks(summaries):
-    if COMPETITION_SCORE_PROTOCOL!=SCORE_PROTOCOL: raise ValueError('Full-population evaluator version changed')
+def score_tasks(summaries,qc=True):
+    if qc: return scores_from_summaries(summaries)
     a,b=summaries['task1'],summaries['task2']
+    if a.get('quality_mask_applied') or b.get('quality_mask_applied'): raise ValueError('Cannot label QC summaries as full-population')
     return competition_score(float(a['r_missing11']),float(b['r_missing11']),float(b['ecg_machine_d6_task2_missing_lead_mean_rmse_uV']),
-                              float(b['body_scale_d6_task2_missing_lead_mean_rmse_uV']))
+                              float(b['body_scale_d6_task2_missing_lead_mean_rmse_uV']),score_protocol=FULL_SCORE_PROTOCOL)
 
 
 def slow(x):

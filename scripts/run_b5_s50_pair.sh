@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Run ONE paired arm; use separate terminals/devices for the two arms.
+# Run ONE matched arm; use separate terminals/devices for the three arms.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 group=
 gpu=
-root=/home/qht/huawei/results/B5-S50/fm_condition_v1
+root=/home/qht/huawei/results/B5-S50/fm_slow_qc_three_v2
 resume=0
 while (($#)); do
   case "$1" in
@@ -15,7 +15,7 @@ while (($#)); do
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[[ "$group" == control || "$group" == slow ]] || { echo 'Use --group control or slow'; exit 2; }
+[[ "$group" == control || "$group" == slow || "$group" == slow_f ]] || { echo 'Use --group control, slow or slow_f'; exit 2; }
 [[ "$gpu" =~ ^[0-9]+$ ]] || { echo 'Use --gpu physical_GPU_number'; exit 2; }
 export CUDA_VISIBLE_DEVICES="$gpu"
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
@@ -23,6 +23,15 @@ shared="$root/shared"
 out="$root/$group"
 test -f "$shared/shared.json"
 test -f "$root/preflight.json"
+python - "$root/preflight.json" "$shared/shared.json" <<'PY'
+import hashlib,json,sys
+with open(sys.argv[1],encoding='utf-8-sig') as stream:
+    report=json.load(stream)
+with open(sys.argv[2],'rb') as stream:
+    digest=hashlib.sha256(stream.read()).hexdigest()
+if not report.get('ready') or report.get('shared_sha256')!=digest:
+    raise SystemExit('Run the new three-arm preflight for this shared cache first')
+PY
 mkdir -p "$out"
 resume_args=()
 if ((resume)); then

@@ -1,4 +1,4 @@
-"""Paired continuation with the original FM objective and explicit v2 validation."""
+"""Three matched arms, original FM objective, QC selection and full-score reference."""
 from __future__ import annotations
 
 import copy
@@ -17,7 +17,7 @@ from baselines.B5.config import ModelConfig
 from baselines.B5.flow import sample
 from baselines.B5.losses import flow_loss
 from baselines.B5.runtime import seed_all,seed_worker,device_from_name
-from . import PROTOCOL,SCORE_PROTOCOL,INPUTS
+from . import PROTOCOL,SCORE_PROTOCOL,INPUTS,GROUPS
 from .common import read,write,sha,state_hash,csv_read,csv_write,finite_json
 from .data import ConditionedDataset,collate,to_device
 from .prepare import source_datasets,load_shared
@@ -28,13 +28,20 @@ from .audit import check_initial_score
 CANDIDATES={'score':'best.pt','r':'best_r.pt','bonus':'best_bonus.pt'}
 
 
-def datasets(shared,info):
+def slow_source(info,group):
+    if group not in GROUPS: raise ValueError('Expected control, slow or slow_f')
+    # Control never injects this cache; using the S50 lookup keeps loading identical.
+    return info['slow_sources']['slow_f' if group=='slow_f' else 'slow']
+
+
+def datasets(shared,info,group):
     config=read(shared/'source_config.json')
     checkpoint=load_checkpoint(info['fm_checkpoint'])
     _,train,validation=source_datasets(config,checkpoint)
     metadata=read(shared/'records.json')
-    train=ConditionedDataset(train,np.load(shared/'train_slow.npy',mmap_mode='r'),metadata['train'])
-    val_native=np.load(shared/'validation_slow.npy',mmap_mode='r')
+    variant='slow_f' if group=='slow_f' else 'slow'
+    train=ConditionedDataset(train,np.load(shared/('train_'+variant+'.npy'),mmap_mode='r'),metadata['train'])
+    val_native=np.load(shared/('validation_'+variant+'.npy'),mmap_mode='r')
     validation={task:ConditionedDataset(ds,val_native,metadata['validation']) for task,ds in validation.items()}
     return train,validation,metadata
 
@@ -60,7 +67,7 @@ def validate(model,validation,shared,info,device,output,plots=False):
     output=Path(output)
     if output.exists() and any(output.iterdir()): raise FileExistsError('Use empty evaluation output')
     output.mkdir(parents=True,exist_ok=True)
-    summaries={}
+    summaries={};full_summaries={};qualities={}
     scale=np.asarray(info['scales']['d12'],np.float32)[None,:,None]
     settings=info['sampling']
     arrays={}
@@ -70,6 +77,7 @@ def validate(model,validation,shared,info,device,output,plots=False):
         source=Path(info['evaluation_dir'])/task
         target=np.load(source/'target_uV.npy',mmap_mode='r',allow_pickle=False)
         rows=csv_read(source/'window_metadata.csv')
+        quality=np.zeros((len(dataset),12),bool)
         loader=DataLoader(dataset,batch_size=int(info['validation']['batch_size']),shuffle=False,num_workers=0,collate_fn=collate)
         offset=0
         for batch in loader:
@@ -80,35 +88,45 @@ def validate(model,validation,shared,info,device,output,plots=False):
             expected=[str(r['target_record_id'])+':'+str(r['start_sample_500hz']) for r in rows[offset:offset+size]]
             if batch['keys']!=expected: raise ValueError('Evaluation rows/targets were reordered')
             prediction[offset:offset+size]=generated.float().cpu().numpy()*scale
+            quality[offset:offset+size]=batch['quality_mask'].cpu().numpy()
             offset+=size
+        expected_quality=np.load(shared/(task+'_quality.npy'),allow_pickle=False)
+        if offset!=len(dataset) or not np.array_equal(quality,expected_quality): raise ValueError('Current QC masks/population differ from prepared')
         prediction.flush()
-        # Intentionally do not pass quality_mask: use the same full-population
-        # v2 metric as the supplied FM/S50 reports, not B5's new QC default.
-        summary,details=evaluate_record_predictions(prediction,target,task,rows)
+        summary,details=evaluate_record_predictions(prediction,target,task,rows,target_quality_mask=quality)
         summary.update(competition_score_protocol=SCORE_PROTOCOL,checkpoint_selection_metric='competition_total_score',slow_condition_used=hasattr(model,'slow_adapter'),
-            sampling=settings,score_population='full_validation_no_target_qc_filter',target_used_at_inference=False)
-        write_report(folder,summary,details,title='B5-S50 paired full-population raw-uV validation')
+            sampling=settings,score_population='target_lead_QC',target_used_at_inference=False)
+        write_report(folder,summary,details,title='B5-S50 QC selection; same raw-uV predictions')
+        np.save(folder/'target_quality_mask.npy',quality)
+        full,full_details=evaluate_record_predictions(prediction,target,task,rows)
+        full.update(sampling=settings,target_used_at_inference=False,score_population='full_validation_reference_only',
+                    checkpoint_selection_metric='not_selected_reference_only')
+        write_report(output/'full_population'/task,full,full_details,title='Full-population reference; not checkpoint selector')
         csv_write(folder/'window_metadata.csv',rows)
         write(folder/'target_reference.json',{'path':str(source/'target_uV.npy'),
               'sha256':info['evaluation_files'][task+'/target_uV.npy']})
         summaries[task]=summary
+        full_summaries[task]=full;qualities[task]=quality
         arrays[task]=(prediction,target)
     scores=score_tasks(summaries)
     write_competition_score(output,scores)
+    full_scores=score_tasks(full_summaries,qc=False)
+    write_competition_score(output/'full_population',full_scores)
     metadata=read(shared/'records.json')
-    with np.load(Path(info['prepared'])/'validation.npz',allow_pickle=False) as packed:
-        masks=packed['mask'].copy()
+    pairs={p['target_record_id']:p for p in metadata['pairs']['task2']}
+    masks=np.stack([qualities['task2'][pairs[r['target_record_id']]['indices'][0],1:] for r in metadata['validation']])
     wave=diagnostics(*arrays['task2'],metadata,masks,output,plots)
-    result={'summaries':summaries,'score':scores,'diagnostics':wave}
+    result={'summaries':summaries,'score':scores,'full_summaries':full_summaries,'full_score':full_scores,'diagnostics':wave}
     write(output/'metrics.json',finite_json(result))
     del arrays
     return result
 
 
 def run_config(group,shared,info):
-    if group not in ('control','slow'): raise ValueError('Expected control or slow group')
+    source=slow_source(info,group)
     return {'protocol':PROTOCOL,'group':group,'shared_sha256':sha(shared/'shared.json'),
-        'fm_sha256':info['fm_sha256'],'slow_sha256':info['slow_sha256'],
+        'fm_sha256':info['fm_sha256'],'slow_sha256':source['sha256'],
+        'slow_variant':'none' if group=='control' else group,'slow_state_sha256':source['state_sha256'],
         'implementation_sha256':info['implementation_sha256'],'model_config':info['model_config'],
         'loss':info['loss'],'training':info['training'],'sampling':info['sampling'],
         'score_protocol':SCORE_PROTOCOL,'slow_frozen':True,'adapter_hidden':32,
@@ -116,6 +134,7 @@ def run_config(group,shared,info):
 
 
 def update_best(best,scores,epoch):
+    if scores.get('competition_score_protocol')!=SCORE_PROTOCOL: raise ValueError('Select checkpoints only with QC scores')
     values={'score':scores['competition_total_score'],'r':scores['main_correlation'],'bonus':scores['task2_rmse_bonus_score']}
     changed=[]
     for key,value in values.items():
@@ -138,7 +157,9 @@ def run(args):
     model=make_model(ModelConfig.from_dict(info['model_config']),args.group,source['ema']).to(device)
     initial={k:v for k,v in model.state_dict().items() if not k.startswith('slow_adapter.')}
     if state_hash(initial)!=info['fm_initial_ema_sha256']: raise ValueError('FM initializer changed')
-    slow_cp=torch.load(info['slow_checkpoint'],map_location='cpu',weights_only=True)
+    selected_source=slow_source(info,args.group)
+    slow_cp=torch.load(selected_source['checkpoint'],map_location='cpu',weights_only=True)
+    if state_hash(slow_cp['model'])!=selected_source['state_sha256']: raise ValueError('Selected slow state changed')
     # Reset after architecture construction: the adapter must not shift the
     # control/experimental training noise, metadata dropout or shuffle stream.
     seed_all(int(training['seed']),bool(training['deterministic']))
@@ -147,7 +168,7 @@ def run(args):
     amp=bool(training['amp']) and device.type=='cuda'
     scaler=torch.amp.GradScaler('cuda',enabled=amp)
     ema={k:v.detach().clone() for k,v in model.state_dict().items()}
-    train,val,_=datasets(shared,info)
+    train,val,_=datasets(shared,info,args.group)
     loader=DataLoader(train,batch_size=int(training['batch_size']),shuffle=True,generator=generator,
         num_workers=int(training['workers']),collate_fn=collate,worker_init_fn=seed_worker,persistent_workers=False)
     best={k:{'value':-float('inf'),'epoch':None} for k in CANDIDATES}
@@ -191,7 +212,8 @@ def run(args):
             'epoch':epoch,'source_checkpoint_epoch':source['epoch'],'model_config':info['model_config'],
             'base_architecture_hash':source['architecture_hash'],'model':weights,'model_ema_sha256':state_hash(weights),
             'scales':info['scales'],'scales_sha256':info['scales_sha256'],
-            'slow_state':slow_cp['model'],'slow_state_sha256':info['slow_state_sha256'],
+            'slow_state':slow_cp['model'],'slow_state_sha256':selected_source['state_sha256'],
+            'slow_variant':config['slow_variant'],
             'sampling':info['sampling'],'metrics':record.get('validation')}
         for key in changed: snapshots[key]=candidate
         payload={**candidate,'run_directory':str(output),'updates':updates,'raw_model':model.state_dict(),
@@ -219,6 +241,7 @@ def run(args):
     if not args.resume:
         result=evaluate_epoch(0)
         check_initial_score(result['score'],info)
+        check_initial_score(result['full_score'],info,full=True)
         write(output/'initial_evaluation.json',finite_json(result))
         changed=update_best(best,result['score'],0)
         save(0,{'epoch':0,'phase':'common_initializer','validation':result,'best':best},changed)

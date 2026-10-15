@@ -20,10 +20,10 @@ from baselines.B5.flow import sample
 from baselines.B5.losses import flow_loss
 from baselines.B5.model import B5UNet
 from baselines.B5.metadata import encode_demographics
-from baselines.B5_s50 import PROTOCOL,SCORE_PROTOCOL,INPUTS
+from baselines.B5_s50 import PROTOCOL,SCORE_PROTOCOL,FULL_SCORE_PROTOCOL,INPUTS,GROUPS
 from baselines.B5_s50.common import write,read,sha,state_hash,csv_write
 from baselines.B5_s50.model import make_model,BoundModel
-from baselines.B5_s50.slow import SlowCNN,predict_native,slow_window,load_slow
+from baselines.B5_s50.slow import SlowCNN,predict_native,slow_window,load_slow,validate_slow_pair
 from baselines.B5_s50.data import ConditionedDataset,verify_inputs
 from baselines.B5_s50.prepare import prepare,load_shared
 from baselines.B5_s50.runtime import run,ema_evaluation,update_best,CANDIDATES
@@ -32,6 +32,8 @@ from baselines.B5_s50.check import check
 from baselines.B5_s50.predict import predict_record
 from baselines.B5_s50.evaluate import evaluate
 from baselines.B5_s50.compare import compare
+from baselines.B5_s50.scoring import score_tasks
+from ecg12gen.evaluate import evaluate_record_predictions
 
 torch.set_num_threads(2)
 CONFIG=ModelConfig(channels=(8,16,24),time_dim=16,metadata_dim=16,dilations=(1,))
@@ -60,8 +62,9 @@ class Windows:
         anchor=self.full[:,start:start+5000].copy()
         target=np.repeat(anchor,12,axis=0)*np.arange(1,13,dtype=np.float32)[:,None]
         target[9]=np.cos(np.arange(start,start+5000,dtype=np.float32)/45)*2
-        mask=np.ones(12,bool);mask[9]=False
+        mask=np.ones(12,bool)
         return {'anchor':anchor,**self.meta,'target':target,'quality_mask':mask,
+            'target_uV':target*(np.arange(1,13,dtype=np.float32)*100)[:,None],
             'key':row['target_record_id']+':'+str(start),'evaluation_metadata':row}
 
 
@@ -122,12 +125,21 @@ class Fixture:
             'evaluation_dir':str(self.original),'evaluation_files':files,'scale_uV':self.scale.tolist(),
             'source_checks':{'source':{'path':str(source),'sha256':sha(source)}}})
         self.slow=self.root/'best_score.pt'
-        torch.save({'protocol':'B5-slow-probe-v1','model':SlowCNN().state_dict(),
-            'config':{'context_seconds':50,'group':'C','model_channels':48,'prepared_sha256':sha(self.prepared/'prepared.json')}},self.slow)
+        self.slow_f=self.root/'F_best_score.pt'
+        slow_cfg={'context_seconds':50,'group':'C','model_channels':48,'prepared_sha256':sha(self.prepared/'prepared.json'),
+            'init_checkpoint_sha256':'same_source_S30','initial_weights_sha256':'same_initial_weights','seed':42,'epochs':20,
+            'batch_records':2,'validate_every':5,'learning_rate':1e-4,'weight_decay':.01,'huber_weight':1.,'pcc_weight':.1,
+            'mean_weight':0.,'residual_weight':0.}
+        slow_state=SlowCNN().state_dict()
+        torch.save({'protocol':'B5-slow-probe-v1','model':slow_state,'config':slow_cfg},self.slow)
+        f_state={k:v.clone() for k,v in slow_state.items()};f_state['output.bias']+=.25
+        torch.save({'protocol':'B5-slow-probe-v1','model':f_state,
+            'config':{**slow_cfg,'group':'F','residual_weight':2.5890171538829843}},self.slow_f)
 
     def prepare(self):
         with patch('baselines.B5_s50.prepare.source_datasets',return_value=(None,self.train,self.val)):
-            prepare(SimpleNamespace(fm_checkpoint=str(self.fm),slow_checkpoint=str(self.slow),prepared=str(self.prepared),output=str(self.shared),device='cpu'))
+            prepare(SimpleNamespace(fm_checkpoint=str(self.fm),slow_checkpoint=str(self.slow),slow_f_checkpoint=str(self.slow_f),
+                                    prepared=str(self.prepared),output=str(self.shared),device='cpu'))
         return load_shared(self.shared)
 
 
@@ -201,7 +213,8 @@ class IntegrationTests(unittest.TestCase):
 
     def test_selectors_keep_initial_candidate_and_update_independently(self):
         best={k:{'value':-float('inf'),'epoch':None} for k in CANDIDATES}
-        def scores(total,r,bonus): return {'competition_total_score':total,'main_correlation':r,'task2_rmse_bonus_score':bonus}
+        def scores(total,r,bonus): return {'competition_total_score':total,'main_correlation':r,'task2_rmse_bonus_score':bonus,
+                                         'competition_score_protocol':SCORE_PROTOCOL}
         self.assertEqual(set(update_best(best,scores(35,.68,1),0)),set(CANDIDATES))
         self.assertEqual(update_best(best,scores(34,.7,.5),5),['r'])
         self.assertEqual(update_best(best,scores(34,.65,2),10),['bonus'])
@@ -232,14 +245,16 @@ class IntegrationTests(unittest.TestCase):
                  patch('baselines.B5_s50.runtime.DataLoader',side_effect=loader_factory), \
                  patch('baselines.B5_s50.runtime.sample',side_effect=fake_sample), \
                  patch('torch.optim.AdamW.step',side_effect=AssertionError('No optimizer update allowed')):
-                for group in ('control','slow'):
+                for group in GROUPS:
                     folder=Path(tmp)/group;out=folder/'checkpoints';runs.append(folder)
                     args=SimpleNamespace(shared=shared,group=group,output=out,device='cpu',resume=None)
                     with self.assertRaises(StopBeforeTraining): run(args)
                     self.assertEqual(read(out/'initial_evaluation.json')['score']['competition_score_protocol'],SCORE_PROTOCOL)
                     for name in (*CANDIDATES.values(),'last.pt'):
                         cp=load(out/name);self.assertEqual(cp['epoch'],0)
-                        self.assertEqual(cp['slow_state_sha256'],info['slow_state_sha256'])
+                        variant='slow_f' if group=='slow_f' else 'slow'
+                        self.assertEqual(cp['slow_state_sha256'],info['slow_sources'][variant]['state_sha256'])
+                        self.assertEqual(cp['slow_variant'],'none' if group=='control' else group)
                     last=load(out/'last.pt');self.assertEqual(last['updates'],0);self.assertEqual(last['optimizer']['state'],{})
                     # Crash recovery repairs a corrupted best alias from last.pt.
                     (out/'best.pt').write_bytes(b'interrupted')
@@ -249,13 +264,19 @@ class IntegrationTests(unittest.TestCase):
                     args.group='slow' if group=='control' else 'control'
                     with self.assertRaisesRegex(ValueError,'Exact resume'): run(args)
                     for name in ('best','best_r','best_bonus','last'):
+                        reuse=folder/'evaluations' if name!='best' else runs[0]/'evaluations'
                         evaluate(SimpleNamespace(shared=shared,checkpoint=out/(name+'.pt'),output=folder/'evaluations'/name,
-                                                 device='cpu',reuse_root=folder/'evaluations',plots=False))
+                                                 device='cpu',reuse_root=reuse,plots=False))
+                    self.assertIsNone(read(folder/'evaluations/best/evaluation.json')['reused_identical_ema_from'])
                     self.assertIsNotNone(read(folder/'evaluations/best_r/evaluation.json')['reused_identical_ema_from'])
+                    self.assertEqual(read(folder/'evaluations/best/evaluation.json')['full_score']['competition_score_protocol'],FULL_SCORE_PROTOCOL)
+                    malformed=load(out/'best.pt');malformed['slow_variant']='wrong_source'
+                    torch.save(malformed,folder/'wrong_variant.pt')
+                    with self.assertRaisesRegex(ValueError,'variant/group'): load(folder/'wrong_variant.pt')
                     # Synthetic fixture marks completion for comparison plumbing;
                     # it does not represent an actual completed 20-epoch experiment.
                     write(out/'completed.json',{'completed':True,'additional_epochs':20})
-                compare(SimpleNamespace(shared=shared,control=runs[0],slow=runs[1],output=Path(tmp)/'comparison'))
+                compare(SimpleNamespace(shared=shared,control=runs[0],slow=runs[1],slow_f=runs[2],output=Path(tmp)/'comparison'))
                 self.assertTrue((Path(tmp)/'comparison/report.md').exists())
             cached=np.load(shared/'train_slow.npy',mmap_mode='r')
             wrapped=ConditionedDataset(fixture.train,cached,read(shared/'records.json')['train'])
@@ -266,19 +287,85 @@ class IntegrationTests(unittest.TestCase):
             cached._mmap.close()
             for array in mapped: array._mmap.close()
 
+    def test_slow_pair_and_source_identities_are_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=Fixture(tmp)
+            pair={'slow':torch.load(f.slow,weights_only=True),'slow_f':torch.load(f.slow_f,weights_only=True)}
+            validate_slow_pair(pair)
+            for field,value in (('init_checkpoint_sha256','different_S30'),('seed',43),('epochs',40),('context_seconds',30)):
+                bad=copy.deepcopy(pair);bad['slow_f']['config'][field]=value
+                with self.assertRaisesRegex(ValueError,field): validate_slow_pair(bad)
+            with self.assertRaisesRegex(ValueError,'group mismatch'): load_slow(pair['slow_f'],'cpu','slow')
+            with self.assertRaisesRegex(ValueError,'group mismatch'): load_slow(pair['slow'],'cpu','slow_f')
+            shared,info=f.prepare()
+            a=np.load(shared/'validation_slow.npy');b=np.load(shared/'validation_slow_f.npy')
+            np.testing.assert_allclose(b-a,.25,atol=2e-6,rtol=2e-5)
+            self.assertNotEqual(info['slow_sources']['slow']['state_sha256'],info['slow_sources']['slow_f']['state_sha256'])
+            with patch('baselines.B5_s50.runtime.source_datasets',return_value=(None,f.train,f.val)):
+                from baselines.B5_s50.runtime import datasets
+                for group,expected in (('slow',a),('slow_f',b)):
+                    train,val,_=datasets(shared,info,group)
+                    np.testing.assert_allclose(val['task1'][0]['slow'],slow_window(expected[0],0),atol=0,rtol=0)
+                    train.native._mmap.close();val['task1'].native._mmap.close()
+            info['protocol']='B5-S50-frozen-condition-v1';write(shared/'shared.json',info)
+            with self.assertRaisesRegex(ValueError,'v1 cache'): load_shared(shared)
+
+    def test_QC_selection_and_full_scores_are_separate_on_same_predictions(self):
+        qc={};full={}
+        for task in ('task1','task2'):
+            p=[];y=[];rows=[];masks=[]
+            devices=('watch',) if task=='task1' else ('ecg_machine_d6','body_scale_d6')
+            for device in devices:
+                for record in ('a','b'):
+                    for start in range(0,60000,5000):
+                        target=np.sin(np.arange(start,start+5000)/80)[None].repeat(12,axis=0).astype(np.float32)*100
+                        prediction=target.copy();mask=np.ones(12,bool)
+                        if record=='a': prediction[9]=-target[9]+1000;mask[9]=False
+                        p.append(prediction);y.append(target);masks.append(mask)
+                        rows.append({'pair_id':device+record,'target_record_id':record,'subject_id':record,
+                                     'input_type':device,'start_sample_500hz':str(start)})
+            p,y=np.stack(p),np.stack(y)
+            qc[task]=evaluate_record_predictions(p,y,task,rows,target_quality_mask=np.stack(masks))[0]
+            full[task]=evaluate_record_predictions(p,y,task,rows)[0]
+        qscore=score_tasks(qc);fscore=score_tasks(full,qc=False)
+        self.assertAlmostEqual(qscore['task1_r_missing11'],1.)
+        self.assertGreater(qscore['competition_total_score'],fscore['competition_total_score'])
+        best={k:{'value':-float('inf'),'epoch':None} for k in CANDIDATES}
+        with self.assertRaisesRegex(ValueError,'only with QC'): update_best(best,fscore,0)
+        with self.assertRaisesRegex(ValueError,'QC summaries'): score_tasks(qc,qc=False)
+        with self.assertRaisesRegex(ValueError,'QC protocol'): score_tasks(full)
+
+    def test_optional_hybrid_references_are_rescored_under_QC(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f=Fixture(tmp)
+            for path,group in ((f.slow,'C'),(f.slow_f,'F')):
+                folder=path.parent/('evaluation_'+path.stem);folder.mkdir()
+                write(folder/'evaluation.json',{'completed':True,'probe_checkpoint_sha256':sha(path),
+                    'B5_checkpoint_sha256':sha(f.fm),'prepared_sha256':sha(f.prepared/'prepared.json'),
+                    'epoch':20,'context_seconds':50,'group':group,'target_used_at_inference':False})
+                for task in f.val:
+                    target=folder/'learned_slow_hybrid'/task;target.mkdir(parents=True)
+                    np.save(target/'prediction_uV.npy',np.load(f.original/task/'prediction_uV.npy')+1)
+            shared,info=f.prepare()
+            self.assertEqual(set(info['fixed_hybrid_references']),{'slow','slow_f'})
+            for ref in info['fixed_hybrid_references'].values():
+                self.assertEqual(ref['score']['competition_score_protocol'],SCORE_PROTOCOL)
+                self.assertEqual(ref['full_score']['competition_score_protocol'],FULL_SCORE_PROTOCOL)
+
     def test_deploy_checkpoint_only_i_metadata_no_prepared_or_targets(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture=Fixture(tmp);shared,info=fixture.prepare()
             source=torch.load(fixture.fm,weights_only=True);network=torch.load(fixture.slow,weights_only=True)
             raw=(fixture.train.full*info['scales']['ecg_machine_i'][0]).copy()
-            for group in ('control','slow'):
+            for group in GROUPS:
+                network=torch.load(fixture.slow_f if group=='slow_f' else fixture.slow,weights_only=True)
                 model=make_model(CONFIG,group,source['ema'])
                 cp={'group':group,'model':model.state_dict(),'model_config':asdict(CONFIG),
                     'sampling':info['sampling'],'slow_state':network['model'],'scales':info['scales']}
                 calls=[]
                 def observed(bound,data,keys,**settings):
                     self.assertEqual(set(data),set(INPUTS));self.assertEqual(settings,info['sampling'])
-                    if group=='slow': self.assertEqual(bound.slow.shape,(1,11,5000))
+                    if group!='control': self.assertEqual(bound.slow.shape,(1,11,5000))
                     calls.extend(keys);return fake_sample(bound,data,keys,**settings)
                 with patch('baselines.B5_s50.predict.sample',side_effect=observed):
                     y=predict_record(cp,raw,{'age':45},'new_record','cpu')
