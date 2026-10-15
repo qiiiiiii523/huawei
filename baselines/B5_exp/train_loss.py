@@ -24,6 +24,9 @@ def default_group():
 
 
 def configuration(args, prepared):
+    seed = getattr(args, 'seed', 42)
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**32 - 1:
+        raise ValueError('seed must be an integer in [0, 4294967295]')
     calibration = json.loads(Path(args.calibration).read_text(encoding='utf-8'))
     if calibration.get('protocol') != LOSS_PROTOCOL or not calibration.get('ready'):
         raise ValueError('Run the common check_loss preflight first')
@@ -37,7 +40,7 @@ def configuration(args, prepared):
     if not all(np.isfinite(weights[k]) and .01 <= weights[k] <= 10 for k in ('mean', 'residual')):
         raise ValueError('Invalid calibrated weights')
     config = {'protocol': PROTOCOL, 'experiment_protocol': LOSS_PROTOCOL, 'group': args.group,
-              'context_seconds': 30, 'seed': 42, 'epochs': args.epochs,
+              'context_seconds': 30, 'seed': seed, 'epochs': args.epochs,
               'batch_records': args.batch_records, 'validate_every': args.validate_every,
               'learning_rate': .0001, 'weight_decay': .01, 'huber_weight': 1., 'pcc_weight': .1,
               'model_channels': 48, 'prepared': str(prepared), 'prepared_sha256': calibration['prepared_sha256'],
@@ -98,14 +101,14 @@ def run(args):
     config = configuration(args, prepared)
     output = Path(args.output).resolve()
     device = device_from_name(args.device)
-    seed_all(42, True)
+    seed_all(config['seed'], True)
     model, _ = initializer(args.init_checkpoint, prepared)
     if state_hash(model.state_dict()) != config['initial_weights_sha256']:
         raise ValueError('Initializer weights changed after calibration')
     model.to(device)
     # C/M/F ignore all source optimizer/RNG states, then start the same new stream.
-    seed_all(42, True)
-    generator = torch.Generator().manual_seed(42)
+    seed_all(config['seed'], True)
+    generator = torch.Generator().manual_seed(config['seed'])
     optimizer = torch.optim.AdamW(model.parameters(), lr=.0001, weight_decay=.01)
     train = Records(prepared / 'train.npz')
     val = Records(prepared / 'validation.npz')
@@ -117,7 +120,7 @@ def run(args):
     if args.resume:
         checkpoint = torch.load(args.resume, map_location='cpu', weights_only=True)
         if checkpoint.get('experiment_protocol') != LOSS_PROTOCOL or checkpoint['config'] != config:
-            raise ValueError('Exact resume must retain group, initialization, calibration and full budget')
+            raise ValueError('Exact resume must retain seed, group, initialization, calibration and full budget')
         if checkpoint.get('output_directory') != str(output):
             raise ValueError('Resume into the original run output directory')
         for name in ('resolved_config.json', 'history.jsonl', 'initial_evaluation.json'):
@@ -181,14 +184,14 @@ def run(args):
         atomic_save(output / 'last.pt', payload)
         print(json.dumps(record, ensure_ascii=False, allow_nan=False), flush=True)
 
-    print(json.dumps({'phase': 'start', 'group': args.group, 'source_epoch': config['source_epoch'],
+    print(json.dumps({'phase': 'start', 'group': args.group, 'seed': config['seed'], 'source_epoch': config['source_epoch'],
                       'additional_epochs': args.epochs, 'start_epoch': start, 'device': str(device),
                       'initial_weights_sha256': config['initial_weights_sha256'],
                       'optimizer_initialization': 'fresh' if not args.resume else 'exact_resume'}), flush=True)
     if not args.resume:
         report = validation(model, val_loader, device, reference)
         changed = update_bests(best, report, 0)
-        record = {'epoch': 0, 'phase': 'common_initializer', 'validation': report, 'best': best}
+        record = {'epoch': 0, 'seed': config['seed'], 'phase': 'common_initializer', 'validation': report, 'best': best}
         json_write(output / 'initial_evaluation.json', report)
         save_epoch(0, record, changed)
     for epoch in range(start + 1, args.epochs + 1):
@@ -209,7 +212,7 @@ def run(args):
             seen += n
         if seen == 0:
             raise ValueError('Empty training set')
-        record = {'epoch': epoch, 'source_epoch': config['source_epoch'],
+        record = {'epoch': epoch, 'seed': config['seed'], 'source_epoch': config['source_epoch'],
                   'train': {k: v / seen for k, v in totals.items()}}
         changed = []
         if epoch % args.validate_every == 0 or epoch == args.epochs:
@@ -217,7 +220,7 @@ def run(args):
             changed = update_bests(best, record['validation'], epoch)
         record['best'] = best
         save_epoch(epoch, record, changed)
-    json_write(output / 'completed.json', {'completed': True, 'group': args.group,
+    json_write(output / 'completed.json', {'completed': True, 'group': args.group, 'seed': config['seed'],
                                          'source_epoch': config['source_epoch'], 'additional_epochs': args.epochs,
                                          'best': best, 'FM_training_started': False})
 
@@ -228,6 +231,7 @@ def main():
     parser.add_argument('--init-checkpoint', required=True)
     parser.add_argument('--calibration', required=True)
     parser.add_argument('--group', choices=('C', 'M', 'F'), default=default_group())
+    parser.add_argument('--seed', type=int, default=42, help='New training RNG and record shuffle seed; default: 42')
     parser.add_argument('--output', required=True)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--epochs', type=int, default=20)

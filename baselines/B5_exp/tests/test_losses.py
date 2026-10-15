@@ -132,6 +132,16 @@ class LossTests(unittest.TestCase):
             ignore = {'group', 'mean_weight', 'residual_weight'}
             self.assertEqual([{k: v for k, v in c.items() if k not in ignore} for c in configs],
                              [{k: v for k, v in configs[0].items() if k not in ignore}] * 3)
+            self.assertEqual(configs[0]['seed'], 42)  # Backward-compatible default.
+            args.seed = 43
+            changed_seed = train_loss.configuration(args, prepared)
+            self.assertEqual(changed_seed['seed'], 43)
+            self.assertEqual({k:v for k,v in changed_seed.items() if k != 'seed'},
+                             {k:v for k,v in configs[-1].items() if k != 'seed'})
+            for invalid in (-1, 2**32, True):
+                args.seed = invalid
+                with self.assertRaisesRegex(ValueError, 'seed'):
+                    train_loss.configuration(args, prepared)
             wrong = root / 'wrong.pt'
             torch.save({'protocol': 'FM', 'config': {'context_seconds': 30}}, wrong)
             with self.assertRaises(ValueError):
@@ -154,10 +164,12 @@ class LossTests(unittest.TestCase):
             check(SimpleNamespace(prepared=str(prepared), init_checkpoint=str(init), report=str(report),
                                   device='cpu', residual_width=51, gradient_fraction=.1))
             args = SimpleNamespace(group='C', epochs=20, batch_records=2, validate_every=5, calibration=str(report),
-                                   init_checkpoint=str(init), prepared=str(prepared), output=str(root / 'C'), device='cpu', resume=None)
+                                   init_checkpoint=str(init), prepared=str(prepared), output=str(root / 'C'), device='cpu', resume=None, seed=43)
             original_loader = train_loss.DataLoader
 
             def loader(dataset, **kwargs):
+                if kwargs.get('shuffle'):
+                    self.assertEqual(kwargs['generator'].initial_seed(), args.seed)
                 return NoTrainingLoader() if kwargs.get('shuffle') else original_loader(dataset, **kwargs)
 
             source_hash = sha(init)
@@ -166,6 +178,10 @@ class LossTests(unittest.TestCase):
                     train_loss.run(args)
                 last = torch.load(root / 'C/last.pt', map_location='cpu', weights_only=True)
                 self.assertEqual(last['epoch'], 0)
+                self.assertEqual(last['config']['seed'], 43)
+                self.assertTrue(torch.equal(last['loader_rng'], torch.Generator().manual_seed(43).get_state()))
+                first_record = json.loads((root / 'C/history.jsonl').read_text(encoding='utf-8').splitlines()[0])
+                self.assertEqual(first_record['seed'], 43)
                 self.assertEqual(last['optimizer']['state'], {})
                 self.assertEqual(state_hash(last['model']), state_hash(torch.load(init, weights_only=True)['model']))
                 self.assertEqual(last['best']['slow_r']['epoch'], 0)
@@ -177,6 +193,11 @@ class LossTests(unittest.TestCase):
                     train_loss.run(args)
                 repaired = torch.load(root / 'C/best_score.pt', weights_only=True)
                 self.assertEqual(repaired['epoch'], 0)
+                args.seed = 44
+                # This fails before reading the training iterator or updating weights.
+                with self.assertRaisesRegex(ValueError, 'seed'):
+                    train_loss.run(args)
+                args.seed = 43
                 args.group = 'M'
                 with self.assertRaises(ValueError):
                     train_loss.run(args)
