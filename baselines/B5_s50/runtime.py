@@ -18,7 +18,8 @@ from baselines.B5.flow import sample
 from baselines.B5.losses import flow_loss
 from baselines.B5.runtime import seed_all,seed_worker,device_from_name
 from . import PROTOCOL,SCORE_PROTOCOL,INPUTS,GROUPS
-from .common import read,write,sha,state_hash,csv_read,csv_write,finite_json
+from .common import read,write,sha,state_hash,csv_read,csv_write,finite_json,code_hashes
+from .continuation import resolve_budget,archive_boundary
 from .data import ConditionedDataset,collate,to_device
 from .prepare import source_datasets,load_shared
 from .model import make_model,BoundModel
@@ -173,12 +174,15 @@ def run(args):
         num_workers=int(training['workers']),collate_fn=collate,worker_init_fn=seed_worker,persistent_workers=False)
     best={k:{'value':-float('inf'),'epoch':None} for k in CANDIDATES}
     snapshots={};start=0;updates=0
+    checkpoint=None
     if args.resume:
         from .checkpoint import load
         checkpoint=load(args.resume)
         if checkpoint['config']!=config or checkpoint.get('run_directory')!=str(output):
             raise ValueError('Exact resume changed group, cache, settings or output; never resume the original B5 run')
-        if not 0<=checkpoint['epoch']<=int(training['epochs']): raise ValueError('Resume epoch outside budget')
+        if not 0<=checkpoint['epoch']<=int(checkpoint.get('total_epochs',training['epochs'])): raise ValueError('Resume epoch outside budget')
+        if checkpoint.get('execution_implementation_sha256',code_hashes())!=code_hashes():
+            raise ValueError('Continuation implementation changed after checkpoint save')
         for name in ('history.jsonl','initial_evaluation.json','resolved_config.json'):
             if not (output/name).is_file(): raise FileNotFoundError(name)
         model.load_state_dict(checkpoint['raw_model'],strict=True)
@@ -191,6 +195,10 @@ def run(args):
         best,snapshots,start,updates=checkpoint['best'],checkpoint['best_snapshots'],checkpoint['epoch'],checkpoint['updates']
         history=[json.loads(line) for line in (output/'history.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
         if not any(row['epoch']==start for row in history): raise ValueError('Resume history is missing saved epoch')
+        total_epochs,previous_budget=resolve_budget(training['epochs'],checkpoint,getattr(args,'total_epochs',None))
+        if total_epochs>previous_budget:
+            if Path(args.resume).resolve()!=output/'last.pt': raise ValueError('Extend only from this run last.pt')
+            archive_boundary(output,previous_budget)
         (output/'history.jsonl').write_text(''.join(json.dumps(row,ensure_ascii=False,allow_nan=False)+'\n' for row in history if row['epoch']<=start),encoding='utf-8')
         # Recover candidate aliases if an interrupted save left a newer alias.
         for key,name in CANDIDATES.items():
@@ -202,6 +210,8 @@ def run(args):
                 repair=existing['epoch']!=candidate['epoch'] or existing['model_ema_sha256']!=candidate['model_ema_sha256']
             except Exception: pass
             if repair: atomic_save(output/name,candidate)
+    else:
+        total_epochs,previous_budget=resolve_budget(training['epochs'],requested=getattr(args,'total_epochs',None))
     output.mkdir(parents=True,exist_ok=True)
     write(output/'resolved_config.json',config)
     scale_tensor=torch.as_tensor(info['scales']['d12'],device=device)
@@ -209,6 +219,7 @@ def run(args):
     def save(epoch,record,changed):
         weights={k:v.detach().cpu().clone() for k,v in ema.items()}
         candidate={'protocol':PROTOCOL,'score_protocol':SCORE_PROTOCOL,'group':args.group,'config':config,
+            'total_epochs':total_epochs,'execution_implementation_sha256':code_hashes(),
             'epoch':epoch,'source_checkpoint_epoch':source['epoch'],'model_config':info['model_config'],
             'base_architecture_hash':source['architecture_hash'],'model':weights,'model_ema_sha256':state_hash(weights),
             'scales':info['scales'],'scales_sha256':info['scales_sha256'],
@@ -234,7 +245,7 @@ def run(args):
         with ema_evaluation(model,ema):
             return validate(model,val,shared,info,device,folder)
 
-    print({'phase':'start','group':args.group,'start_epoch':start,'additional_epochs':training['epochs'],
+    print({'phase':'start','group':args.group,'start_epoch':start,'total_epochs':total_epochs,'remaining_epochs':total_epochs-start,
         'learning_rate':training['learning_rate'],'parameters':sum(p.numel() for p in model.parameters()),
         'new_parameters':sum(p.numel() for k,p in model.named_parameters() if k.startswith('slow_adapter.')),
         'sampling':info['sampling'],'frozen_slow':True},flush=True)
@@ -245,7 +256,9 @@ def run(args):
         write(output/'initial_evaluation.json',finite_json(result))
         changed=update_best(best,result['score'],0)
         save(0,{'epoch':0,'phase':'common_initializer','validation':result,'best':best},changed)
-    for epoch in range(start+1,int(training['epochs'])+1):
+    write(output/'completed.json',{'completed':False,'group':args.group,'additional_epochs':total_epochs,
+        'total_epochs':total_epochs,'resumed_from_epoch':start,'source_fm_sha256':info['fm_sha256']})
+    for epoch in range(start+1,total_epochs+1):
         model.train();optimizer.zero_grad(set_to_none=True)
         running={};count=0
         for index,batch in enumerate(loader):
@@ -268,9 +281,9 @@ def run(args):
         if count==0: raise ValueError('Empty training set')
         record={'epoch':epoch,'updates':updates,'train':{k:v/count for k,v in running.items()}}
         changed=[]
-        if epoch%int(training['validate_every'])==0 or epoch==int(training['epochs']):
+        if epoch%int(training['validate_every'])==0 or epoch==total_epochs:
             result=evaluate_epoch(epoch);record['validation']=result;changed=update_best(best,result['score'],epoch)
         record['best']=copy.deepcopy(best)
         save(epoch,record,changed)
-    write(output/'completed.json',{'completed':True,'group':args.group,'additional_epochs':int(training['epochs']),
+    write(output/'completed.json',{'completed':True,'group':args.group,'additional_epochs':total_epochs,'total_epochs':total_epochs,
                                  'best':best,'source_fm_sha256':info['fm_sha256'],'slow_frozen':True})

@@ -164,7 +164,8 @@ def load_shared(path,verify_sources=True):
     if not info.get('completed') or info.get('protocol')!=PROTOCOL:
         raise ValueError('Requires new QC three-arm cache; the v1 cache cannot be resumed')
     if info.get('score_protocol')!=SCORE_PROTOCOL or set(info['slow_sources'])!=set(SLOW_GROUPS): raise ValueError('Incomplete QC/slow-source protocol')
-    if info['implementation_sha256']!=code_hashes(): raise ValueError('Implementation changed after prepare')
+    from .continuation import check_implementation
+    check_implementation(info['implementation_sha256'],code_hashes(),Path(__file__).with_name('continuation_compatibility.json'))
     for name,expected in info['files'].items():
         if sha(path/name)!=expected: raise ValueError('Shared cache changed: '+name)
     if verify_sources:

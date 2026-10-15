@@ -141,7 +141,7 @@ bash scripts/run_b5_s50_pair.sh --group slow_f --gpu 2
 
 中断后在**原组命令末尾加 --resume**，恢复该组checkpoints/last.pt。不能用它续跑旧B5或旧版B5-S50。脚本不是后台服务，可在已有tmux会话中运行。
 
-如果最终evaluations/best等目录生成一半，先将对应目录改名为best_interrupted，再续跑；完整评估保留，比较时检查权重SHA。
+脚本会核对已完成评估与当前权重的SHA；不一致或中断的评估目录自动改名保留，然后重新评估，不再静默跳过旧结果。
 
 ## 6. 三组都完成后汇总
 
@@ -197,3 +197,94 @@ CUDA_VISIBLE_DEVICES=2 python -m baselines.B5_s50.predict \
 30项CPU合成数据及既有B5回归检查通过，Bash语法和Git差异格式检查通过。包含两种CNN来源/配对校验、条件缓存区别、零初始化输出及投影梯度、同一适配器初始化、QC与完整集合评分分离、三组第0轮核验、候选保存/恢复、禁止跨组复用、三组汇总和仅I/人口学的新记录推理。
 
 没有运行真实ECG训练，没有执行优化器更新。文件流程检查中的生成使用合成替身，真实ODE等价性用短合成信号单独检查；不能把测试夹具中的分数或20轮完成标记当作实验结果。服务器真实权重、文件、GPU显存及性能仍需按上述预检和实验验证。
+
+## 9. 已完成20轮后，再续训20轮（总预算40轮）
+
+本节直接使用已有的三个组目录及原shared，不重新prepare、不修改shared.json、不重新预训练慢CNN。只继续control与slow也可以；slow_f为可选第三组。
+
+新版代码显式兼容提交7738de6生成的原缓存；兼容检查同时核对原实现及本次已审核实现的完整哈希集合。其他代码或数据发生变化仍拒绝续训，不是关闭检查。
+
+先在本机将本次提交推送到服务器能获取的远程，再在服务器更新独立worktree（没有训练进程运行时执行）：
+
+```bash
+cd /home/qht/huawei_fm_S50
+git fetch gitee B5-S50
+git switch --detach FETCH_HEAD
+conda activate BioFlow
+sed -i 's/\r$//' scripts/run_b5_s50_pair.sh
+bash -n scripts/run_b5_s50_pair.sh
+```
+
+终端A，GPU0，对照组从自己的last.pt继续：
+
+```bash
+cd /home/qht/huawei_fm_S50
+conda activate BioFlow
+bash scripts/run_b5_s50_pair.sh \
+  --group control --gpu 0 \
+  --resume --total-epochs 40
+```
+
+终端B，GPU1，S50组从自己的last.pt继续：
+
+```bash
+cd /home/qht/huawei_fm_S50
+conda activate BioFlow
+bash scripts/run_b5_s50_pair.sh \
+  --group slow --gpu 1 \
+  --resume --total-epochs 40
+```
+
+可选终端C，GPU2，S50-F同预算续训：
+
+```bash
+cd /home/qht/huawei_fm_S50
+conda activate BioFlow
+bash scripts/run_b5_s50_pair.sh \
+  --group slow_f --gpu 2 \
+  --resume --total-epochs 40
+```
+
+`40`表示从原B5初始化起累计新增40轮，即此次继续21～40轮，不是额外再加40轮。恢复raw模型、EMA、AdamW状态、更新次数、随机数和DataLoader随机状态；学习率、损失、Heun16/K16、QC选模规则均不改变，best候选保留此前纪录。
+
+首次延长前，自动把各组checkpoints顶层的权重、历史、配置及完成记录复制到checkpoints_epoch20，并保存校验清单；不复制庞大的validation预测数组。前20轮evaluations及comparison保留。新评估位于evaluations_epoch40，训练历史在原history.jsonl中追加。
+
+启动日志应显示start_epoch=20、total_epochs=40、remaining_epochs=20。中断后重复原续训命令，恢复最近完成的轮次，不额外重置优化器。若已完成40轮，重复命令不会变成60轮。只能在一个已完成预算边界显式延长，不能在尚未完成20轮时改预算。
+
+两组全部训练和自动评估完成后汇总（不要求slow_f也训练到40）：
+
+```bash
+cd /home/qht/huawei_fm_S50
+root=/home/qht/huawei/results/B5-S50/fm_slow_qc_three_v2
+python -m baselines.B5_s50.compare \
+  --shared "$root/shared" \
+  --control "$root/control" \
+  --slow "$root/slow" \
+  --total-epochs 40 \
+  --output "$root/comparison_epoch40"
+```
+
+若三组都续训到40轮，使用下面这条替代上面的两组汇总：
+
+```bash
+cd /home/qht/huawei_fm_S50
+root=/home/qht/huawei/results/B5-S50/fm_slow_qc_three_v2
+python -m baselines.B5_s50.compare \
+  --shared "$root/shared" \
+  --control "$root/control" \
+  --slow "$root/slow" \
+  --slow-f "$root/slow_f" \
+  --total-epochs 40 \
+  --output "$root/comparison_epoch40_three"
+```
+
+程序检查参与汇总的组均已完成相同预算，以及当前权重SHA与对应预算评估一致，不允许混用20轮和40轮。best若留在第20轮甚至第0轮仍是合法结果；last必须到第40轮。第一次和第二次比较目录不同，不能把旧20轮评估复制过去充作新评估。
+
+本次续训变更在本地通过5项不依赖PyTorch的测试：预算延长/中断恢复规则、审核过的旧实现兼容、归档与校验、评估目录及权重匹配、两组/三组同预算汇总与混合预算拒绝；Python解析及Bash语法也通过。本机当前没有可用PyTorch，新增的优化器/EMA/RNG恢复集成测试未执行，没有启动训练。服务器可在启动续训前运行以下合成检查（不执行优化器更新）：
+
+```bash
+cd /home/qht/huawei_fm_S50
+python -m unittest \
+  baselines.B5_s50.tests.test_continuation \
+  baselines.B5_s50.tests.test_integration -v
+```

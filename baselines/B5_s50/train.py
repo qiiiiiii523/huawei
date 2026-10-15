@@ -11,6 +11,7 @@ def main():
     parser.add_argument('--output',required=True)
     parser.add_argument('--device',default='cuda')
     parser.add_argument('--resume')
+    parser.add_argument('--total-epochs',type=int,help='Extend a finished run, e.g. --resume .../last.pt --total-epochs 40; preserve optimizer/EMA/RNG')
     parser.add_argument('--execute-training',action='store_true')
     args=parser.parse_args()
     if not args.execute_training: parser.error('Training requires explicit --execute-training')

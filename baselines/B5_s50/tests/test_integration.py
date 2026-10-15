@@ -264,6 +264,9 @@ class IntegrationTests(unittest.TestCase):
                     args.group='slow' if group=='control' else 'control'
                     with self.assertRaisesRegex(ValueError,'Exact resume'): run(args)
                     for name in ('best','best_r','best_bonus','last'):
+                        if name=='last':
+                            # A synthetic completed boundary for comparison plumbing only.
+                            end=load(out/'last.pt');end['epoch']=20;torch.save(end,out/'last.pt')
                         reuse=folder/'evaluations' if name!='best' else runs[0]/'evaluations'
                         evaluate(SimpleNamespace(shared=shared,checkpoint=out/(name+'.pt'),output=folder/'evaluations'/name,
                                                  device='cpu',reuse_root=reuse,plots=False))
@@ -278,6 +281,22 @@ class IntegrationTests(unittest.TestCase):
                     write(out/'completed.json',{'completed':True,'additional_epochs':20})
                 compare(SimpleNamespace(shared=shared,control=runs[0],slow=runs[1],slow_f=runs[2],output=Path(tmp)/'comparison'))
                 self.assertTrue((Path(tmp)/'comparison/report.md').exists())
+                # Reassess a synthetic 40-epoch boundary without touching old evaluations.
+                old_marker=sha(runs[1]/'evaluations/best/evaluation.json')
+                for folder in runs[:2]:
+                    end=load(folder/'checkpoints/last.pt');end.update(epoch=40,total_epochs=40)
+                    torch.save(end,folder/'checkpoints/last.pt')
+                    write(folder/'checkpoints/completed.json',{'completed':True,'additional_epochs':40,'total_epochs':40})
+                    for name in ('best','best_r','best_bonus','last'):
+                        evaluate(SimpleNamespace(shared=shared,checkpoint=folder/'checkpoints'/(name+'.pt'),
+                            output=folder/'evaluations_epoch40'/name,device='cpu',reuse_root=folder/'evaluations_epoch40',plots=False))
+                args40=SimpleNamespace(shared=shared,control=runs[0],slow=runs[1],slow_f=None,
+                    total_epochs=40,output=Path(tmp)/'comparison_epoch40')
+                compare(args40)
+                self.assertEqual(read(Path(tmp)/'comparison_epoch40/deltas.json')['total_epochs'],40)
+                self.assertEqual(old_marker,sha(runs[1]/'evaluations/best/evaluation.json'))
+                args40.slow_f=runs[2];args40.output=Path(tmp)/'mixed_budget'
+                with self.assertRaisesRegex(ValueError,'same requested total epoch budget'): compare(args40)
             cached=np.load(shared/'train_slow.npy',mmap_mode='r')
             wrapped=ConditionedDataset(fixture.train,cached,read(shared/'records.json')['train'])
             self.assertEqual(wrapped[0]['slow'].shape,(11,5000))
@@ -286,6 +305,57 @@ class IntegrationTests(unittest.TestCase):
             del wrapped
             cached._mmap.close()
             for array in mapped: array._mmap.close()
+
+    def test_extend_legacy_last_preserves_optimizer_ema_rng_and_archive_without_updates(self):
+        from baselines.B5_s50.common import code_hashes
+        class StopBeforeTraining(RuntimeError): pass
+        class StopLoader:
+            def __init__(self,*a,**k): pass
+            def __iter__(self): raise StopBeforeTraining('No batch or optimizer update')
+        with tempfile.TemporaryDirectory() as tmp:
+            f=Fixture(tmp);shared,info=f.prepare();out=Path(tmp)/'slow/checkpoints'
+            real_loader=__import__('torch.utils.data',fromlist=['DataLoader']).DataLoader
+            def loader(dataset,*a,**kw): return StopLoader() if kw.get('shuffle') else real_loader(dataset,*a,**kw)
+            with patch('baselines.B5_s50.runtime.source_datasets',return_value=(None,f.train,f.val)), \
+                 patch('baselines.B5_s50.runtime.DataLoader',side_effect=loader), \
+                 patch('baselines.B5_s50.runtime.sample',side_effect=fake_sample), \
+                 patch('torch.optim.AdamW.step',side_effect=AssertionError('No optimizer update allowed')):
+                args=SimpleNamespace(shared=shared,group='slow',output=out,device='cpu',resume=None)
+                with self.assertRaises(StopBeforeTraining): run(args)
+                cp=load(out/'last.pt');cp.pop('total_epochs');cp.pop('execution_implementation_sha256')
+                cp.update(epoch=20,updates=4680)
+                first=next(iter(cp['raw_model'].values()))
+                cp['optimizer']['state'][0]={'step':torch.tensor(4680.),'exp_avg':torch.ones_like(first)*.25,
+                    'exp_avg_sq':torch.ones_like(first)*.5}
+                torch.save(cp,out/'last.pt');original=sha(out/'last.pt')
+                with (out/'history.jsonl').open('a',encoding='utf-8') as stream: stream.write(json.dumps({'epoch':20,'updates':4680})+'\n')
+                write(out/'completed.json',{'completed':True,'additional_epochs':20})
+                old_history=sha(out/'history.jsonl');old_shared=sha(shared/'shared.json')
+                args.resume=out/'last.pt';args.total_epochs=40
+                actual_load=torch.optim.AdamW.load_state_dict;restored=[]
+                def observed(opt,state):
+                    actual_load(opt,state);restored.append(copy.deepcopy(opt.state_dict()))
+                with patch('torch.optim.AdamW.load_state_dict',new=observed):
+                    with self.assertRaises(StopBeforeTraining): run(args)
+                self.assertEqual(restored[0]['state'][0]['step'].item(),4680.)
+                torch.testing.assert_close(restored[0]['state'][0]['exp_avg'],cp['optimizer']['state'][0]['exp_avg'])
+                self.assertEqual(sha(out/'last.pt'),original)
+                self.assertEqual(sha(out.with_name('checkpoints_epoch20')/'last.pt'),original)
+                self.assertEqual(sha(out/'history.jsonl'),old_history)
+                self.assertEqual(sha(shared/'shared.json'),old_shared)
+                self.assertFalse(read(out/'completed.json')['completed'])
+                torch.testing.assert_close(torch.get_rng_state(),cp['rng']['torch'])
+                # Interrupted before epoch 21 save: the verified stage archive is reused.
+                with self.assertRaises(StopBeforeTraining): run(args)
+                args.total_epochs=10
+                with self.assertRaisesRegex(ValueError,'cannot decrease'): run(args)
+                # Resume an already completed extended budget without creating batches.
+                cp.update(total_epochs=40,epoch=40,updates=9360,execution_implementation_sha256=code_hashes())
+                torch.save(cp,out/'last.pt')
+                with (out/'history.jsonl').open('a',encoding='utf-8') as stream: stream.write(json.dumps({'epoch':40,'updates':9360})+'\n')
+                args.total_epochs=40;run(args)
+                self.assertTrue(read(out/'completed.json')['completed'])
+                self.assertEqual(read(out/'completed.json')['total_epochs'],40)
 
     def test_slow_pair_and_source_identities_are_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
