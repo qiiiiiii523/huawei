@@ -89,11 +89,17 @@ def macro(values, mask=None):
     return float(np.mean(means)) if means else float('nan')
 
 
+def context_radius(seconds):
+    if seconds not in (10, 30, 50):
+        raise ValueError('Expected context seconds 10, 30 or 50')
+    return (seconds // 10 - 1) // 2 * WINDOW
+
+
 def contexts(anchor, seconds):
-    """Only input I is sliced. [B,1,6000] -> [B*12,1,500 or 1500]."""
-    if seconds not in (10, 30) or anchor.shape[1:] != (1, POINTS // FACTOR):
-        raise ValueError('Expected S10/S30 and a complete 120-second input I')
-    radius = WINDOW if seconds == 30 else 0
+    """Input I only: [B,1,6000] -> [B*12,1,500/1500/2500] at 50Hz."""
+    radius = context_radius(seconds)
+    if anchor.ndim != 3 or anchor.shape[1:] != (1, POINTS // FACTOR):
+        raise ValueError('Expected a complete 120-second input I [B,1,6000]')
     if radius:
         anchor = torch.cat((anchor[..., :1].expand(-1, -1, radius), anchor,
                             anchor[..., -1:].expand(-1, -1, radius)), dim=-1)
@@ -129,7 +135,7 @@ class Block(nn.Module):
 
 
 class SlowCNN(nn.Module):
-    """Same 48-channel network for S10/S30; nominal RF >30s at 50Hz."""
+    """Same 48-channel network for all contexts; nominal RF 40.9s at 50Hz."""
     def __init__(self, channels=48):
         super().__init__()
         self.sex = nn.Embedding(3, 4)
@@ -154,7 +160,7 @@ def generate(model, batch, seconds):
     inputs = {k: batch[k].repeat_interleave(12, dim=0)
               for k in ('numeric', 'sex', 'field_mask', 'age_topcoded')}
     output = model(contexts(batch['anchor'], seconds), **inputs)
-    start = WINDOW if seconds == 30 else 0
+    start = context_radius(seconds)
     center = output[..., start:start + WINDOW]
     return center.reshape(len(batch['anchor']), 12, 11, WINDOW).permute(0, 2, 1, 3).reshape(-1, 11, 12 * WINDOW)
 

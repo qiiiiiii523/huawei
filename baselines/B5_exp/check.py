@@ -33,7 +33,7 @@ def check(prepared, report):
               if key in ('anchor', 'numeric', 'sex', 'field_mask', 'age_topcoded')}
     shapes = {}
     with torch.no_grad():
-        for seconds in (10, 30):
+        for seconds in (10, 30, 50):
             # One center-window forward suffices; no labels enter the model.
             x = contexts(inputs['anchor'], seconds)[:1]
             output = first(x, **{k: v for k, v in inputs.items() if k != 'anchor'})

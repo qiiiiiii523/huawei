@@ -1,0 +1,16 @@
+{
+  "base_commit": "c7816884d845c96702c5bbc7f3700c4e99509b25",
+  "base_branch": "B5-exp-C",
+  "model_code_sha256": "2d1d45877bd38561d15815f72621377ca2c13ec6c66bf36174e02393eb8d5133",
+  "implementation_sha256": {
+    "baselines/B5_exp/core.py": "70fd02307e1b45c16076d1011f5d5de179eb0a1204319da61f5bcd2e3594c2e0",
+    "baselines/B5_exp/losses.py": "58527fa87909d05aac6037b3579302b4b08673cbf8cfa06448cd11588b9d7587",
+    "baselines/B5_exp/train_loss.py": "c16466b9d0a60660ca25e712143f6244f4023041d714a579986e5e3bee8f6223",
+    "baselines/B5_exp/check_loss.py": "22a9098dad8b854b4ee6229098a7c5ca1c3ee2b1b22a08cdbaa808a8b942b48f",
+    "baselines/B5_exp/loss_metrics.py": "0ae8617a6778a97558b298a2f86ce7c06fa0517409889124474c7e465b781b36",
+    "baselines/B5_exp/evaluate.py": "16dd1fe8657f3ac4e9294852a5bf3f1299b1aa2bb03b0f6776e7da35ab80646f",
+    "baselines/B5_exp/compare_loss.py": "5bbe908a18c44f03b623d19360b56874372428039617cea536e0b19cc7523e70",
+    "baselines/B5/runtime.py": "c67089b2c803e7a4ef12cebce036d9b5f018d4dc06606b7d794a70db74c0053d",
+    "ecg12gen/evaluate.py": "acbbb256ccdb3fca0a0887719db9e2b3b4675bbf6702f6e03583507e60426fff"
+  }
+}

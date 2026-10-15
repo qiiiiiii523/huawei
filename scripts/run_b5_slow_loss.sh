@@ -6,12 +6,16 @@ root=/home/qht/huawei/results/B5-exp/slow_loss_v1
 prepared=/home/qht/huawei/results/B5-exp/slow_probe_parallel_v1/prepared
 init=/home/qht/huawei/results/B5-exp/slow_probe_parallel_v1/S30/best.pt
 resume=0
+seconds=30
+run_name=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --gpu) gpu=$2; shift 2 ;;
     --root) root=$2; shift 2 ;;
     --prepared) prepared=$2; shift 2 ;;
     --init-checkpoint) init=$2; shift 2 ;;
+    --context-seconds) seconds=$2; shift 2 ;;
+    --run-name) run_name=$2; shift 2 ;;
     --resume) resume=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -21,7 +25,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export CUDA_VISIBLE_DEVICES="$gpu"
 export PYTHONUNBUFFERED=1
 group=$(python -c 'from baselines.B5_exp.train_loss import default_group; print(default_group())')
-run="$root/$group"
+run_name=${run_name:-$group}
+[[ "$run_name" =~ ^[A-Za-z0-9_-]+$ ]] || { echo 'Use a simple run name' >&2; exit 2; }
+run="$root/$run_name"
 calibration="$root/shared/preflight.json"
 test -f "$calibration"
 if [[ "$resume" == 0 && -e "$run" ]]; then
@@ -33,7 +39,7 @@ mkdir -p "$run"
 output="$run/checkpoints"
 trap 'code=$?; echo "Stopped: group=$group line=$LINENO exit=$code output=$output" >&2; exit "$code"' ERR
 args=(--prepared "$prepared" --init-checkpoint "$init" --calibration "$calibration"
-      --output "$output" --device cuda --epochs 20 --batch-records 2 --validate-every 5 --execute-training)
+      --context-seconds "$seconds" --output "$output" --device cuda --epochs 20 --batch-records 2 --validate-every 5 --execute-training)
 if [[ "$resume" == 1 ]]; then
   test -f "$output/last.pt"
   if [[ ! -f "$output/completed.json" ]]; then

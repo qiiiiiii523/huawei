@@ -1,4 +1,4 @@
-"""Same S30 CNN, fresh optimizer, 20 additional epochs; only C/M/F loss differs."""
+"""Same CNN and optimizer; C/M/F at S30, or original-loss S50 context ablation."""
 from __future__ import annotations
 
 import argparse
@@ -33,11 +33,16 @@ def configuration(args, prepared):
         raise ValueError('Expected training-only calibration')
     if calibration['implementation_sha256'] != implementation_hashes():
         raise ValueError('Implementation changed after calibration; keep identical paired code')
+    seconds = getattr(args, 'context_seconds', 30)
+    if seconds not in (30, 50):
+        raise ValueError('Continuation supports 30 or 50 second input contexts')
+    if seconds == 50 and (args.group != 'C' or not calibration.get('s50_compatibility', {}).get('ready')):
+        raise ValueError('S50 requires original loss (group C) and the check_s50 compatibility preflight')
     weights = calibration['weights']
     if not all(np.isfinite(weights[k]) and .01 <= weights[k] <= 10 for k in ('mean', 'residual')):
         raise ValueError('Invalid calibrated weights')
     config = {'protocol': PROTOCOL, 'experiment_protocol': LOSS_PROTOCOL, 'group': args.group,
-              'context_seconds': 30, 'seed': 42, 'epochs': args.epochs,
+              'context_seconds': seconds, 'seed': 42, 'epochs': args.epochs,
               'batch_records': args.batch_records, 'validate_every': args.validate_every,
               'learning_rate': .0001, 'weight_decay': .01, 'huber_weight': 1., 'pcc_weight': .1,
               'model_channels': 48, 'prepared': str(prepared), 'prepared_sha256': calibration['prepared_sha256'],
@@ -52,16 +57,24 @@ def configuration(args, prepared):
               'selection': ['slow_r_unique_quality_good_50Hz', 'competition_total_score'],
               'score_protocol': calibration['score_protocol'], 'epoch_zero_is_candidate': True,
               'optimizer_initialization': 'fresh_not_source_optimizer', 'FM_training_started': False}
+    if calibration.get('s50_compatibility'):
+        from .context_audit import canonical, verify_control_files
+        proof = calibration['s50_compatibility']
+        config['context_extension_protocol'] = calibration['s50_compatibility']['protocol']
+        config['control_reference'] = calibration['s50_compatibility']['control_reference']
+        if canonical(config) != proof['control_canonical_config']:
+            raise ValueError('Context experiment changed initialization, data, loss or optimization from C control')
+        verify_control_files(proof['control_reference'])
     return config
 
 
 @torch.no_grad()
-def validation(model, loader, device, reference):
+def validation(model, loader, device, reference, seconds=30):
     model.eval()
     predicted, targets, masks = [], [], []
     for batch in loader:
         inputs = {k: batch[k] for k in ('anchor', 'numeric', 'sex', 'field_mask', 'age_topcoded')}
-        predicted.append(generate(model, device_batch(inputs, device), 30).cpu().numpy())
+        predicted.append(generate(model, device_batch(inputs, device), seconds).cpu().numpy())
         targets.append(batch['target'].numpy())
         masks.append(batch['mask'].numpy())
     p, y, mask = np.concatenate(predicted), np.concatenate(targets), np.concatenate(masks)
@@ -160,6 +173,8 @@ def run(args):
         raise FileExistsError('Use empty --output, or resume the original last.pt')
     output.mkdir(parents=True, exist_ok=True)
     json_write(output / 'resolved_config.json', config)
+    if config.get('context_extension_protocol'):
+        json_write(output / 'context_preflight.json', json.loads(Path(args.calibration).read_text(encoding='utf-8')))
 
     def save_epoch(epoch, record, changed):
         candidate = {'protocol': PROTOCOL, 'experiment_protocol': LOSS_PROTOCOL, 'config': config,
@@ -182,11 +197,12 @@ def run(args):
         print(json.dumps(record, ensure_ascii=False, allow_nan=False), flush=True)
 
     print(json.dumps({'phase': 'start', 'group': args.group, 'source_epoch': config['source_epoch'],
+                      'context_seconds': config['context_seconds'],
                       'additional_epochs': args.epochs, 'start_epoch': start, 'device': str(device),
                       'initial_weights_sha256': config['initial_weights_sha256'],
                       'optimizer_initialization': 'fresh' if not args.resume else 'exact_resume'}), flush=True)
     if not args.resume:
-        report = validation(model, val_loader, device, reference)
+        report = validation(model, val_loader, device, reference, config['context_seconds'])
         changed = update_bests(best, report, 0)
         record = {'epoch': 0, 'phase': 'common_initializer', 'validation': report, 'best': best}
         json_write(output / 'initial_evaluation.json', report)
@@ -197,7 +213,7 @@ def run(args):
         for batch in train_loader:
             b = device_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
-            p = generate(model, b, 30)
+            p = generate(model, b, config['context_seconds'])
             loss, parts = paired_objective(p, b['target'], b['mask'], args.group,
                                           config['calibrated_weights'], config['residual_width_native'])
             loss.backward()
@@ -213,7 +229,7 @@ def run(args):
                   'train': {k: v / seen for k, v in totals.items()}}
         changed = []
         if epoch % args.validate_every == 0 or epoch == args.epochs:
-            record['validation'] = validation(model, val_loader, device, reference)
+            record['validation'] = validation(model, val_loader, device, reference, config['context_seconds'])
             changed = update_bests(best, record['validation'], epoch)
         record['best'] = best
         save_epoch(epoch, record, changed)
@@ -228,6 +244,7 @@ def main():
     parser.add_argument('--init-checkpoint', required=True)
     parser.add_argument('--calibration', required=True)
     parser.add_argument('--group', choices=('C', 'M', 'F'), default=default_group())
+    parser.add_argument('--context-seconds', type=int, choices=(30, 50), default=30)
     parser.add_argument('--output', required=True)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--epochs', type=int, default=20)
