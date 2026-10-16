@@ -20,6 +20,8 @@ from torch.utils.data import DataLoader
 from baselines.B5.checkpoint import checkpoint_preprocessor, load_checkpoint, model_from_checkpoint
 from baselines.B5.config import ModelConfig
 from baselines.B5.context_body import B5BodyContext, sample_body
+from baselines.B5.context_body_attention import B5BodyContextAttention
+from baselines.B5.context_body_beat_rhythm import B5BodyContextBeatRhythm
 from baselines.B5.context_body_meanstd import B5BodyContextMeanStd
 from baselines.B5.flow import sample
 from baselines.B5.metadata import DemographicsTable
@@ -36,6 +38,9 @@ SOURCE = ROOT / "results/B5/context_start/best.pt"
 A_CHECKPOINT = ROOT / "results/context_body/A/best.pt"
 FROZEN_CHECKPOINT = ROOT / "results/context_body/A_frozen_adapter_v1/best.pt"
 FROZEN_MEANSTD_CHECKPOINT = ROOT / "results/context_body/A_frozen_meanstd_v1/best.pt"
+FROZEN_ATTENTION_CHECKPOINT = ROOT / "results/context_body/A_frozen_attention_v1/best.pt"
+FEATURE_CHECKPOINTS = {kind: ROOT / f"results/context_body/A_frozen_{kind.removeprefix('frozen_')}_v1/best.pt"
+                       for kind in ("frozen_beat", "frozen_rhythm", "frozen_beat_rhythm")}
 
 
 def body_pairs(dataset: BodySubset):
@@ -106,7 +111,8 @@ def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
     if mode == "base":
         raise ValueError("Frozen-adapter diagnostics do not support base mode")
     path = {"A": A_CHECKPOINT, "frozen": FROZEN_CHECKPOINT,
-            "frozen_meanstd": FROZEN_MEANSTD_CHECKPOINT}.get(checkpoint_kind)
+            "frozen_meanstd": FROZEN_MEANSTD_CHECKPOINT,
+            "frozen_attention": FROZEN_ATTENTION_CHECKPOINT, **FEATURE_CHECKPOINTS}.get(checkpoint_kind)
     if path is None:
         raise ValueError(f"Unknown checkpoint kind: {checkpoint_kind}")
     payload = torch.load(path, map_location="cpu", weights_only=True)
@@ -118,23 +124,31 @@ def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
                 or settings.get("steps") != 16 or settings.get("samples") != 16
                 or payload.get("epoch") != 15):
             raise ValueError("A checkpoint does not match the first A ablation")
-    elif checkpoint_kind in ("frozen", "frozen_meanstd"):
-        expected_experiment = ("A_frozen_adapter_v1" if checkpoint_kind == "frozen"
-                               else "A_frozen_meanstd_v1")
+    elif checkpoint_kind in ("frozen", "frozen_meanstd", "frozen_attention", *FEATURE_CHECKPOINTS):
+        expected_experiment = {"frozen": "A_frozen_adapter_v1",
+                               "frozen_meanstd": "A_frozen_meanstd_v1",
+                               "frozen_attention": "A_frozen_attention_v1",
+                               **{kind: f"A_{kind}_v1" for kind in FEATURE_CHECKPOINTS}}[checkpoint_kind]
         if (payload.get("format") != "b5-body-frozen-adapter-v1"
                 or settings.get("experiment") != expected_experiment
                 or settings.get("source_checkpoint_sha256") != file_sha256(SOURCE)
                 or settings.get("steps") != 16 or settings.get("samples") != 16
                 or not settings.get("frozen_backbone") or payload.get("epoch") not in (5, 10)
-                or (checkpoint_kind == "frozen_meanstd" and settings.get("encoder_variant") != "mean_std")):
+                or (checkpoint_kind == "frozen_meanstd" and settings.get("encoder_variant") != "mean_std")
+                or (checkpoint_kind == "frozen_attention" and settings.get("encoder_variant") != "attention")
+                or (checkpoint_kind in FEATURE_CHECKPOINTS and
+                    settings.get("encoder_variant") != checkpoint_kind.removeprefix("frozen_"))):
             raise ValueError("Frozen adapter checkpoint does not match the pilot")
         for name, tensor in source["ema"].items():
             if not torch.equal(payload["ema"][name].cpu(), tensor):
                 raise ValueError(f"Frozen B5 tensor differs from source: {name}")
     else:
         raise ValueError(f"Unknown checkpoint kind: {checkpoint_kind}")
-    model_class = B5BodyContextMeanStd if checkpoint_kind == "frozen_meanstd" else B5BodyContext
-    model = model_class(ModelConfig.from_dict(source["model_config"]))
+    model_class = {"frozen_meanstd": B5BodyContextMeanStd,
+                   "frozen_attention": B5BodyContextAttention}.get(checkpoint_kind, B5BodyContext)
+    config = ModelConfig.from_dict(source["model_config"])
+    model = (B5BodyContextBeatRhythm(config, checkpoint_kind.removeprefix("frozen_"))
+             if checkpoint_kind in FEATURE_CHECKPOINTS else model_class(config))
     model.load_state_dict(payload["ema"], strict=True)
     return model.to(device).eval()
 
@@ -195,7 +209,8 @@ def evaluate(model, loader, preprocessor, mode: str, device, output: Path,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=MODES, required=True)
-    parser.add_argument("--checkpoint-kind", choices=("A", "frozen", "frozen_meanstd"), default="A")
+    parser.add_argument("--checkpoint-kind",
+                        choices=("A", "frozen", "frozen_meanstd", "frozen_attention", *FEATURE_CHECKPOINTS), default="A")
     parser.add_argument("--preflight", action="store_true", help="Check data/model only; no inference/output")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--batch-size", type=int, default=4)
@@ -244,7 +259,9 @@ def main():
                 raise ValueError("Shuffled context is identical to the real context")
         checkpoint_path = (SOURCE if args.mode == "base" else
                            {"A": A_CHECKPOINT, "frozen": FROZEN_CHECKPOINT,
-                            "frozen_meanstd": FROZEN_MEANSTD_CHECKPOINT}[args.checkpoint_kind])
+                            "frozen_meanstd": FROZEN_MEANSTD_CHECKPOINT,
+                            "frozen_attention": FROZEN_ATTENTION_CHECKPOINT,
+                            **FEATURE_CHECKPOINTS}[args.checkpoint_kind])
         info = {"mode": args.mode, "checkpoint_kind": args.checkpoint_kind,
                 "windows": len(dataset), "pairs": len(pairs),
                 "source_checkpoint_sha256": file_sha256(SOURCE),
@@ -275,7 +292,9 @@ def main():
                        if args.shuffle_seed is not None else args.mode)
         output_root = ROOT / "results/context_body" / {
             "A": "diagnostics", "frozen": "A_frozen_adapter_v1/diagnostics",
-            "frozen_meanstd": "A_frozen_meanstd_v1/diagnostics"}[args.checkpoint_kind]
+            "frozen_meanstd": "A_frozen_meanstd_v1/diagnostics",
+            "frozen_attention": "A_frozen_attention_v1/diagnostics",
+            **{kind: f"A_{kind}_v1/diagnostics" for kind in FEATURE_CHECKPOINTS}}[args.checkpoint_kind]
         output = output_root / output_name
         if output.exists():
             raise FileExistsError(f"Diagnostic output already exists: {output}")

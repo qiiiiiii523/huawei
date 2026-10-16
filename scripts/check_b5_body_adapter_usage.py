@@ -86,7 +86,8 @@ def inspect(device: torch.device, checkpoint_kind: str = "A") -> dict:
         off_diagonal = cosine[~torch.eye(len(vectors), dtype=torch.bool)]
         return {
             "checkpoint": {"A": "A/epoch_0015/best.pt", "frozen": "A_frozen_adapter_v1/best.pt",
-                           "frozen_meanstd": "A_frozen_meanstd_v1/best.pt"}[checkpoint_kind],
+                           "frozen_meanstd": "A_frozen_meanstd_v1/best.pt",
+                           "frozen_attention": "A_frozen_attention_v1/best.pt"}[checkpoint_kind],
             "n_pairs": len(pairs),
             "embedding_norm": describe(vectors.norm(dim=1)),
             "embedding_mean_dimension_std": float(vectors.std(dim=0).mean()),
@@ -107,14 +108,15 @@ def inspect(device: torch.device, checkpoint_kind: str = "A") -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
-    parser.add_argument("--checkpoint-kind", choices=("A", "frozen", "frozen_meanstd"), default="A")
+    parser.add_argument("--checkpoint-kind", choices=("A", "frozen", "frozen_meanstd", "frozen_attention"), default="A")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.device == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA unavailable; select --device cpu")
     output = args.output or (ROOT / "results/context_body" /
                              {"A": "diagnostics", "frozen": "A_frozen_adapter_v1/diagnostics",
-                              "frozen_meanstd": "A_frozen_meanstd_v1/diagnostics"}[args.checkpoint_kind]
+                              "frozen_meanstd": "A_frozen_meanstd_v1/diagnostics",
+                              "frozen_attention": "A_frozen_attention_v1/diagnostics"}[args.checkpoint_kind]
                              / "adapter_usage.json")
     if output.exists():
         raise FileExistsError(f"Audit output already exists: {output}")

@@ -10,6 +10,8 @@ from torch.utils.data import DataLoader
 from baselines.B5.checkpoint import atomic_save, checkpoint_preprocessor, load_checkpoint, pack_rng, restore_rng
 from baselines.B5.config import ModelConfig
 from baselines.B5.context_body import B5BodyContext
+from baselines.B5.context_body_attention import B5BodyContextAttention
+from baselines.B5.context_body_beat_rhythm import B5BodyContextBeatRhythm
 from baselines.B5.context_body_meanstd import B5BodyContextMeanStd
 from baselines.B5.losses import flow_loss
 from baselines.B5.metadata import DemographicsTable
@@ -21,12 +23,28 @@ from scripts.train_b5_body_context import BatchAdapter, BodySubset, LOSS, ROOT, 
 
 NAME = "A_frozen_adapter_v1"
 MEANSTD_NAME = "A_frozen_meanstd_v1"
+ATTENTION_NAME = "A_frozen_attention_v1"
+FEATURE_NAMES = {"beat": "A_frozen_beat_v1", "rhythm": "A_frozen_rhythm_v1",
+                 "beat_rhythm": "A_frozen_beat_rhythm_v1"}
 SOURCE = ROOT / "results/B5/context_start/best.pt"
+MEANSTD_CHECKPOINT = ROOT / "results/context_body/A_frozen_meanstd_v1/best.pt"
+ATTENTION_CHECKPOINT = ROOT / "results/context_body/A_frozen_attention_v1/best.pt"
 OUTPUT = ROOT / "results/context_body" / NAME
 
 
 def adapter_name(name: str) -> bool:
     return name.startswith(("body_encoder.", "body_film."))
+
+
+def trainable_name(name: str, encoder_variant: str) -> bool:
+    if encoder_variant in FEATURE_NAMES:
+        active = (("beat_branch.", "beat_gate") if encoder_variant == "beat" else
+                  ("rhythm_branch.", "rhythm_gate") if encoder_variant == "rhythm" else
+                  ("beat_branch.", "beat_gate", "rhythm_branch.", "rhythm_gate"))
+        return name.startswith(tuple("body_encoder." + part for part in active))
+    if encoder_variant == "attention":
+        return name.startswith("body_encoder.")
+    return adapter_name(name)
 
 
 def assert_frozen(model: B5BodyContext, source: dict) -> None:
@@ -36,15 +54,55 @@ def assert_frozen(model: B5BodyContext, source: dict) -> None:
 
 
 def make_model(source: dict, device: torch.device, encoder_variant: str = "mean") -> B5BodyContext:
-    if encoder_variant not in ("mean", "mean_std"):
+    if encoder_variant not in ("mean", "mean_std", "attention", *FEATURE_NAMES):
         raise ValueError(f"Unknown encoder variant: {encoder_variant}")
-    model_class = B5BodyContext if encoder_variant == "mean" else B5BodyContextMeanStd
-    model = model_class(ModelConfig.from_dict(source["model_config"]))
+    model_class = {"mean": B5BodyContext, "mean_std": B5BodyContextMeanStd,
+                   "attention": B5BodyContextAttention}.get(encoder_variant)
+    config = ModelConfig.from_dict(source["model_config"])
+    model = (B5BodyContextBeatRhythm(config, encoder_variant) if encoder_variant in FEATURE_NAMES
+             else model_class(config))
     missing, unexpected = model.load_state_dict(source["ema"], strict=False)
     if unexpected or not missing or not all(adapter_name(name) for name in missing):
         raise ValueError("B5/adapter state mismatch")
+    if encoder_variant == "attention":
+        if not MEANSTD_CHECKPOINT.is_file():
+            raise FileNotFoundError(f"Attention pilot requires the saved mean+std adapter: {MEANSTD_CHECKPOINT}")
+        initial = torch.load(MEANSTD_CHECKPOINT, map_location="cpu", weights_only=True)
+        settings = initial.get("run_config", {})
+        if (initial.get("format") != "b5-body-frozen-adapter-v1"
+                or settings.get("experiment") != MEANSTD_NAME
+                or settings.get("encoder_variant") != "mean_std"
+                or settings.get("source_checkpoint_sha256") != file_sha256(SOURCE)
+                or initial.get("epoch") not in (5, 10)):
+            raise ValueError("Saved mean+std checkpoint does not match the frozen B5 source")
+        initial_state = initial["ema"]
+        compatible = {name: value for name, value in initial_state.items()
+                      if adapter_name(name) and name in model.state_dict()}
+        required = {name for name in model.state_dict() if adapter_name(name) and
+                    not name.startswith("body_encoder.attention.")}
+        if set(compatible) != required:
+            raise ValueError("Mean+std adapter is missing compatible encoder/FiLM weights")
+        model.load_state_dict(compatible, strict=False)
+        assert_frozen(model, source)
+    if encoder_variant in FEATURE_NAMES:
+        initial = torch.load(ATTENTION_CHECKPOINT, map_location="cpu", weights_only=True)
+        settings = initial.get("run_config", {})
+        if (initial.get("format") != "b5-body-frozen-adapter-v1"
+                or settings.get("experiment") != ATTENTION_NAME
+                or settings.get("encoder_variant") != "attention"
+                or settings.get("source_checkpoint_sha256") != file_sha256(SOURCE)
+                or initial.get("epoch") not in (5, 10)):
+            raise ValueError("Attention checkpoint does not match frozen B5 source")
+        compatible = {name: value for name, value in initial["ema"].items()
+                      if adapter_name(name) and name in model.state_dict()}
+        required = {name for name in model.state_dict() if adapter_name(name) and
+                    not trainable_name(name, "beat_rhythm")}
+        if set(compatible) != required:
+            raise ValueError("Attention adapter does not match beat/rhythm model")
+        model.load_state_dict(compatible, strict=False)
+        assert_frozen(model, source)
     for name, parameter in model.named_parameters():
-        parameter.requires_grad_(adapter_name(name))
+        parameter.requires_grad_(trainable_name(name, encoder_variant))
     assert_frozen(model, source)
     return model.to(device).eval()
 
@@ -61,13 +119,15 @@ def run(args) -> None:
     preprocessor = with_context_scales(base, ROOT / "results/B5/context_params/body_A_scales.npz",
                                        "body_scale_d6", "A_raw_window")
     encoder_variant = getattr(args, "encoder_variant", "mean")
-    experiment_name = NAME if encoder_variant == "mean" else MEANSTD_NAME
+    experiment_name = {"mean": NAME, "mean_std": MEANSTD_NAME,
+                       "attention": ATTENTION_NAME, **FEATURE_NAMES}[encoder_variant]
     output = ROOT / "results/context_body" / experiment_name
     model = make_model(source, device, encoder_variant)
     trainable = [p for p in model.parameters() if p.requires_grad]
-    if not trainable or not any(p.requires_grad for p in model.body_encoder.parameters()) or not any(
-            p.requires_grad for p in model.body_film.parameters()):
-        raise ValueError("Both adapter modules must be trainable")
+    if not trainable or not any(p.requires_grad for p in model.body_encoder.parameters()):
+        raise ValueError("Body encoder must be trainable")
+    if encoder_variant not in ("attention", *FEATURE_NAMES) and not any(p.requires_grad for p in model.body_film.parameters()):
+        raise ValueError("FiLM must be trainable for the original adapter variants")
     train_data, val_data = BodySubset("train", "A_raw_window"), BodySubset("validation", "A_raw_window")
     try:
         demographics = DemographicsTable(ROOT / "data/userinfobean.csv")
@@ -86,13 +146,20 @@ def run(args) -> None:
         loss, _ = flow_loss(model, batch, LOSS, scale, body_context=True)
         loss.backward()
         film_grad = sum(float(p.grad.detach().abs().sum()) for p in model.body_film.parameters() if p.grad is not None)
-        if film_grad <= 0 or any(p.grad is not None for p in model.parameters() if not p.requires_grad):
+        encoder_grad = sum(float(p.grad.detach().abs().sum()) for p in model.body_encoder.parameters()
+                           if p.grad is not None)
+        if encoder_variant in ("attention", *FEATURE_NAMES):
+            if encoder_grad <= 0 or film_grad != 0 or any(
+                    p.grad is not None for p in model.parameters() if not p.requires_grad):
+                raise ValueError("Encoder-only gradient/freeze preflight failed")
+        elif film_grad <= 0 or any(p.grad is not None for p in model.parameters() if not p.requires_grad):
             raise ValueError("Adapter gradient/freeze preflight failed")
         model.zero_grad(set_to_none=True)
         restore_rng(rng_before)
         train_adapter.rng.bit_generator.state = collate_before
         generator.set_state(loader_before)
         print(json.dumps({"preflight": "passed", "film_gradient_l1": film_grad,
+                          "encoder_gradient_l1": encoder_grad,
                           "trainable_parameters": sum(p.numel() for p in trainable)}), flush=True)
         if args.preflight:
             return
@@ -104,8 +171,16 @@ def run(args) -> None:
                     "steps": 16, "samples": 16, "seed": 42, "context_dropout": 0.1,
                     "loss": LOSS, "optimizer": "AdamW_adapter_only", "ema_decay": 0.999,
                     "frozen_backbone": True, "backbone_mode": "eval_with_gradients"}
-        if encoder_variant == "mean_std":
+        if encoder_variant != "mean":
             settings["encoder_variant"] = encoder_variant
+        if encoder_variant == "attention":
+            settings["initial_adapter_checkpoint"] = str(MEANSTD_CHECKPOINT.relative_to(ROOT)).replace("\\", "/")
+            settings["initial_adapter_sha256"] = file_sha256(MEANSTD_CHECKPOINT)
+            settings["trainable_scope"] = "body_encoder_only"
+        if encoder_variant in FEATURE_NAMES:
+            settings["initial_adapter_checkpoint"] = str(ATTENTION_CHECKPOINT.relative_to(ROOT)).replace("\\", "/")
+            settings["initial_adapter_sha256"] = file_sha256(ATTENTION_CHECKPOINT)
+            settings["trainable_scope"] = "explicit_beat_rhythm_branch_only"
         ledger = output / "run_config.json"
         if args.resume:
             if not ledger.is_file() or json.loads(ledger.read_text(encoding="utf-8")) != settings:
@@ -151,7 +226,7 @@ def run(args) -> None:
                     updates += 1
                     with torch.no_grad():
                         for name, value in model.state_dict().items():
-                            if adapter_name(name):
+                            if trainable_name(name, encoder_variant):
                                 ema[name].mul_(0.999).add_(value, alpha=0.001)
             assert_frozen(model, source)
             record = {"epoch": epoch + 1, "updates": updates,
@@ -193,7 +268,7 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--validate-every", type=int, default=5)
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
-    parser.add_argument("--encoder-variant", choices=("mean", "mean_std"), default="mean")
+    parser.add_argument("--encoder-variant", choices=("mean", "mean_std", "attention", *FEATURE_NAMES), default="mean")
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--resume", action="store_true")
     run(parser.parse_args())
