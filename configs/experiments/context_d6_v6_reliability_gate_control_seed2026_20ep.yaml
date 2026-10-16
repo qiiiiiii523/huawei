@@ -1,0 +1,15 @@
+base: context_d6_v6_reliability_gate_base.yaml
+experiment_id: v6_reliability_gate_control_20ep_seed2026
+context:
+  enabled: false
+training:
+  seed: 2026
+  epochs: 20
+  validate_every: 5
+sampling:
+  solver: heun
+  steps: 16
+  samples: 16
+  seed: 42
+paths:
+  output_dir: results/context_d6/v6_reliability_gate/paired_multiseed/control_seed2026

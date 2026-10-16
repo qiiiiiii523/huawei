@@ -1,0 +1,7 @@
+base: context_d6_v2_msconv_attnpool_base.yaml
+experiment_family: v4_dual_pool
+context:
+  encoder_version: v4_dual_pool
+  enabled: true
+  dimension: 128
+  dropout: 0.1

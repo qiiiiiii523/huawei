@@ -1,0 +1,11 @@
+base: context_d6_v4_dual_pool_base.yaml
+experiment_family: v5_bottleneck_crossattn
+context:
+  encoder_version: v5_bottleneck_crossattn
+  enabled: true
+  dimension: 128
+  dropout: 0.1
+  initial_query_fraction: 0.2
+  injection_layers: [0, 1, 2]
+  cross_attention_heads: 4
+  cross_attention_dropout: 0.1

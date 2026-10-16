@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "question_id": "context_d6",
+  "language": "python",
+  "reviewed_files": [
+    "baselines/context_d6_v6.py",
+    "baselines/context_d6_v2/runtime.py",
+    "scripts/eval_context_d6_v6_checkpoint.py",
+    "configs/experiments/context_d6_v6_reliability_gate_control_seed123_20ep.yaml",
+    "configs/experiments/context_d6_v6_reliability_gate_context_seed123_20ep.yaml",
+    "configs/experiments/context_d6_v6_reliability_gate_control_seed2026_20ep.yaml",
+    "configs/experiments/context_d6_v6_reliability_gate_context_seed2026_20ep.yaml",
+    "results/context_d6/v6_reliability_gate/paired_multiseed"
+  ],
+  "decision_id": "exp011_v6_reliability_gate_multiseed_protocol",
+  "checks": {
+    "syntax": {"status": "PASS", "evidence": ["The same V6 model/runtime/evaluation implementation used by exp010 was reused without source changes.", "All four 20-epoch training jobs and four corrected formal evaluations completed successfully; one initial seed123-control evaluation launch failed at import before evaluation and was retried successfully."]},
+    "input_contract": {"status": "PASS", "evidence": ["Each group used the same B5 handoff checkpoint and recorded train/validation manifest hashes.", "Each formal evaluation scored the same 480 validation windows / 40 records and produced zero undefined record-lead correlations."]},
+    "method_alignment": {"status": "PASS", "evidence": ["Only training seed differed across paired control/context runs; context enabled state was the intended comparison.", "V6 reliability-gated architecture was unchanged; no B5 file or additional architecture experiment was introduced."]},
+    "reproducibility": {"status": "PASS", "evidence": ["Configs pin deterministic training, 20 epochs, batch size 8, learning rate 0.00005, weight decay 0.01, EMA 0.999, and gradient clip 1.0.", "Formal inference consistently used EMA, Heun16, K16, and sampling seed 42; configs, code, handoff, and best checkpoint hashes are recorded in run_manifest.json."]},
+    "output_contract": {"status": "PASS", "evidence": ["All groups contain epoch-20 history, resolved config, training log, validation reports/metrics, and formal overall/lead metrics and report.", "The local result tree has 96 compact files; no .pt or .npy artifacts were transferred.", "Per-seed and mean paired deltas are recorded in experiment.json and summary.md."]}
+  },
+  "findings": [
+    "Formal comparisons use the validation split, not an independent test split.",
+    "Mean paired delta-r is +0.0004041847986682723; it is positive and exceeds +0.0003. Mean paired RMSE deltas are slightly favorable, but seed2026 has small increases: +0.295674 µV missing11 and +0.719289 µV task2.",
+    "This is evidence for the requested stopping-line check only; no final adoption decision is made."
+  ],
+  "verdict": "PASSED",
+  "reviewed_at": "2026-10-16"
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "question_id": "context_d6",
+  "language": "python",
+  "reviewed_files": [
+    "baselines/context_d6_v6.py",
+    "baselines/context_d6_v2/runtime.py",
+    "scripts/eval_context_d6_v6_checkpoint.py",
+    "baselines/context_d6_v2/tests/test_context_d6_v6.py",
+    "experiments/context_d6/exp010_v6_context_reliability_gate_s42_e20/experiment.json",
+    "results/context_d6/v6_reliability_gate"
+  ],
+  "decision_id": "exp010_v6_reliability_gate_design",
+  "checks": {
+    "syntax": {
+      "status": "PASS",
+      "evidence": ["V6 and runtime tests passed locally (7/7); remote V6 tests passed (4/4) before the final tolerance-only test adjustment.", "Both smoke and formal train/evaluation runs completed without runtime error or NaN."]
+    },
+    "input_contract": {
+      "status": "PASS",
+      "evidence": ["Context inputs enforce [B,W,6,5000] and matching time/window masks and weights.", "All-masked/missing context is handled as unavailable; control uses the B5 fallback.", "Training used 1872 train and 480 validation samples with recorded manifest hashes in experiment.json."]
+    },
+    "method_alignment": {
+      "status": "PASS",
+      "evidence": ["V6 adds a bounded per-window reliability logit to the V5 log-window-weight prior; the final head layer is zero initialized.", "Bottleneck cross-attention, three-layer FiLM, dual pooling, and per-window token encoder are retained from V5; B5 was not modified.", "Control/context share seed, handoff checkpoint, data, optimizer, EMA, and formal evaluation protocol."]
+    },
+    "reproducibility": {
+      "status": "PASS",
+      "evidence": ["Training configurations pin seed 42, deterministic mode, 20 epochs, batch size 8, learning rate 0.00005, weight decay 0.01, EMA 0.999, and gradient clip 1.0.", "Formal evaluation records EMA, Heun16, K16, and sampling seed 42; resolved configs, histories, and logs are synchronized locally."]
+    },
+    "output_contract": {
+      "status": "PASS",
+      "evidence": ["Both groups have epoch-20 history and validation outputs plus EMA formal metrics/reports for 480 windows and 40 records.", "The local compact output tree has 70 files, required logs/history/configs/metrics/reports present, and zero .pt/.npy files.", "Paired exact metrics and deltas are recorded in experiment.json and summarized in summary.md."]
+    }
+  },
+  "findings": [
+    "The reported formal evaluation is on the validation split, not an independent held-out test set; interpret it as the configured validation evaluation.",
+    "No final model-adoption decision is made by this experiment record."
+  ],
+  "verdict": "PASSED",
+  "reviewed_at": "2026-10-15"
+}

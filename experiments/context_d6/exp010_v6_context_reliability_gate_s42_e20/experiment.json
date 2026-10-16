@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "experiment_id": "exp010_v6_context_reliability_gate_s42_e20",
+  "status": "completed",
+  "purpose_zh": "在 V5 bottleneck cross-attention / FiLM / dual pooling 的 per-window token 上加入零初始化、可学习的 reliability logit，以检验按窗口可信度调权的 seed42 配对实验。",
+  "parent_experiment": "exp008_v5_bottleneck_crossattn_s42_e20",
+  "architecture_id": "B5-U-context-d6-v6-reliability-gated",
+  "condition_schema": "b5-demographics-plus-machine-record-context-v6",
+  "design": {
+    "inheritance": "V5 behavior retained except the added per-window reliability weighting",
+    "reliability_head": "LayerNorm(token + valid temporal coverage + log(window_weight)) -> Linear(64) -> SiLU -> Linear(1)",
+    "final_layer_initialization": "zero weights and bias, so initial reliability logit is exactly 0",
+    "effective_log_weight": "log(clamp_min(window_weight, 1e-8)) + clamp(reliability_logit, -2, 2)",
+    "coverage": "fraction of time samples with at least one valid context lead",
+    "weight_consumers": ["V5 unguided attention", "V5 query attention", "V5 dual-pool weighted mean and variance"],
+    "unchanged": ["V5 bottleneck cross-attention", "three-layer zero-init FiLM", "dual pooling mix gate", "per-window token encoder"],
+    "control_fallback": "context disabled bypasses context encoder effects; zero bottleneck gate preserves exact B5 velocity"
+  },
+  "fixed_inputs": {
+    "init_checkpoint": "results/B5/context_start/best.pt",
+    "data": "same machine-d6 train/validation samples and scales as exp008/exp009",
+    "seed": 42,
+    "formal_epochs": 20,
+    "smoke_epochs": 2,
+    "batch_size": 8,
+    "learning_rate": 0.00005,
+    "weight_decay": 0.01,
+    "ema_decay": 0.999,
+    "gradient_clip": 1.0,
+    "deterministic": true,
+    "evaluation": {"weights": "ema", "solver": "heun", "integration_steps": 16, "samples": 16, "sampling_seed": 42}
+  },
+  "groups": {
+    "control_smoke2": {
+      "config": "configs/experiments/context_d6_v6_reliability_gate_control_smoke2.yaml",
+      "output": "results/context_d6/v6_reliability_gate/smoke_2ep/control_seed42",
+      "status": "pending"
+    },
+    "context_smoke2": {
+      "config": "configs/experiments/context_d6_v6_reliability_gate_context_smoke2.yaml",
+      "output": "results/context_d6/v6_reliability_gate/smoke_2ep/context_seed42",
+      "status": "pending"
+    },
+    "control_seed42": {
+      "config": "configs/experiments/context_d6_v6_reliability_gate_control_20ep.yaml",
+      "output": "results/context_d6/v6_reliability_gate/paired_20ep/control_seed42",
+      "status": "pending"
+    },
+    "context_seed42": {
+      "config": "configs/experiments/context_d6_v6_reliability_gate_context_20ep.yaml",
+      "output": "results/context_d6/v6_reliability_gate/paired_20ep/context_seed42",
+      "status": "pending"
+    }
+  },
+  "final_adoption_decision": false,
+  "preflight": {
+    "remote_host_accessible": true,
+    "remote_instance_reused": true,
+    "remote_workspace": "/root/autodl-tmp/ECG/context_d6",
+    "gpu": "NVIDIA GeForce RTX 4080",
+    "gpu_idle_at_preflight": true,
+    "free_disk_gb_at_preflight": 12,
+    "output_tree_absent_at_preflight": true,
+    "handoff_checkpoint_exists": true,
+    "train_samples": 1872,
+    "validation_samples": 480,
+    "train_manifest_sha256": "546ceb774ae3f50a780349e775beef659afa80f1bb256d842fbf7b98e245ec8d",
+    "validation_manifest_sha256": "978d4c8c4cf35279598513e9b61f230eb9f9787f2a8f5a50d84150380accd5f7"
+  },
+  "results": {
+    "smoke": {
+      "epochs": 2,
+      "updates_per_group": 468,
+      "control": {
+        "final_train_loss": 0.06900995885396105,
+        "best_validation_r_missing11": 0.48012537340906847,
+        "epoch2_validation": {"r_missing11": 0.48012537340906847, "missing11_mean_rmse_uV": 452.9106650038726, "task2_missing_lead_mean_rmse_uV": 681.5377073129703, "bonus": 1.0270891727470504},
+        "context_used": false
+      },
+      "context": {
+        "final_train_loss": 0.06913316998885483,
+        "best_validation_r_missing11": 0.4804328507393312,
+        "epoch2_validation": {"r_missing11": 0.4804328507393312, "missing11_mean_rmse_uV": 452.8925552048617, "task2_missing_lead_mean_rmse_uV": 681.4451297415648, "bonus": 1.027228707710439},
+        "context_used": true
+      },
+      "context_minus_control": {"best_validation_r_missing11": 0.0003074773308574982, "epoch2_missing11_mean_rmse_uV": -0.01810979901090027, "epoch2_task2_missing_lead_mean_rmse_uV": -0.09257757140552489, "epoch2_bonus": 0.0001395349633885669},
+      "notes": "Smoke validation used the configured smoke sampler (Heun, 4 steps, 1 sample); both groups completed without NaN or runtime error."
+    },
+    "formal_training": {
+      "epochs": 20,
+      "updates_per_group": 4680,
+      "control": {"final_train_loss": 0.06656936042679426, "best_validation_r_missing11": 0.4829141866576167},
+      "context": {"final_train_loss": 0.06637782947375225, "best_validation_r_missing11": 0.48431922902169444},
+      "context_minus_control": {"final_train_loss": -0.0001915310530420129, "best_validation_r_missing11": 0.001405042364077735}
+    },
+    "formal_evaluation": {
+      "protocol": {"split": "validation", "weights": "ema", "solver": "heun", "integration_steps": 16, "samples": 16, "seed": 42, "n_windows": 480, "n_records": 40, "undefined_correlations": 0},
+      "control": {"r_missing11": 0.6208152547840285, "missing11_mean_rmse_uV": 426.7359894699306, "task2_missing_lead_mean_rmse_uV": 662.3774599667418, "bonus": 1.0567992456071003, "context_used": false, "elapsed_seconds": 234.4772223252803},
+      "context": {"r_missing11": 0.6214436307935197, "missing11_mean_rmse_uV": 425.94658643647784, "task2_missing_lead_mean_rmse_uV": 661.0616009253364, "bonus": 1.0589028299634387, "context_used": true, "elapsed_seconds": 232.0533612240106},
+      "context_minus_control": {"r_missing11": 0.000628376009491234, "missing11_mean_rmse_uV": -0.789403033452785, "task2_missing_lead_mean_rmse_uV": -1.3158590414053847, "bonus": 0.0021035843563383885}
+    },
+    "compact_sync": {"status": "complete", "local_result_tree": "results/context_d6/v6_reliability_gate", "files": 70, "required_logs_history_resolved_config_metrics_reports_present": true, "pt_or_npy_files": 0, "excluded": [".pt", ".npy"]}
+  }
+}

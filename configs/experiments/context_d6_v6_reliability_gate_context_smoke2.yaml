@@ -1,0 +1,10 @@
+base: context_d6_v6_reliability_gate_base.yaml
+experiment_id: v6_reliability_gate_context_smoke2_seed42
+context:
+  enabled: true
+training:
+  seed: 42
+  epochs: 2
+  validate_every: 1
+paths:
+  output_dir: results/context_d6/v6_reliability_gate/smoke_2ep/context_seed42

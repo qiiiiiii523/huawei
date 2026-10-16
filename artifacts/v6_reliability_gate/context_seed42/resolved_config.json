@@ -1,0 +1,85 @@
+{
+  "stage": "context_d6_adaptation",
+  "device": "ecg_machine_d6",
+  "body_scale_variant": "A_raw_window",
+  "paths": {
+    "data_root": "data",
+    "huawei_data_root": "..",
+    "demographics": "data/userinfobean.csv",
+    "common_config": "configs/common.yaml",
+    "preprocessing_config": "configs/preprocessing.yaml",
+    "init_checkpoint": "results/B5/context_start/best.pt",
+    "scales": "results/B5/context_start/preprocessing_scales.npz",
+    "context_scales": "results/B5/context_params/machine_d6_scales.npz",
+    "output_dir": "results/context_d6/v6_reliability_gate/paired_20ep/context_seed42"
+  },
+  "model": {
+    "channels": [
+      64,
+      128,
+      256
+    ],
+    "time_dim": 128,
+    "metadata_dim": 128,
+    "metadata_enabled": true,
+    "metadata_dropout": 0.2,
+    "metadata_field_dropout": 0.05,
+    "dilations": [
+      1,
+      2,
+      4,
+      8
+    ]
+  },
+  "context": {
+    "enabled": true,
+    "dimension": 128,
+    "dropout": 0.1,
+    "encoder_version": "v6_reliability_gate",
+    "initial_query_fraction": 0.2,
+    "injection_layers": [
+      0,
+      1,
+      2
+    ],
+    "cross_attention_heads": 4,
+    "cross_attention_dropout": 0.1,
+    "reliability_hidden": 64,
+    "reliability_logit_clamp": 2.0
+  },
+  "loss": {
+    "huber": 0.1,
+    "pcc": 0.1,
+    "anchor": 0.02,
+    "physiology": 0.0,
+    "huber_delta": 1.0
+  },
+  "training": {
+    "seed": 42,
+    "deterministic": true,
+    "epochs": 20,
+    "batch_size": 8,
+    "workers": 0,
+    "gradient_accumulation": 1,
+    "learning_rate": 5e-05,
+    "weight_decay": 0.01,
+    "ema_decay": 0.999,
+    "gradient_clip": 1.0,
+    "amp": false,
+    "validate_every": 5
+  },
+  "validation": {
+    "selection_metric": "r_missing11",
+    "batch_size": 8
+  },
+  "sampling": {
+    "seed": 42,
+    "solver": "heun",
+    "steps": 4,
+    "samples": 1
+  },
+  "experiment_family": "v6_reliability_gate",
+  "experiment_id": "v6_reliability_gate_context_20ep_seed42",
+  "repository_root": "/root/autodl-tmp/ECG/context_d6",
+  "config_path": "/root/autodl-tmp/ECG/context_d6/configs/experiments/context_d6_v6_reliability_gate_context_20ep.yaml"
+}

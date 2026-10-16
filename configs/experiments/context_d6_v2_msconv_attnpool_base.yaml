@@ -1,0 +1,7 @@
+base: context_d6_base.yaml
+experiment_family: v2_msconv_attnpool
+context:
+  enabled: true
+  dimension: 128
+  dropout: 0.1
+

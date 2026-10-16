@@ -1,0 +1,10 @@
+base: context_d6_v6_reliability_gate_base.yaml
+experiment_id: v6_reliability_gate_context_20ep_seed42
+context:
+  enabled: true
+training:
+  seed: 42
+  epochs: 20
+  validate_every: 5
+paths:
+  output_dir: results/context_d6/v6_reliability_gate/paired_20ep/context_seed42

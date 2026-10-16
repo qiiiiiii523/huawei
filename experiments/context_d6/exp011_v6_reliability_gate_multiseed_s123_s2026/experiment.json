@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "experiment_id": "exp011_v6_reliability_gate_multiseed_s123_s2026",
+  "status": "completed",
+  "purpose_zh": "对 V6 reliability-gated 架构做 seed123、seed2026 两组 control/context 配对复验；不新增结构、不作最终采用决策。",
+  "parent_experiment": "exp010_v6_context_reliability_gate_s42_e20",
+  "architecture_id": "B5-U-context-d6-v6-reliability-gated",
+  "condition_schema": "b5-demographics-plus-machine-record-context-v6",
+  "fixed_protocol": {
+    "init_checkpoint": "results/B5/context_start/best.pt",
+    "data": "same machine-d6 train/validation data and scales as exp010",
+    "seeds": [123, 2026],
+    "groups": ["control", "context"],
+    "epochs": 20,
+    "batch_size": 8,
+    "learning_rate": 0.00005,
+    "weight_decay": 0.01,
+    "ema_decay": 0.999,
+    "gradient_clip": 1.0,
+    "deterministic": true,
+    "evaluation": {"weights": "ema", "solver": "heun", "integration_steps": 16, "samples": 16, "sampling_seed": 42}
+  },
+  "groups": {
+    "control_seed123": {"config": "configs/experiments/context_d6_v6_reliability_gate_control_seed123_20ep.yaml", "output": "results/context_d6/v6_reliability_gate/paired_multiseed/control_seed123", "status": "completed", "epochs": 20, "updates": 4680, "final_train_loss": 0.0671963097814184, "best_validation_r_missing11": 0.6183941504990871},
+    "context_seed123": {"config": "configs/experiments/context_d6_v6_reliability_gate_context_seed123_20ep.yaml", "output": "results/context_d6/v6_reliability_gate/paired_multiseed/context_seed123", "status": "completed", "epochs": 20, "updates": 4680, "final_train_loss": 0.06750159471845016, "best_validation_r_missing11": 0.6186986848059565},
+    "control_seed2026": {"config": "configs/experiments/context_d6_v6_reliability_gate_control_seed2026_20ep.yaml", "output": "results/context_d6/v6_reliability_gate/paired_multiseed/control_seed2026", "status": "completed", "epochs": 20, "updates": 4680, "final_train_loss": 0.0659790977787895, "best_validation_r_missing11": 0.6194479130552932},
+    "context_seed2026": {"config": "configs/experiments/context_d6_v6_reliability_gate_context_seed2026_20ep.yaml", "output": "results/context_d6/v6_reliability_gate/paired_multiseed/context_seed2026", "status": "completed", "epochs": 20, "updates": 4680, "final_train_loss": 0.06549457453477842, "best_validation_r_missing11": 0.6199517483457604}
+  },
+  "preflight": {
+    "remote_host_accessible": true,
+    "remote_workspace": "/root/autodl-tmp/ECG/context_d6",
+    "existing_instance_reused": true,
+    "gpu": "NVIDIA GeForce RTX 4080",
+    "gpu_idle": true,
+    "free_disk_gb": 29,
+    "new_output_tree_absent": true,
+    "handoff_checkpoint_exists": true,
+    "train_samples": 1872,
+    "validation_samples": 480,
+    "train_manifest_sha256": "546ceb774ae3f50a780349e775beef659afa80f1bb256d842fbf7b98e245ec8d",
+    "validation_manifest_sha256": "978d4c8c4cf35279598513e9b61f230eb9f9787f2a8f5a50d84150380accd5f7"
+  },
+  "final_adoption_decision": false,
+  "results": {
+    "formal_evaluation_protocol": {"split": "validation", "weights": "ema", "solver": "heun", "integration_steps": 16, "samples": 16, "sampling_seed": 42, "windows_per_group": 480, "records_per_group": 40, "undefined_correlations_per_group": 0},
+    "control_seed123": {"r_missing11": 0.6183941504990871, "missing11_mean_rmse_uV": 422.9599587648849, "task2_missing_lead_mean_rmse_uV": 655.7470411774285, "bonus": 1.067484801369615, "context_used": false},
+    "context_seed123": {"r_missing11": 0.6186986848059565, "missing11_mean_rmse_uV": 422.2490929889687, "task2_missing_lead_mean_rmse_uV": 654.8387546595512, "bonus": 1.0689654438120846, "context_used": true},
+    "seed123_context_minus_control": {"r_missing11": 0.0003045343068693862, "missing11_mean_rmse_uV": -0.7108657759162043, "task2_missing_lead_mean_rmse_uV": -0.9082865178772863, "bonus": 0.001480642442469593},
+    "control_seed2026": {"r_missing11": 0.6194479130552932, "missing11_mean_rmse_uV": 426.5870616515145, "task2_missing_lead_mean_rmse_uV": 661.1400647190575, "bonus": 1.0587771598707387, "context_used": false},
+    "context_seed2026": {"r_missing11": 0.6199517483457604, "missing11_mean_rmse_uV": 426.88273582389047, "task2_missing_lead_mean_rmse_uV": 661.8593535315857, "bonus": 1.0576265127400577, "context_used": true},
+    "seed2026_context_minus_control": {"r_missing11": 0.0005038352904671584, "missing11_mean_rmse_uV": 0.2956741723759819, "task2_missing_lead_mean_rmse_uV": 0.719288812528248, "bonus": -0.0011506471306810262},
+    "mean_paired_delta": {"r_missing11": 0.0004041847986682723, "missing11_mean_rmse_uV": -0.20759580177011117, "task2_missing_lead_mean_rmse_uV": -0.09449885267451918, "bonus": 0.0001649976558942834},
+    "stop_line": {"average_delta_r_positive": true, "average_delta_r_at_least_0_0003": true, "rmse_materially_worse": false, "assessment": "mean paired delta-r exceeds +0.0003; mean RMSE deltas are slightly favorable, though seed2026 has small increases (0.296 µV missing11; 0.719 µV task2). This is validation evidence only, not an adoption decision."},
+    "evaluation_launcher_note": "The first seed123-control eval launch missed PYTHONPATH and exited before evaluation. It was retained in evaluation.log; the corrected launch with PYTHONPATH set completed successfully and produced the recorded metrics.",
+    "compact_sync": {"status": "complete", "local_result_tree": "results/context_d6/v6_reliability_gate/paired_multiseed", "files": 96, "required_logs_history_resolved_config_metrics_reports_present": true, "pt_or_npy_files": 0, "excluded_extensions": [".pt", ".npy"]}
+  }
+}
