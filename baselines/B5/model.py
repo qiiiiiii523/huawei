@@ -103,7 +103,11 @@ class B5UNet(nn.Module):
         h = self._blocks(self.decode1, h, t, condition.metadata)
         h = self.up0(F.interpolate(h, size=skip0.shape[-1], mode="nearest"))
         h = self.merge0(torch.cat((h, skip0), dim=1)) + self.condition_dec[0](f0)
-        return self.output(self._blocks(self.decode0, h, t, condition.metadata))
+        return self.output_velocity(self._blocks(self.decode0, h, t, condition.metadata))
+
+    def output_velocity(self, features: torch.Tensor) -> torch.Tensor:
+        """Unchanged baseline projection; experiments may add a zero residual here."""
+        return self.output(features)
 
     def forward(self, state: torch.Tensor, time: torch.Tensor, anchor: torch.Tensor,
                 numeric: torch.Tensor, sex: torch.Tensor, field_mask: torch.Tensor,

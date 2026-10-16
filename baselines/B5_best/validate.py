@@ -54,14 +54,15 @@ def verify_reference_inputs(bundle, config):
             raise ValueError("Reference data/QC/demographics changed: " + key)
 
 
-def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_reference=False):
+def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_reference=False,
+             predictor=None):
     output = Path(output)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("Use an empty validation output directory")
     if set(datasets) != {"task1", "task2"}:
         raise ValueError("Both task validation datasets are required")
     seed_all(bundle["sampling"]["seed"], True)
-    predictor = Predictor(bundle, device)
+    predictor = Predictor(bundle, device) if predictor is None else predictor
     summaries, population, cache = {}, {}, {}
     for task, ds in datasets.items():
         folder = output / task
