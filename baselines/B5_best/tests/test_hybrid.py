@@ -17,8 +17,8 @@ from baselines.B5.checkpoint import scales_digest
 from baselines.B5.config import ModelConfig
 from baselines.B5.metadata import encode_demographics
 from baselines.B5.model import B5UNet
-from baselines.B5_best import BUNDLE_PROTOCOL, SCORE_PROTOCOL, SAMPLING
-from baselines.B5_best.bundle import export_bundle, load_bundle, validate_bundle
+from baselines.B5_best import BUNDLE_PROTOCOL, LEGACY_BUNDLE_PROTOCOL, SCORE_PROTOCOL, SAMPLING
+from baselines.B5_best.bundle import export_bundle, load_bundle, validate_bundle, bundle_slow_beta
 from baselines.B5_best.combine import combine, slow_curve, upsample_native
 from baselines.B5_best.common import write, read, sha
 from baselines.B5_best.predict import Predictor
@@ -47,7 +47,7 @@ def fixture(root):
     slow={"protocol":"B5-slow-probe-v1","config":{"context_seconds":50,"group":"F",
           "model_channels":48,"prepared_sha256":sha(ip)},"model":SlowCNN().state_dict(),"epoch":20}
     sp=root/"slow.pt";torch.save(slow,sp)
-    profile={"bundle_protocol":BUNDLE_PROTOCOL,"sampling":dict(SAMPLING),"fm_sha256":sha(fp),
+    profile={"bundle_protocol":BUNDLE_PROTOCOL,"slow_beta":.75,"sampling":dict(SAMPLING),"fm_sha256":sha(fp),
              "slow_sha256":sha(sp),"reference_qc_r":{"task1_r_missing11":.7,"task2_r_missing11":.69}}
     return fp,sp,ip,profile
 
@@ -141,6 +141,39 @@ class HybridTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"identical frozen scales"):
                 export_bundle(fp,sp,ip,root/"mismatch.pt",profile,candidate=True)
 
+    def test_new_bundle_uses_beta075_and_legacy_bundle_preserves_beta1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);fp,sp,ip,profile=fixture(root)
+            new=export_bundle(fp,sp,ip,root/"new.pt",profile)
+            self.assertEqual(read(root/"new.json")["slow_beta"],.75)
+            self.assertEqual(new["reference_qc_r"],profile["reference_qc_r"])
+            old=copy.deepcopy(new);old["bundle_protocol"]=LEGACY_BUNDLE_PROTOCOL
+            old.pop("slow_beta");torch.save(old,root/"old.pt")
+            fp.unlink();sp.unlink();ip.unlink()
+            def zero_fm(model,inputs,keys,**settings):
+                return torch.zeros(len(keys),12,5000)
+            # The slow network's normalized output=1 restores to 100uV.
+            with patch("baselines.B5_best.predict.sample",side_effect=zero_fm),patch(
+                    "baselines.B5_best.predict.predict_native",return_value=torch.ones(1,11,6000)):
+                for name,expected in [("new",75.),("old",100.)]:
+                    bundle=load_bundle(root/(name+".pt"))
+                    engine=Predictor(bundle,torch.device("cpu"))
+                    result=engine.predict(np.zeros(60000,np.float32),{},"record",8)
+                    np.testing.assert_array_equal(result[0],0.)
+                    np.testing.assert_array_equal(result[1:],expected)
+            self.assertEqual(bundle_slow_beta(old),1.)
+
+    def test_invalid_or_missing_v2_beta_is_rejected(self):
+        for value in [float("nan"),float("inf"),-.1,True,"0.75"]:
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                bundle_slow_beta({"bundle_protocol":BUNDLE_PROTOCOL,"slow_beta":value})
+        with self.assertRaises(ValueError):
+            bundle_slow_beta({"bundle_protocol":BUNDLE_PROTOCOL})
+        with self.assertRaises(ValueError):
+            bundle_slow_beta({"bundle_protocol":LEGACY_BUNDLE_PROTOCOL,"slow_beta":.75})
+        with self.assertRaises(ValueError):
+            combine(np.zeros((12,60000)),np.zeros((11,60000)),float("nan"))
+
     def test_qc_mean_r_never_uses_rmse_bonus(self):
         qc={"competition_score_protocol":QC_COMPETITION_SCORE_PROTOCOL,
             "quality_mask_applied":True,"target_lead_qc_protocol":TARGET_LEAD_QC_PROTOCOL}
@@ -221,13 +254,14 @@ class ValidationTests(unittest.TestCase):
             def __init__(self,*args):pass
             def predict_encoded(self,anchor,metadata,key,batch_size):
                 calls.append(key);return np.tile(anchor,(12,1))
-        bundle={"sampling":SAMPLING,"reference_qc_r":None,"reference_tolerance":2e-5,"provenance":{}}
+        bundle={"sampling":SAMPLING,"slow_beta":.75,"reference_qc_r":None,"reference_tolerance":2e-5,"provenance":{}}
         with tempfile.TemporaryDirectory() as tmp,patch("baselines.B5_best.validate.Predictor",Engine):
             score=evaluate(bundle,datasets,torch.device("cpu"),Path(tmp)/"eval","bundle")
             self.assertAlmostEqual(score["main_correlation"],1.)
             self.assertEqual(calls,["record"])
             self.assertFalse((Path(tmp)/"eval/competition_score.csv").exists())
             self.assertTrue(read(Path(tmp)/"eval/evaluation.json")["completed"])
+            self.assertEqual(read(Path(tmp)/"eval/evaluation.json")["slow_beta"],.75)
             broken=datasets["task1"].rows[:-1]
             with self.assertRaises(ValueError):pair_indices(broken)
 

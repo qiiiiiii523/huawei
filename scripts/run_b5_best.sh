@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 gpu=1
-root=/home/qht/huawei/results/B5-best/stable_v1
+root=/home/qht/huawei/results/B5-best/stable_beta075_v2
 config=/home/qht/huawei/configs/experiments/b5_main_v2_public_finetune_meta.yaml
 while (($#)); do
   case "$1" in

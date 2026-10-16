@@ -164,6 +164,9 @@ class FileDiagnosticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             args, tasks, profile = fixture(root)
+            # Deployment reference may now differ; the saved source remains beta=1.
+            profile["reference_qc_r_beta1"] = dict(profile["reference_qc_r"])
+            profile["reference_qc_r"] = {k: 0.123 for k in profile["reference_qc_r"]}
             source_hashes = {p: sha(p) for p in root.rglob("*.npy")}
             original_read = diagnose.read
             def mocked_read(path):
@@ -180,7 +183,7 @@ class FileDiagnosticsTests(unittest.TestCase):
             rows = diagnose.csv_read(out / "component_record_lead.csv")
             self.assertFalse(any(r["target_record_id"] == "target_0" and r["lead"] == "V4" for r in rows))
             b = next(r for r in diagnose.csv_read(out / "beta_scores.csv") if float(r["beta"]) == 1)
-            self.assertAlmostEqual(float(b["task1_r"]), profile["reference_qc_r"]["task1_r_missing11"])
+            self.assertAlmostEqual(float(b["task1_r"]), profile["reference_qc_r_beta1"]["task1_r_missing11"])
             self.assertTrue(list((out / "plots").glob("*.png")))
             self.assertFalse(list(out.rglob("*.npy")))
             self.assertFalse(list(root.rglob("*.pt")))

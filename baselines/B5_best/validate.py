@@ -97,7 +97,7 @@ def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_
         prediction.flush(); target.flush(); quality.flush()
         overall, details = evaluate_record_predictions(prediction, target, task, metadata, target_quality_mask=quality)
         overall = diagnostic_summary(overall)
-        overall.update(sampling=bundle["sampling"], model="B5-best-output-hybrid",
+        overall.update(sampling=bundle["sampling"], slow_beta=bundle.get("slow_beta", 1.0), model="B5-best-output-hybrid",
                        target_used_at_inference=False, target_record_seconds=120)
         write_report(folder, overall, details, title=f"B5-best {task} full-record QC correlation")
         csv_write(folder / "window_metadata.csv", metadata)
@@ -112,7 +112,7 @@ def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_
     matched = None if reference is None else all(
         abs(score[k] - reference[k]) <= bundle["reference_tolerance"] for k in reference)
     write(output / "evaluation.json", {"completed": True, "checkpoint_sha256": bundle_sha,
-          "score_protocol": SCORE_PROTOCOL, "sampling": bundle["sampling"], "population": population,
+          "score_protocol": SCORE_PROTOCOL, "sampling": bundle["sampling"], "slow_beta": bundle.get("slow_beta", 1.0), "population": population,
           "score": score, "reference_qc_r": reference, "reference_matched": matched,
           "target_used_at_inference": False, "provenance": bundle["provenance"]})
     if verify_reference and matched is not True:

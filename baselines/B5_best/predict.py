@@ -11,7 +11,7 @@ from baselines.B5.flow import sample
 from baselines.B5.metadata import encode_demographics
 from baselines.B5.runtime import device_from_name, seed_all
 from . import LEADS
-from .bundle import load_bundle, models
+from .bundle import load_bundle, models, bundle_slow_beta
 from .combine import combine, upsample_native
 from .common import read, write, sha
 from .slow import predict_native
@@ -21,6 +21,7 @@ class Predictor:
     def __init__(self, bundle, device):
         self.bundle, self.device = bundle, device
         self.fm, self.slow = models(bundle, device)
+        self.slow_beta = bundle_slow_beta(bundle)
         self.scale = np.asarray(bundle["fm"]["scales"]["d12"], np.float32)
 
     @torch.no_grad()
@@ -49,7 +50,7 @@ class Predictor:
             restored = generated.float().cpu().numpy() * self.scale[None, :, None]
             for i, start in enumerate(group):
                 original[:, start:start + 5000] = restored[i]
-        return combine(original, learned)
+        return combine(original, learned, slow_beta=self.slow_beta)
 
     def predict(self, anchor_uV, metadata, record_key, batch_size=8):
         if not isinstance(metadata, dict):
@@ -79,6 +80,7 @@ def main():
     np.save(out / "prediction_uV.npy", prediction, allow_pickle=False)
     write(out / "inference.json", {"checkpoint_sha256": sha(args.checkpoint), "shape": list(prediction.shape),
           "lead_order": list(LEADS), "unit": "uV", "sampling_rate_hz": 500, "sampling": bundle["sampling"],
+          "slow_beta": bundle_slow_beta(bundle),
           "record_key": args.record_key, "target_used_at_inference": False,
           "prepared_data_required": False, "slow_variant": bundle["provenance"]["slow_variant"]})
     print({"prediction": str(out / "prediction_uV.npy"), "shape": list(prediction.shape)}, flush=True)
