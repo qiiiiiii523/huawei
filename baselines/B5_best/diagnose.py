@@ -403,7 +403,8 @@ def run(args):
         baseline = {name: task_r(t, t.fm) for name, t in tasks.items()}
         reference = {name: task_r(t, t.hybrid) for name, t in tasks.items()}
         for name in tasks:
-            expected = profile["reference_qc_r"][name + "_r_missing11"]
+            # Saved source hybrids are beta=1, even after the deployment profile adopts 0.75.
+            expected = profile.get("reference_qc_r_beta1", profile["reference_qc_r"])[name + "_r_missing11"]
             if abs(reference[name] - expected) > profile["reference_tolerance"]:
                 raise ValueError(f"Reference r mismatch for {name}: {reference[name]} versus {expected}; check paths/QC, not weights")
         output.mkdir(parents=True, exist_ok=True)
@@ -443,9 +444,9 @@ def run(args):
 
     ## 快慢比例
 
-    beta_scores.csv：beta=1是当前方案。0.75/1.25只改变相对慢起伏强度，不是整体电压校准。
+    beta_scores.csv：beta=1是历史源组合；当前新导出方案采用配置中的slow_beta。探针只改变相对慢起伏强度，不是整体电压校准。
     本次三个验证探针中最高R={best['mean_r']:.8f}（beta={best['beta']}），与基准差={best['mean_r']-base_r:+.8f}。
-    这不是已选出的新部署模型，不给每条记录或每导联按真值挑beta。后续需训练集确定规则或独立复核。
+    本次诊断不修改部署模型，不给每条记录或每导联按真值挑beta。
 
     ## 振荡、形态与边界
 

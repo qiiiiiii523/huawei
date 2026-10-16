@@ -8,14 +8,18 @@
 测试可见的120秒同步I＋人口学
   ├─ 原B5 EMA，Heun16/K16/seed42 → 12导联预测 p
   └─ 冻结S50-F，前后各20秒I → 12个中心10秒 → 拼成预测慢曲线 s
-完整输出（缺失11导联）= p - 501点居中移动平均(p) + s
+完整输出（缺失11导联）= p - 501点居中移动平均(p) + 0.75 × s
 ```
 
 全部移动平均和50→500Hz插值在完整120秒坐标上做，端点复制。不逐窗去均值、不用真实目标均值或慢标签、不额外放大。I输出保持原FM的I头，与历史评估一致；两个任务只计其余11导联。S50看的是前后同步I，不是设备历史context；需要完整120秒输入，不是实时因果推理。
 
 默认源文件在 `configs/b5_best.json`，并校验原FM与S50-F的SHA。原FM是第45轮 `best.pt`，不是最近续训的S50接入权重。S50-F是原慢CNN实验的 `best_score.pt`；这个旧文件名不代表本分支继续按bonus选模。
 
-历史QC参考：Task1 r=0.69585536，Task2 r=0.68940334，平均r=0.69262935。它是固定验证集结果，不是新测试集保证。本机没有这些真实权重，必须在服务器完成复现；不能把合成测试当作真实ECG复现。
+当前固定`slow_beta=0.75`，应用于全部记录的缺失11导联；不按患者真值选择系数。新导出采用v2模型包，推理和验证从包内读取该参数。默认采样仍为Heun16/K16/seed42。
+
+当前QC参考：Task1 r=0.69816428，Task2 r=0.69167254，平均r=0.69491841。seed43复核为0.69475046；seed42的beta=0.5为0.68887223。0.75是目前已测试候选中更好的选择，不是新患者上的保证。
+
+旧v1模型包仍按beta=1运行，其参考为Task1 r=0.69585536、Task2 r=0.68940334、平均r=0.69262935。更新代码不会改变旧模型包的输出；需要重新导出v2包才能默认使用0.75。网络、权重、条件、损失均未改变，不用重新训练。详细操作见`docs/b5_best_beta075.md`。本机没有真实源权重，不能把合成测试当作服务器ECG复现。
 
 ## 2. 保存与提交后，服务器建立独立worktree
 
@@ -49,7 +53,7 @@ bash -n scripts/run_b5_best.sh
 bash scripts/run_b5_best.sh --gpu 1
 ```
 
-默认结果：`/home/qht/huawei/results/B5-best/stable_v1/`。脚本不联网、不fetch、不训练。验证读取原huawei目录的配置和数据，因此不用在新worktree复制data、metadata或缓存。改变结果目录使用 `--root /home/qht/huawei/results/B5-best/stable_v2`。已有或中断目录不会覆盖。
+默认结果：`/home/qht/huawei/results/B5-best/stable_beta075_v2/`。脚本不联网、不fetch、不训练。验证读取原huawei目录的配置和数据，因此不用在新worktree复制data、metadata或缓存。改变结果目录使用 `--root /home/qht/huawei/results/B5-best/stable_beta075_v2_repeat`。已有或中断目录不会覆盖；旧stable_v1目录保留。
 
 成功条件：evaluation/evaluation.json中 completed=true、reference_matched=true；两项r与历史参考分别相差不超过2e-5。复现模式还核对人口学、QC、划分、配对表、窗口元数据和验证目标文件SHA。报告只使用correlation_score.json/csv/md，不输出60分制总分或bonus。逐导联RMSE可保留为诊断，但不参与排名。
 
@@ -62,7 +66,7 @@ bash scripts/run_b5_best.sh --gpu 1
 ```bash
 cd /home/qht/huawei_B5_best
 CUDA_VISIBLE_DEVICES=1 python -m baselines.B5_best.predict \
-  --checkpoint /home/qht/huawei/results/B5-best/stable_v1/model.pt \
+  --checkpoint /home/qht/huawei/results/B5-best/stable_beta075_v2/model.pt \
   --anchor-npy /path/to/new_I_uV.npy \
   --metadata-json /path/to/new_metadata.json \
   --record-key new_record_001 \
@@ -70,7 +74,7 @@ CUDA_VISIBLE_DEVICES=1 python -m baselines.B5_best.predict \
   --device cuda
 ```
 
-I必须为500Hz原始μV的[60000]或[1,60000]。人口学字段age、sex/gender、height、weight允许缺失，整个metadata-json也可省略。输出prediction_uV.npy为[12,60000]原始μV；默认Heun16/K16，全部设置已内嵌，不用额外传采样参数。稳定record-key用于固定噪声；复现验证时自动采用原target_record_id及窗口起点。
+I必须为500Hz原始μV的[60000]或[1,60000]。人口学字段age、sex/gender、height、weight允许缺失，整个metadata-json也可省略。输出prediction_uV.npy为[12,60000]原始μV；默认Heun16/K16和slow_beta=0.75，全部设置已内嵌，不用额外传采样或组合参数。inference.json和evaluation.json都会记录slow_beta。稳定record-key用于固定噪声；复现验证时自动采用原target_record_id及窗口起点。
 
 ## 5. 更换候选组件与组合排名
 
@@ -91,7 +95,7 @@ python -m baselines.B5_best.bundle \
 
 ```bash
 python -m baselines.B5_best.select \
-  --evaluations /home/qht/huawei/results/B5-best/stable_v1/evaluation /home/qht/huawei/results/B5-best/candidate_001/evaluation \
+  --evaluations /home/qht/huawei/results/B5-best/stable_beta075_v2/evaluation /home/qht/huawei/results/B5-best/candidate_001/evaluation \
   --output /home/qht/huawei/results/B5-best/ranking_001
 ```
 
@@ -109,4 +113,6 @@ base与两个main-v2实验配置已切换到新输出目录和平均r；共同ec
 
 58项CPU检查通过，1项需要真实华为缓存的检查因本机缺数据跳过。覆盖原B5模型/ODE/采样回归、绝对电压和QC聚合、两个组件打包与完整性校验、源文件移除后的新记录推理、S50的50秒窗口与中间裁剪、501点全记录组合、50→500Hz坐标、组合排名的数据一致性和best_r/last恢复状态。Bash语法与Git差异格式检查通过。
 
-没有启动训练或执行优化器更新。端到端文件流程检查使用合成数据和部分采样替身；真实FM的短信号ODE与原B5回归另测。未在本机复现真实权重的0.69263，也未验证服务器GPU显存或耗时；先运行第3节复现检查再用于正式测试。
+本次beta=0.75更新另通过25项B5-best CPU合成检查，覆盖新包参数持久化、源文件移除后的75μV/100μV新旧推理区别、无效系数拒绝、评估报告记录与旧beta=1诊断兼容。
+
+没有启动训练或执行优化器更新。端到端文件流程检查使用合成数据和部分采样替身；真实FM的短信号ODE与原B5回归另测。0.694918参考来自已上传的服务器报告，本机没有用真实权重复现，也未验证服务器GPU显存或耗时；先运行第3节复现检查再用于正式测试。

@@ -85,7 +85,7 @@ def run(study_path, group, output, device_name, resume=None):
         write(output / "initialization.json", {"group": group, "study_sha256": sha(study_path),
               "source_provenance": bundle["provenance"], "training": training,
               "loss": config["loss"], "sampling": study["sampling"],
-              "beta": 1.0, "all_FM_parameters_trainable": True, "S50_F_frozen": True,
+              "beta": study["beta"], "all_FM_parameters_trainable": True, "S50_F_frozen": True,
               "selection": "final_hybrid_main_correlation", "epoch_zero_is_candidate": True})
         # Discard random-number consumption from constructing the extra branch/eval models.
         # Dropout/noise/t and shuffled training order therefore start identically in both arms.

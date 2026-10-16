@@ -8,7 +8,7 @@ from baselines.B5.data import preprocessing_config
 from baselines.B5.objective import loss_signature
 from baselines.B5.runtime import build_datasets
 from baselines.B5_best import SAMPLING, SCORE_PROTOCOL
-from baselines.B5_best.bundle import load_bundle
+from baselines.B5_best.bundle import load_bundle, bundle_slow_beta
 from baselines.B5_best.common import read, sha
 from baselines.B5_best.validate import verify_reference_inputs
 from . import PROTOCOL, ARCHITECTURE_ID
@@ -33,13 +33,15 @@ def load_study(path, verify_data=True):
     study = read(path)
     if study.get("protocol") != PROTOCOL or study.get("sampling") != SAMPLING:
         raise ValueError("Wrong paired experiment or sampling protocol")
-    if study.get("score_protocol") != SCORE_PROTOCOL or study.get("beta") != 1.0:
-        raise ValueError("This single-factor experiment fixes beta=1 and QC mean-r selection")
+    if study.get("score_protocol") != SCORE_PROTOCOL or study.get("beta") != .75:
+        raise ValueError("This paired experiment fixes beta=0.75; rerun prepare in a NEW output for an old beta=1 study")
     if study.get("code_sha256") != code_digest():
         raise ValueError("Code changed after preflight; use the same commit or prepare a new study")
     if sha(path.parent / "components.pt") != study["bundle_sha256"]:
         raise ValueError("Shared component bundle changed")
     bundle = load_bundle(path.parent / "components.pt")
+    if bundle_slow_beta(bundle) != study["beta"]:
+        raise ValueError("Study and component bundle must use the same beta=0.75")
     config = study["data_config"]
     loss_signature(config["loss"])
     if verify_data:

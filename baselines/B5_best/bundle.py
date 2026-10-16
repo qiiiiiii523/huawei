@@ -10,7 +10,8 @@ import torch
 from baselines.B5 import ARCHITECTURE_ID, CONDITION_SCHEMA, PREPROCESSING_VERSION
 from baselines.B5.checkpoint import atomic_save, load_checkpoint, scales_digest, model_from_checkpoint
 from baselines.B5.config import ModelConfig
-from . import BUNDLE_PROTOCOL, SAMPLING, SCORE_PROTOCOL
+from . import BUNDLE_PROTOCOL, LEGACY_BUNDLE_PROTOCOL, SAMPLING, SCORE_PROTOCOL
+from .combine import validate_slow_beta
 from .common import read, write, sha, state_sha
 from .slow import load_slow
 
@@ -23,6 +24,7 @@ def export_bundle(fm_path, slow_path, prepared_info, output, profile, candidate=
         raise FileExistsError("Choose a new bundle path; existing weights are never overwritten")
     if profile.get("bundle_protocol") != BUNDLE_PROTOCOL or profile.get("sampling") != SAMPLING:
         raise ValueError("Stable profile must use the B5-best protocol and Heun16/K16/seed42")
+    beta = bundle_slow_beta(profile)
     fm_hash, slow_hash = sha(fm_path), sha(slow_path)
     if not candidate and (fm_hash != profile["fm_sha256"] or slow_hash != profile["slow_sha256"]):
         raise ValueError("Stable components differ from the verified pair; use --candidate and a new path for experiments")
@@ -53,7 +55,7 @@ def export_bundle(fm_path, slow_path, prepared_info, output, profile, candidate=
                   "source_manifests": fm.get("manifests", {}),
                   "slow_source_checks": info.get("source_checks", {}),
                   "stable_reference": not candidate}
-    payload = {"bundle_protocol": BUNDLE_PROTOCOL, "score_protocol": SCORE_PROTOCOL,
+    payload = {"bundle_protocol": BUNDLE_PROTOCOL, "score_protocol": SCORE_PROTOCOL, "slow_beta": beta,
                "sampling": dict(SAMPLING), "fm": fm_payload, "slow": slow_payload,
                "fm_state_sha256": state_sha(fm_payload["ema"]),
                "slow_state_sha256": state_sha(slow_payload["model"]), "provenance": provenance,
@@ -67,9 +69,22 @@ def export_bundle(fm_path, slow_path, prepared_info, output, profile, candidate=
     return payload
 
 
+def bundle_slow_beta(bundle):
+    protocol = bundle.get("bundle_protocol")
+    if protocol == LEGACY_BUNDLE_PROTOCOL:
+        beta = validate_slow_beta(bundle.get("slow_beta", 1.0))
+        if beta != 1.0:
+            raise ValueError("Legacy v1 bundles must retain slow_beta=1")
+        return beta
+    if protocol != BUNDLE_PROTOCOL or "slow_beta" not in bundle:
+        raise ValueError("A v2 bundle/profile must explicitly declare slow_beta")
+    return validate_slow_beta(bundle["slow_beta"])
+
+
 def validate_bundle(bundle):
-    if bundle.get("bundle_protocol") != BUNDLE_PROTOCOL or bundle.get("score_protocol") != SCORE_PROTOCOL:
+    if bundle.get("bundle_protocol") not in (BUNDLE_PROTOCOL, LEGACY_BUNDLE_PROTOCOL) or bundle.get("score_protocol") != SCORE_PROTOCOL:
         raise ValueError("Expected a B5-best output-combination bundle")
+    bundle_slow_beta(bundle)
     if bundle.get("sampling") != SAMPLING:
         raise ValueError("This bundle requires Heun16/K16/seed42")
     fm = bundle["fm"]

@@ -11,7 +11,7 @@ from baselines.B5.metadata import encode_demographics
 from baselines.B5.objective import loss_signature
 from baselines.B5.runtime import build_datasets, seed_all
 from baselines.B5_best import SAMPLING, SCORE_PROTOCOL
-from baselines.B5_best.bundle import DEFAULT_PROFILE, export_bundle
+from baselines.B5_best.bundle import DEFAULT_PROFILE, export_bundle, bundle_slow_beta
 from baselines.B5_best.common import read, write, sha
 from baselines.B5_best.validate import verify_reference_inputs
 from . import PROTOCOL
@@ -54,6 +54,9 @@ def prepare(root, output, epochs=20, learning_rate=None):
     profile = read(DEFAULT_PROFILE)
     bundle = export_bundle(profile["fm_checkpoint"], profile["slow_checkpoint"],
                            profile["prepared_info"], output / "components.pt", profile)
+    beta = bundle_slow_beta(bundle)
+    if beta != .75:
+        raise ValueError("The V13 paired experiment requires the current B5-best beta=0.75 profile")
     info = read(profile["prepared_info"])
     config = read(Path(profile["fm_checkpoint"]).parent / "resolved_config.json")
     config["repository_root"] = str(root)
@@ -91,7 +94,7 @@ def prepare(root, output, epochs=20, learning_rate=None):
     finally:
         torch.set_num_threads(old_threads)
     study = {"protocol": PROTOCOL, "score_protocol": SCORE_PROTOCOL, "sampling": dict(SAMPLING),
-             "beta": 1.0, "bundle_sha256": sha(output / "components.pt"),
+             "beta": beta, "bundle_sha256": sha(output / "components.pt"),
              "source_checks": checks, "manifests": manifests, "data_config": config,
              "code_sha256": code_digest(), "source_provenance": bundle["provenance"],
              "train_windows": len(train), "train_records": len({r["target_record_id"] for r in train.rows}),
@@ -99,7 +102,7 @@ def prepare(root, output, epochs=20, learning_rate=None):
              "train_validation_subject_overlap": 0}
     write(output / "study.json", study)
     write(output / "preflight.json", {"ready": True, "training_started": False, "optimizer_updates": 0,
-          "same_base_weights": True, "slow_predictor_frozen": True, "beta": 1.0,
+          "same_base_weights": True, "slow_predictor_frozen": True, "beta": beta,
           "training": training, "sampling": dict(SAMPLING), **checked})
     print({"ready": True, "study": str(output / "study.json"), **checked}, flush=True)
 

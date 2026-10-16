@@ -34,7 +34,7 @@ def main():
     np.save(output / "prediction_uV.npy", prediction, allow_pickle=False)
     write(output / "inference.json", {"checkpoint_sha256": sha(args.checkpoint),
           "group": cp["group"], "epoch": cp["epoch"], "sampling": study["sampling"],
-          "beta": 1.0, "shape": list(prediction.shape), "target_used_at_inference": False,
+          "beta": study["beta"], "shape": list(prediction.shape), "target_used_at_inference": False,
           "training_or_validation_target_files_read": False})
 
 

@@ -2,7 +2,7 @@
 
 ## 1．分支与实验目的
 
-本分支从`B5-best`的`d45b240`创建，分支名为`B5-best-exp-V13`。V13表示V1和V3；不用斜杠，避免分支名看起来像多级目录。
+本分支名为`B5-best-exp-V13`，已合并`B5-best/7899e68`的β0.75实现。V13表示V1和V3；不用斜杠，避免分支名看起来像多级目录。
 
 本地代码worktree：`C:\Users\Ashley\Downloads\备赛\B5-CMF工作树\Best-V13`。
 
@@ -35,11 +35,13 @@ FM路径、原FM/Huber/PCC/I辅助损失、同步I、人口学条件保持原定
 |新增训练预算|20轮|20轮|
 |周期验证|每5轮，最后一轮也验证|相同|
 |生成|Heun16/K16/seed42|相同|
-|最终组合|FM−完整记录501点均值＋S50-F|相同|
-|慢组合系数|固定β=1|相同|
+|最终组合|FM−完整记录501点均值＋0.75×S50-F|相同|
+|慢组合系数|固定β=0.75|相同|
 |选模|最终组合(R1+R2)/2|相同|
 
-固定β=1用于分离模块的作用。seed43/β0.75复核是另外的推理实验，本轮不混入。即使新分支只直接改V1/V3，联合微调和多导联生成状态仍可能影响其他导联，因此必须检查全部导联。
+两组固定当前B5-best的β=0.75；周期验证、best选模和最终推理都一致。唯一差异仍是有无V1/V3模块。即使新分支只直接改V1/V3，联合微调和多导联生成状态仍可能影响其他导联，因此必须检查全部导联。
+
+V13尚未启动，可以直接使用本版开始。若先前已经做过β=1的CPU预检，不复用旧shared；下面统一使用新的`local_shape_beta075_v1`结果根目录，重新prepare。原FM、S50-F权重不需要重新训练。
 
 ## 3．调用的现有权重
 
@@ -104,7 +106,7 @@ git log -1 --oneline
 set -euo pipefail
 cd /home/qht/huawei_B5_best_exp_v13
 
-run=/home/qht/huawei/results/B5-best-exp-V13/local_shape_v1
+run=/home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1
 mkdir -p "$run"
 
 python -u -m baselines.B5_v13.prepare \
@@ -134,8 +136,8 @@ cd /home/qht/huawei_B5_best_exp_v13
 
 bash scripts/run_b5_v13.sh \
   --group control \
-  --study /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/shared/study.json \
-  --output /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/control \
+  --study /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/shared/study.json \
+  --output /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/control \
   --gpu 0
 ```
 
@@ -146,12 +148,12 @@ cd /home/qht/huawei_B5_best_exp_v13
 
 bash scripts/run_b5_v13.sh \
   --group v13 \
-  --study /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/shared/study.json \
-  --output /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/v13 \
+  --study /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/shared/study.json \
+  --output /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/v13 \
   --gpu 2
 ```
 
-脚本先运行第0轮初始验证（Heun16/K16，可能需要较长时间），核对当前组合分数；然后新增20轮FM训练，每5轮验证，结束后再分别评估`best.pt`和`last.pt`。相同记录在两个任务中复用相同预测。
+脚本先运行第0轮初始验证（Heun16/K16、β=0.75，可能需要较长时间），核对当前组合分数（参考平均r约0.694918）；然后新增20轮FM训练，每5轮验证，结束后再分别评估`best.pt`和`last.pt`。相同记录在两个任务中复用相同预测。
 
 `best.pt`按**最终组合的QC平均r**选，不按FM单独r、Task1单独r或RMSE选。第0轮也参与选模；若所有续训都没超过基准，best仍是第0轮，这时应同时看last和验证曲线。`last.pt`保存优化器、EMA、随机状态及数据加载器状态，用于续训。
 
@@ -166,9 +168,9 @@ cd /home/qht/huawei_B5_best_exp_v13
 
 bash scripts/run_b5_v13.sh \
   --group v13 \
-  --study /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/shared/study.json \
-  --output /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/v13 \
-  --resume /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/v13/last.pt \
+  --study /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/shared/study.json \
+  --output /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/v13 \
+  --resume /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/v13/last.pt \
   --gpu 2
 ```
 
@@ -181,7 +183,7 @@ bash scripts/run_b5_v13.sh \
 set -euo pipefail
 cd /home/qht/huawei_B5_best_exp_v13
 
-run=/home/qht/huawei/results/B5-best-exp-V13/local_shape_v1
+run=/home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1
 report="$run/comparison_$(date +%Y%m%d_%H%M%S)"
 
 python -u -m baselines.B5_v13.compare \
@@ -217,7 +219,7 @@ tar \
   --exclude='*.npy' \
   --exclude='*.npz' \
   -czf B5_V13_reports.tar.gz \
-  results/B5-best-exp-V13/local_shape_v1
+  results/B5-best-exp-V13/local_shape_beta075_v1
 ```
 
 包含study/preflight、日志、训练曲线、best/last完整评分、导联明细、局部形态和图片；不包含大型权重和数组。
@@ -230,9 +232,9 @@ tar \
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 python -u -m baselines.B5_v13.validate \
-  --study /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/shared/study.json \
-  --checkpoint /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/v13/best.pt \
-  --output /home/qht/huawei/results/B5-best-exp-V13/local_shape_v1/v13/manual_evaluation_v1 \
+  --study /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/shared/study.json \
+  --checkpoint /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/v13/best.pt \
+  --output /home/qht/huawei/results/B5-best-exp-V13/local_shape_beta075_v1/v13/manual_evaluation_v1 \
   --device cuda
 ```
 

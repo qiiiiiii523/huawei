@@ -15,7 +15,7 @@ from baselines.B5.flow import sample
 from baselines.B5.losses import flow_loss
 from baselines.B5.metadata import encode_demographics
 from baselines.B5.model import B5UNet
-from baselines.B5_best import SAMPLING, SCORE_PROTOCOL
+from baselines.B5_best import SAMPLING, SCORE_PROTOCOL, BUNDLE_PROTOCOL
 from baselines.B5_best.common import write, sha, read
 from baselines.B5_best.tests.test_hybrid import fixture
 from baselines.B5_best.bundle import export_bundle, load_bundle
@@ -102,7 +102,7 @@ class V13Tests(unittest.TestCase):
                       "repository_root": str(root),
                       "loss": {"huber": .1, "pcc": .1, "anchor": .02, "physiology": 0., "huber_delta": 1.}}
             write(study_path, {"protocol": PROTOCOL, "score_protocol": SCORE_PROTOCOL,
-                  "sampling": dict(SAMPLING), "beta": 1., "code_sha256": code_digest(),
+                  "sampling": dict(SAMPLING), "beta": .75, "code_sha256": code_digest(),
                   "bundle_sha256": sha(root / "components.pt"), "data_config": config})
             model = initialized_model(bundle, "v13", torch.device("cpu"))
             cp = {"protocol": PROTOCOL, "score_protocol": SCORE_PROTOCOL,
@@ -113,6 +113,7 @@ class V13Tests(unittest.TestCase):
             _, _, loaded, _, restored = load_experiment_checkpoint(
                 root / "best.pt", study_path, torch.device("cpu"), verify_data=False)
             engine = ExperimentalPredictor(loaded, torch.device("cpu"), restored)
+            self.assertEqual(engine.slow_beta, .75)
             self.assertFalse(any(p.requires_grad for p in engine.slow.parameters()))
             # Keep the end-to-end 120s predictor, interpolation and combination; mock only heavy FM sampling.
             def fake_sample(model, inputs, keys, **settings):
@@ -121,12 +122,25 @@ class V13Tests(unittest.TestCase):
                 return torch.zeros(len(keys), 12, 5000)
             with patch('baselines.B5_best.predict.sample', side_effect=fake_sample):
                 output = engine.predict(np.zeros((1, 60000), np.float32), {}, "new_patient")
+                engine.slow_beta = 1.
+                beta1_output = engine.predict(np.zeros((1, 60000), np.float32), {}, "new_patient")
+                engine.slow_beta = .75
             self.assertEqual(output.shape, (12, 60000))
             self.assertTrue(np.isfinite(output).all())
+            # Mock FM is zero: this checks the ACTUAL output coefficient, not just report metadata.
+            np.testing.assert_allclose(output[1:], .75 * beta1_output[1:], rtol=2e-6, atol=2e-5)
             cp["group"] = "control"
             atomic_save(root / "wrong.pt", cp)
             with self.assertRaises(ValueError):
                 load_experiment_checkpoint(root / "wrong.pt", study_path, torch.device("cpu"), verify_data=False)
+
+    def test_old_beta_one_study_is_rejected_before_reading_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'study.json'
+            write(path, {'protocol': PROTOCOL, 'score_protocol': SCORE_PROTOCOL,
+                         'sampling': dict(SAMPLING), 'beta': 1.})
+            with self.assertRaisesRegex(ValueError, 'beta=0.75'):
+                load_study(path, verify_data=False)
 
     def test_saved_paired_scores_and_morphology_comparison(self):
         phase = np.arange(60000)
@@ -155,7 +169,8 @@ class V13Tests(unittest.TestCase):
                 output = raw.copy()
                 output[[6, 8]] += self.error * np.sin(phase / 9)
                 return output
-        bundle = {'sampling': dict(SAMPLING), 'reference_qc_r': None,
+        bundle = {'bundle_protocol': BUNDLE_PROTOCOL, 'slow_beta': .75,
+                  'sampling': dict(SAMPLING), 'reference_qc_r': None,
                   'reference_tolerance': 2e-5, 'provenance': {}}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
