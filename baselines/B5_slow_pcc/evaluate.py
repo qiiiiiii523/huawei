@@ -13,7 +13,7 @@ from baselines.B5_best.common import csv_write, write, sha
 from baselines.B5_best.combine import combine, upsample_native
 from baselines.B5_best.scoring import diagnostic_summary, scores_from_summaries, write_score_report
 from baselines.B5_best.diagnostics_core import corr
-from .common import Records, load_cache, load_checkpoint
+from .common import Records, load_cache, load_checkpoint, validation_key
 from .core import generate, model_inputs, device_batch
 
 
@@ -24,25 +24,29 @@ def evaluate(model, bundle, study, cache_root, manifest, device, output, group, 
         raise FileExistsError("Use an empty evaluation output; keep tee log beside it")
     output.mkdir(parents=True, exist_ok=True)
     model.eval()
-    dataset = Records(cache_root, manifest["validation"])
+    unique = {}
+    for entry in manifest["validation"]:
+        unique.setdefault(entry["target_record_id"], entry)
+    unique_entries = list(unique.values())
+    dataset = Records(cache_root, unique_entries)
     loader = DataLoader(dataset, batch_size=study["training"]["batch_records"], shuffle=False, num_workers=0)
-    generated, native_rows = {}, []
+    learned, native_rows = {}, []
     scales = np.asarray(bundle["fm"]["scales"]["d12"], np.float32)
     offset = 0
     for batch in loader:
         inputs = device_batch(model_inputs(batch), device)
         native = generate(model, inputs).cpu().numpy()
         for j in range(len(native)):
-            entry = manifest["validation"][offset + j]
+            entry = unique_entries[offset + j]
             restored = upsample_native(native[j].astype(np.float64) * scales[1:, None].astype(np.float64))
-            generated[entry["target_record_id"]] = combine(batch["fm_uV"][j].numpy(), restored, study["beta"])
+            learned[entry["target_record_id"]] = restored
             for lead in range(11):
                 if bool(batch["mask"][j, lead + 1]):
                     y, p = batch["slow_target"][j, lead].numpy(), native[j, lead]
                     native_rows.append({"lead_index": lead, "r": corr(p, y),
                           "rmse_uV": float(np.sqrt(np.mean((p.astype(float) - y) ** 2)) * scales[lead + 1])})
         offset += len(native)
-    lookup = {r["target_record_id"]: r for r in manifest["validation"]}
+    lookup = {r["cache_key"]: r for r in manifest["validation"]}
     summaries = {}
     for task, rows in manifest["validation_rows"].items():
         folder = output / task
@@ -57,12 +61,14 @@ def evaluate(model, bundle, study, cache_root, manifest, device, output, group, 
                 arrays[name] = value
             opened = {}
             for i, row in enumerate(rows):
-                key, start = row["target_record_id"], int(row["start_sample_500hz"])
+                key = validation_key(task, row["pair_id"])
+                start = int(row["start_sample_500hz"])
                 if key not in opened:
                     archive = stack.enter_context(np.load(cache_root / lookup[key]["file"], allow_pickle=False))
-                    opened[key] = {"target": archive["target_uV"], "mask": archive["mask"]}
+                    opened[key] = {"target": archive["target_uV"], "mask": archive["mask"],
+                                   "prediction": combine(archive["fm_uV"], learned[row["target_record_id"]], study["beta"])}
                 record = opened[key]
-                arrays["prediction_uV"][i] = generated[key][:, start:start + 5000]
+                arrays["prediction_uV"][i] = record["prediction"][:, start:start + 5000]
                 arrays["target_uV"][i] = record["target"][:, start:start + 5000]
                 arrays["target_quality_mask"][i] = record["mask"]
             for value in arrays.values():
@@ -90,7 +96,8 @@ def evaluate(model, bundle, study, cache_root, manifest, device, output, group, 
     write(output / "experiment.json", {"group": group, "epoch": epoch, "score": score,
           "slow_diagnostic": native_summary, "FM_frozen": True, "slow_CNN_trainable": True,
           "beta": study["beta"], "reference_matched": matched, "sampling": study["sampling"],
-          "selection_is_final_hybrid_r": True, "training_validation_cache_separated": True})
+          "selection_is_final_hybrid_r": True, "training_validation_cache_separated": True,
+          "validation_FM_handling": "preserve_historical_predictions_per_task_pair"})
     write(output / "evaluation.json", {"completed": True, "group": group, "epoch": epoch,
           "score": score, "sampling": study["sampling"], "FM_frozen": True,
           "target_used_at_inference": False, "reference_matched": matched})

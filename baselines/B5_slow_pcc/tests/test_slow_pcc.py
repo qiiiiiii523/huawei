@@ -20,7 +20,7 @@ from baselines.B5_best.slow import SlowCNN, predict_native
 from baselines.B5_best.tests.test_hybrid import fixture
 from baselines.B5_slow_pcc import PROTOCOL, CACHE_PROTOCOL
 from baselines.B5_slow_pcc.cache import generate_fm, build
-from baselines.B5_slow_pcc.common import code_digest, load_cache, Records
+from baselines.B5_slow_pcc.common import code_digest, load_cache, Records, validation_key
 from baselines.B5_slow_pcc.core import generate, upsample, model_inputs
 from baselines.B5_slow_pcc.evaluate import evaluate
 from baselines.B5_slow_pcc.export import export
@@ -145,8 +145,11 @@ class SlowPCCTests(unittest.TestCase):
                 rows[task] = [{'pair_id': d, 'target_record_id': 'record', 'subject_id': 'patient',
                                'input_type': d, 'start_sample_500hz': str(s), 'expected_window_count': '12'}
                               for d in devices for s in range(0, 60000, 5000)]
+            pair_entries = [dict(entry, cache_key=validation_key(task, d), pair_id=d)
+                            for task, devices in [('task1', ['watch_ecg']), ('task2', ['ecg_machine_d6', 'body_scale_d6'])]
+                            for d in devices]
             manifest = {'protocol': CACHE_PROTOCOL, 'completed': True, 'study_sha256': sha(study_path),
-                        'train': [], 'validation': [entry], 'validation_rows': rows}
+                        'train': [], 'validation': pair_entries, 'validation_rows': rows}
             write(cache / 'cache.json', manifest)
             load_cache(cache, study_path)
             self.assertEqual(Records(cache, [entry])[0]['target_uV'].shape, (12, 60000))
@@ -215,14 +218,20 @@ class SlowPCCTests(unittest.TestCase):
             for task, ds in validation.items():
                 folder = source / task; folder.mkdir(parents=True)
                 values = np.stack([ds[i]['target_uV'] for i in range(len(ds))])
-                np.save(folder / 'prediction_uV.npy', values)
+                historical = values.copy()
+                if task == 'task2':
+                    # Reproduce the actual failure: identical targets/I but DIFFERENT saved FM ensembles.
+                    historical[:12, 8] += .3 * np.sin(np.arange(5000) / 12)
+                    historical[12:, 8] -= .5 * np.cos(np.arange(5000) / 17)
+                np.save(folder / 'prediction_uV.npy', historical)
                 np.save(folder / 'target_uV.npy', values)
                 csv_write(folder / 'window_metadata.csv', ds.rows)
                 for path in folder.iterdir(): checks[str(path)] = sha(path)
             study = {'data_config': {}, 'manifests': {'train': 'train', 'task1': 'task1', 'task2': 'task2'},
                      'sampling': dict(SAMPLING), 'train_records': 1, 'validation_unique_targets': 1,
-                     'source_evaluation_checks': checks, 'source_validation_evaluation': str(source)}
-            bundle = {'fm': {'scales': {'d12': [1.] * 12}}}
+                     'source_evaluation_checks': checks, 'source_validation_evaluation': str(source),
+                     'training': {'batch_records': 1}, 'beta': .75}
+            bundle = {'fm': {'scales': {'d12': [1.] * 12}}, 'reference_qc_r': None}
             with patch('baselines.B5_slow_pcc.cache.load_study', return_value=(study, bundle)), \
                  patch('baselines.B5_slow_pcc.cache.preprocessing_config'), \
                  patch('baselines.B5_slow_pcc.cache.checkpoint_preprocessor'), \
@@ -235,6 +244,28 @@ class SlowPCCTests(unittest.TestCase):
                 manifest = load_cache(root / 'cache', study_path)
                 self.assertEqual(manifest['train'][0]['target_record_id'], 'train_record')
                 self.assertEqual(manifest['validation'][0]['target_record_id'], 'validation_record')
+                self.assertEqual(len(manifest['validation']), 3)
+                self.assertEqual(manifest['validation_unique_targets'], 1)
+                self.assertTrue(any(not row['passed_old_pointwise_tolerance']
+                                    for row in manifest['repeated_prediction_differences']))
+                for item in manifest['validation']:
+                    task, pair_id = item['cache_key'].split(':', 1)
+                    ds = validation[task]
+                    ids = [i for i, r in enumerate(ds.rows) if r['pair_id'] == pair_id]
+                    saved = np.load(source / task / 'prediction_uV.npy')
+                    with np.load(root / 'cache' / item['file']) as archive:
+                        np.testing.assert_array_equal(archive['fm_uV'], np.concatenate(saved[ids], axis=-1))
+                with patch('baselines.B5_slow_pcc.evaluate.generate',
+                           side_effect=lambda model, inputs: torch.zeros(len(inputs['anchor']), 11, 6000)):
+                    evaluate(torch.nn.Identity(), bundle, study, root / 'cache', manifest, torch.device('cpu'),
+                             root / 'evaluation', 'control', 0)
+                for task, ds in validation.items():
+                    actual = np.load(root / 'evaluation' / task / 'prediction_uV.npy')
+                    saved = np.load(source / task / 'prediction_uV.npy')
+                    for device in sorted({r['pair_id'] for r in ds.rows}):
+                        ids = [i for i, row in enumerate(ds.rows) if row['pair_id'] == device]
+                        expected = combine(np.concatenate(saved[ids], axis=-1), np.zeros((11, 60000)), .75)
+                        np.testing.assert_array_equal(np.concatenate(actual[ids], axis=-1), expected)
                 # Simulate interruption before the final completion marker, retaining per-record progress.
                 (root / 'cache/cache.json').rename(root / 'cache/completed_before_test.json')
                 inference.reset_mock()

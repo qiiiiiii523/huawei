@@ -11,12 +11,12 @@ from baselines.B5.checkpoint import checkpoint_preprocessor, model_from_checkpoi
 from baselines.B5.data import preprocessing_config
 from baselines.B5.flow import sample
 from baselines.B5.runtime import build_datasets, device_from_name, seed_all
-from baselines.B5_best.common import read, sha
+from baselines.B5_best.common import read, sha, csv_write
 from baselines.B5_best.combine import slow_curve
 from baselines.B5_best.diagnose import csv_read, align, target_file
 from baselines.B5_best.validate import pair_indices
 from . import CACHE_PROTOCOL
-from .common import atomic_json, load_study, load_cache
+from .common import atomic_json, load_study, load_cache, validation_key
 
 
 def train_groups(rows):
@@ -82,7 +82,7 @@ def generate_fm(model, anchor, meta, key, scales, sampling, device, batch_window
     return result
 
 
-def build(study_path, output, device_name, resume=False):
+def build(study_path, output, device_name, resume=False, reuse_only=False):
     study_path, output = Path(study_path).resolve(), Path(output).resolve()
     if output.exists() and any(output.iterdir()) and not resume:
         raise FileExistsError("Use empty cache output or explicit --resume; put log beside it")
@@ -107,14 +107,14 @@ def build(study_path, output, device_name, resume=False):
         raise ValueError("Train/validation populations changed")
     device = device_from_name(device_name)
     seed_all(42, True)
-    fm = model_from_checkpoint(bundle["fm"], device).requires_grad_(False).eval()
+    fm = None  # Resume of completed training records needs only CPU/disk reads.
     scales = np.asarray(bundle["fm"]["scales"]["d12"], np.float32)
     manifest = {"protocol": CACHE_PROTOCOL, "study_sha256": sha(study_path), "completed": False,
                 "FM_optimizer_updates": 0, "sampling": study["sampling"],
                 "train": [], "validation": [], "validation_rows": {}}
 
-    def store(split, first, packed, data_sha, make_fm):
-        key = split + ":" + first["target_record_id"]
+    def store(split, first, packed, data_sha, make_fm, cache_key=None):
+        key = split + ":" + (first["target_record_id"] if cache_key is None else cache_key)
         if key in progress["records"]:
             previous = progress["records"][key]
             if previous["data_sha256"] != data_sha or sha(output / previous["file"]) != previous["sha256"]:
@@ -130,24 +130,35 @@ def build(study_path, output, device_name, resume=False):
         os.replace(temporary, path)
         entry = {"target_record_id": first["target_record_id"], "subject_id": first["subject_id"],
                  "file": relative, "sha256": sha(path), "data_sha256": data_sha}
+        if cache_key is not None:
+            entry.update(cache_key=cache_key, pair_id=first["pair_id"])
         progress["records"][key] = entry
         atomic_json(progress_path, progress)
         return entry
 
+    def fresh_train_prediction(anchor, meta, first):
+        nonlocal fm
+        if reuse_only:
+            raise ValueError("A training FM record is missing; reuse-only recovery never regenerates FM")
+        if fm is None:
+            fm = model_from_checkpoint(bundle["fm"], device).requires_grad_(False).eval()
+        return generate_fm(fm, anchor, meta, first["target_record_id"], scales, study["sampling"], device)
+
     for count, indices in enumerate(train_groups(train.rows), 1):
         first = train.rows[indices[0]]
         anchor, meta, packed, data_sha = record_data(train, indices, scales, True)
-        entry = store("train", first, packed, data_sha, lambda: generate_fm(
-            fm, anchor, meta, first["target_record_id"], scales, study["sampling"], device))
+        reused = "train:" + first["target_record_id"] in progress["records"]
+        entry = store("train", first, packed, data_sha, lambda: fresh_train_prediction(anchor, meta, first))
         manifest["train"].append(entry)
-        print(f"TRAIN fixed FM cache {count}/{study['train_records']}: {first['target_record_id']}", flush=True)
+        print(f"TRAIN fixed FM cache {count}/{study['train_records']}: {first['target_record_id']} "
+              f"({'REUSED, no inference' if reused else 'generated'})", flush=True)
     del fm
     if device.type == "cuda":
         torch.cuda.empty_cache()
     for path, expected in study["source_evaluation_checks"].items():
         if sha(path) != expected:
             raise ValueError("Historical FM validation changed: " + path)
-    seen = {}
+    seen, differences = {}, []
     # Validation FM is reused only for validation; it never enters the training dataset.
     for task, ds in validation.items():
         from contextlib import ExitStack
@@ -167,29 +178,39 @@ def build(study_path, output, device_name, resume=False):
                 if not np.array_equal(np.concatenate(target[ids], axis=-1), packed["target_uV"]):
                     raise ValueError("Historical and current validation targets differ")
                 key = first["target_record_id"]
+                pair_key = validation_key(task, first["pair_id"])
                 if key in seen:
                     previous = seen[key]
                     if previous["data_sha256"] != data_sha:
                         raise ValueError("Same validation target has different I/metadata/labels/QC")
                     with np.load(output / previous["file"], allow_pickle=False) as record:
-                        if not np.allclose(record["fm_uV"], restored, atol=.002, rtol=1e-6):
-                            raise ValueError("Repeated validation target has different FM ensemble")
-                    entry = previous
-                else:
-                    entry = store("validation", first, packed, data_sha, lambda: restored)
-                    manifest["validation"].append(entry)
+                        delta = restored.astype(np.float64) - record["fm_uV"].astype(np.float64)
+                        differences.append({"target_record_id": key, "reference_cache_key": previous["cache_key"],
+                              "cache_key": pair_key, "max_abs_difference_uV": float(np.abs(delta).max()),
+                              "missing11_difference_rmse_uV": float(np.sqrt(np.mean(delta[1:] ** 2))),
+                              "passed_old_pointwise_tolerance": bool(np.allclose(record["fm_uV"], restored, atol=.002, rtol=1e-6)),
+                              "handling": "preserve_each_historical_pair_prediction"})
+                entry = store("validation", first, packed, data_sha, lambda: restored, cache_key=pair_key)
+                manifest["validation"].append(entry)
+                if key not in seen:
                     seen[key] = entry
                 for i in indices:
                     rows[i] = ds[i]["evaluation_metadata"]
             manifest["validation_rows"][task] = rows
     if {r["subject_id"] for r in manifest["train"]} & {r["subject_id"] for r in manifest["validation"]}:
         raise ValueError("Cache train/validation subject leakage")
-    if len(manifest["train"]) != study["train_records"] or len(manifest["validation"]) != study["validation_unique_targets"]:
+    if len(manifest["train"]) != study["train_records"] or len(seen) != study["validation_unique_targets"]:
         raise ValueError("Incomplete cache population")
+    if differences:
+        csv_write(output / "validation_fm_differences.csv", differences)
+    manifest.update(validation_unique_targets=len(seen), validation_pairs=len(manifest["validation"]),
+                    validation_FM_handling="preserve_historical_predictions_per_task_pair",
+                    repeated_prediction_differences=differences)
     manifest["completed"] = True
     atomic_json(output / "cache.json", manifest)
     print({"completed": True, "train_records": len(manifest["train"]),
-           "validation_records": len(manifest["validation"]), "FM_optimizer_updates": 0}, flush=True)
+           "validation_unique_targets": len(seen), "validation_pairs": len(manifest["validation"]),
+           "FM_optimizer_updates": 0}, flush=True)
 
 
 def main():
