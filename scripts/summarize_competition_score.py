@@ -1,4 +1,4 @@
-"""汇总任务一、任务二 V0 报告，计算正式比赛主分和 RMSE 加分。"""
+"""旧60分协议审计入口；新best_r选模请使用summarize_mean_r.py。"""
 from __future__ import annotations
 
 import argparse
@@ -24,7 +24,7 @@ def _read_first_row(path: Path) -> dict[str, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="汇总 r1、r2 和任务二 RMSE 加分。")
+    parser = argparse.ArgumentParser(description="旧协议复核：r1/r2和RMSE加分；新选模使用summarize_mean_r.py。")
     parser.add_argument("--task1-overall", required=True, help="任务一 overall_metrics.csv")
     parser.add_argument("--task2-overall", required=True, help="任务二 overall_metrics.csv")
     parser.add_argument("--output-dir", required=True)

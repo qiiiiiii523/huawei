@@ -17,6 +17,10 @@ COMPETITION_SCORE_PROTOCOL = "correlation50_bonus10_target_record_v2"
 TARGET_LEAD_QC_PROTOCOL = "explicit_target_lead_mask_v1"
 QC_TASK2_DEVICE_AGGREGATION = "machine_body_equal_weight_target_record_qc_score_v3"
 QC_COMPETITION_SCORE_PROTOCOL = "correlation50_bonus10_target_record_qc_v3"
+INPUT_QUALITY_PROTOCOL = "explicit_reliable_anchor_record_v1"
+RELIABLE_INPUT_RECORD_PROTOCOL = "record-r-reliable-input-target-qc-v1"
+MEAN_R_SCORE_PROTOCOL = "mean-r-target-record-qc-v1"
+RELIABLE_INPUT_MEAN_R_SCORE_PROTOCOL = "mean-r-reliable-input-target-qc-v1"
 
 
 def _validated_quality_mask(mask: np.ndarray, expected_n: int,
@@ -196,7 +200,7 @@ def rmse_bonus(rmse_uV: float) -> float:
     return 10.0 if rmse_uV <= 70 else 700.0 / rmse_uV
 
 
-def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task_id: str,
+def _evaluate_record_predictions_unfiltered(prediction: np.ndarray, target: np.ndarray, task_id: str,
                                 metadata_rows: list[dict[str, str]], *,
                                 target_quality_mask: np.ndarray | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Target-equal r; Task2 aggregates targets within device, then weights 1:1.
@@ -259,11 +263,99 @@ def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task
     return result, details
 
 
+def evaluate_record_predictions(prediction: np.ndarray, target: np.ndarray, task_id: str,
+                                metadata_rows: list[dict[str, str]], *,
+                                target_quality_mask: np.ndarray | None = None,
+                                input_quality_mask: np.ndarray | None = None,
+                                require_reliable_input: bool = False,
+                                input_quality_source: str | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Explicit record eligibility for the ACTUAL observed input; legacy defaults stay unchanged.
+
+    With require_reliable_input=True, input_quality_mask is [N] or [N,1], constant
+    over each complete 120-s pair. Target QC is also mandatory. The source is an
+    auditable caller declaration, never inferred from output waveform quality.
+    No samples, amplitudes, scales, or target means are modified.
+    """
+    if not require_reliable_input:
+        if input_quality_mask is not None or input_quality_source is not None:
+            raise ContractError("Input quality requires explicit require_reliable_input=True")
+        return _evaluate_record_predictions_unfiltered(prediction, target, task_id, metadata_rows,
+                                                        target_quality_mask=target_quality_mask)
+    prediction, target = np.asarray(prediction), np.asarray(target)
+    if prediction.ndim != 3 or prediction.shape != target.shape or prediction.shape[1:] != (12, 5000):
+        raise ContractError("Reliable-input scoring requires matching raw-uV [N,12,5000] arrays")
+    if not len(prediction) or not np.isfinite(prediction).all() or not np.isfinite(target).all():
+        raise ContractError("Reliable-input scoring requires non-empty finite arrays")
+    if target_quality_mask is None or input_quality_mask is None:
+        raise ContractError("Reliable-input scoring requires both target and actual input quality masks")
+    if not isinstance(input_quality_source, str) or not input_quality_source.strip():
+        raise ContractError("Declare the actual input_quality_source explicitly")
+    quality = _validated_quality_mask(target_quality_mask, len(prediction), metadata_rows)
+    observed = np.asarray(input_quality_mask)
+    if observed.shape == (len(prediction), 1):
+        observed = observed[:, 0]
+    if observed.shape != (len(prediction),) or not np.isin(observed, (0, 1)).all():
+        raise ContractError("input_quality_mask must be boolean/0-1 [N] or [N,1]")
+    observed = observed.astype(bool, copy=False)
+    if input_quality_source == "same_record_target_I" and not np.array_equal(observed, quality[:, 0]):
+        raise ContractError("same_record_target_I input mask disagrees with target I QC")
+    groups = _record_groups(metadata_rows, len(prediction))
+    retained, excluded = [], []
+    device_counts = {}
+    for indices in groups:
+        first = metadata_rows[indices[0]]
+        for key in ("target_record_id", "subject_id", "input_type"):
+            if any(metadata_rows[i].get(key) != first.get(key) for i in indices):
+                raise ContractError("Input-QC pair mixes identities: " + key)
+        if not np.all(observed[indices] == observed[indices[0]]):
+            raise ContractError("Input quality must be constant across all twelve windows; do not delete individual windows")
+        device = first.get("input_type", "")
+        counts = device_counts.setdefault(device, {"original_pairs": 0, "retained_pairs": 0, "excluded_pairs": 0})
+        counts["original_pairs"] += 1
+        if observed[indices[0]]:
+            retained.extend(indices)
+            counts["retained_pairs"] += 1
+        else:
+            counts["excluded_pairs"] += 1
+            excluded.append({"pair_id": first.get("pair_id", first["target_record_id"]),
+                             "target_record_id": first["target_record_id"],
+                             "subject_id": first.get("subject_id", ""), "input_type": device,
+                             "n_windows": len(indices), "input_quality_source": input_quality_source,
+                             "reason": "actual_input_I_marked_unreliable"})
+    if not retained:
+        raise ContractError("No records remain after actual-input quality filtering")
+    # Keep original array order; the existing scorer handles chronological stitching.
+    kept = np.asarray(sorted(retained), dtype=int)
+    kept_rows = [metadata_rows[i] for i in kept]
+    overall, details = _evaluate_record_predictions_unfiltered(
+        prediction[kept], target[kept], task_id, kept_rows, target_quality_mask=quality[kept])
+    # The new protocol never presents the retired RMSE bonus as a score.
+    overall = {k: v for k, v in overall.items() if "bonus" not in k and
+               k not in {"competition_total_score", "competition_score_protocol"}}
+    original_targets = {r["target_record_id"] for r in metadata_rows}
+    kept_targets = {r["target_record_id"] for r in kept_rows}
+    overall.update(record_score_protocol=RELIABLE_INPUT_RECORD_PROTOCOL,
+                   input_quality_protocol=INPUT_QUALITY_PROTOCOL, require_reliable_input=True,
+                   input_quality_source=input_quality_source,
+                   input_qc_original_windows=len(prediction), input_qc_retained_windows=len(kept),
+                   input_qc_excluded_windows=len(prediction) - len(kept),
+                   input_qc_original_pairs=len(groups), input_qc_retained_pairs=len(groups) - len(excluded),
+                   input_qc_excluded_pairs=len(excluded),
+                   input_qc_original_physical_targets=len(original_targets),
+                   input_qc_retained_physical_targets=len(kept_targets),
+                   input_qc_fully_excluded_physical_targets=len(original_targets - kept_targets),
+                   input_qc_device_counts=device_counts, input_qc_exclusions=excluded)
+    return overall, details
+
+
 def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.ndarray,
                                       anchor_i_ecg: np.ndarray, task_id: str,
                                       metadata_rows: list[dict[str, str]],
                                       target_quality_mask: np.ndarray | None = None, *,
-                                      apply_target_qc: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                                      apply_target_qc: bool = False,
+                                      input_quality_mask: np.ndarray | None = None,
+                                      require_reliable_input: bool = False,
+                                      input_quality_source: str | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """P0/P1 adapter returns (summary, RMSE details), without altering predictions.
 
     Default behavior retains all leads; opt in with apply_target_qc=True.
@@ -275,13 +367,76 @@ def evaluate_joint_anchor_predictions(prediction_raw: np.ndarray, target: np.nda
         raise ContractError("target_quality_mask must have shape [N,12]")
     if apply_target_qc and target_quality_mask is None:
         raise ContractError("apply_target_qc requires an explicit target_quality_mask")
+    if require_reliable_input and not apply_target_qc:
+        raise ContractError("Reliable-input protocol also requires apply_target_qc=True")
     return evaluate_record_predictions(prediction, target, task_id, metadata_rows,
-                                       target_quality_mask=target_quality_mask if apply_target_qc else None)
+                                       target_quality_mask=target_quality_mask if apply_target_qc else None,
+                                       input_quality_mask=input_quality_mask,
+                                       require_reliable_input=require_reliable_input,
+                                       input_quality_source=input_quality_source)
+
+
+def correlation_score(r1: float, r2: float, *,
+                      score_protocol: str = MEAN_R_SCORE_PROTOCOL) -> dict[str, Any]:
+    """Model-independent best_r objective: 0.5*r1 + 0.5*r2, without RMSE/bonus."""
+    values = np.asarray([r1, r2], dtype=float)
+    if not np.isfinite(values).all() or (np.abs(values) > 1.000001).any():
+        raise ContractError("Task r must be finite Pearson correlations within [-1,1]")
+    if score_protocol not in {MEAN_R_SCORE_PROTOCOL, RELIABLE_INPUT_MEAN_R_SCORE_PROTOCOL}:
+        raise ContractError("Unknown mean-r score protocol")
+    return {"task1_r_missing11": float(r1), "task2_r_missing11": float(r2),
+            "main_correlation": float(values.mean()), "selection_metric": "main_correlation",
+            "score_protocol": score_protocol}
+
+
+def correlation_score_from_summaries(summaries: dict[str, dict[str, Any]], *,
+                                     require_reliable_input: bool = True) -> dict[str, Any]:
+    """Combine two compatible QC reports; Task2 r must already be device-equal."""
+    if set(summaries) != {"task1", "task2"}:
+        raise ContractError("Mean-r selection requires exactly task1 and task2 reports")
+    for task, summary in summaries.items():
+        if (summary.get("task_id") != task or
+                summary.get("target_record_aggregation") != TARGET_RECORD_AGGREGATION or
+                summary.get("target_lead_qc_protocol") != TARGET_LEAD_QC_PROTOCOL or
+                str(summary.get("quality_mask_applied")).lower() != "true"):
+            raise ContractError("Both task reports must use matching explicit target-record/lead QC")
+        active = str(summary.get("require_reliable_input", False)).lower() == "true"
+        if active != require_reliable_input:
+            raise ContractError("Cannot mix reliable-input and legacy input populations")
+        if active and (summary.get("input_quality_protocol") != INPUT_QUALITY_PROTOCOL or
+                       summary.get("record_score_protocol") != RELIABLE_INPUT_RECORD_PROTOCOL):
+            raise ContractError("Reliable-input report protocol is missing or incompatible")
+    if summaries["task2"].get("task2_device_aggregation") != QC_TASK2_DEVICE_AGGREGATION:
+        raise ContractError("Task2 must use equal weighting of both devices")
+    protocol = RELIABLE_INPUT_MEAN_R_SCORE_PROTOCOL if require_reliable_input else MEAN_R_SCORE_PROTOCOL
+    return correlation_score(float(summaries["task1"]["r_missing11"]),
+                             float(summaries["task2"]["r_missing11"]), score_protocol=protocol)
+
+
+def write_correlation_score(output_dir: str | Path, summary: dict[str, Any]) -> tuple[Path, Path]:
+    if summary.get("score_protocol") not in {MEAN_R_SCORE_PROTOCOL, RELIABLE_INPUT_MEAN_R_SCORE_PROTOCOL}:
+        raise ContractError("Expected an explicit mean-r score, not a legacy total/bonus")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    csv_path, markdown = output / "correlation_score.csv", output / "correlation_score.md"
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(summary))
+        writer.writeheader()
+        writer.writerow(summary)
+    import json
+    (output / "correlation_score.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2,
+                                                            allow_nan=False) + "\n", encoding="utf-8")
+    markdown.write_text("# 两任务平均相关性\n\n选模R=0.5×r1+0.5×r2；RMSE仅诊断，不计加分。\n\n"
+                        "|Task1 r|Task2 r|平均r|\n|---:|---:|---:|\n"
+                        f"|{summary['task1_r_missing11']:.8f}|{summary['task2_r_missing11']:.8f}|"
+                        f"{summary['main_correlation']:.8f}|\n\n协议：{summary['score_protocol']}\n",
+                        encoding="utf-8")
+    return csv_path, markdown
 
 
 def competition_score(r1: float, r2: float, machine_rmse_uV: float, body_rmse_uV: float, *,
                       score_protocol: str = COMPETITION_SCORE_PROTOCOL) -> dict[str, Any]:
-    """50 correlation points plus 10 bonus points; r2 is already device-equal."""
+    """Legacy audit only: 50 correlation + 10 bonus; new best_r uses correlation_score."""
     if not np.isfinite([r1, r2, machine_rmse_uV, body_rmse_uV]).all():
         raise ContractError("Scores must be finite and RMSE non-negative")
     if score_protocol not in {COMPETITION_SCORE_PROTOCOL, QC_COMPETITION_SCORE_PROTOCOL}:
@@ -330,6 +485,12 @@ def write_report(output_dir: str | Path, overall: dict[str, Any], details: list[
               "", "| Device | Lead | RMSE (μV) |", "|---|---|---:|"]
     lines.extend(f"| {row.get('input_type', 'watch_ecg')} | {row['lead']} | {row['rmse_uV']:.6f} |" for row in details)
     markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if "input_qc_exclusions" in overall:
+        with (output / "input_qc_exclusions.csv").open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["pair_id", "target_record_id", "subject_id", "input_type",
+                                                        "n_windows", "input_quality_source", "reason"])
+            writer.writeheader()
+            writer.writerows(overall["input_qc_exclusions"])
     return overall_csv, lead_csv, markdown
 
 
@@ -355,11 +516,17 @@ def main() -> None:
     parser.add_argument("--task-id", required=True, choices=("task1", "task2"))
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--target-quality-mask", help="Opt in to QC scoring with canonical boolean/0-1 [N,12] NPY")
+    parser.add_argument("--input-quality-mask", help="Actual observed I reliability [N] or [N,1] NPY")
+    parser.add_argument("--input-quality-source", help="Auditable actual input source; never infer from prediction")
+    parser.add_argument("--require-reliable-input", action="store_true")
     args = parser.parse_args()
     prediction, target = np.load(args.prediction, mmap_mode="r"), np.load(args.target, mmap_mode="r")
     rows = _validation_metadata_rows(Path(args.metadata), len(prediction))
     quality = None if args.target_quality_mask is None else np.load(args.target_quality_mask, allow_pickle=False)
-    overall, details = evaluate_record_predictions(prediction, target, args.task_id, rows, target_quality_mask=quality)
+    observed = None if args.input_quality_mask is None else np.load(args.input_quality_mask, allow_pickle=False)
+    overall, details = evaluate_record_predictions(prediction, target, args.task_id, rows, target_quality_mask=quality,
+                        input_quality_mask=observed, input_quality_source=args.input_quality_source,
+                        require_reliable_input=args.require_reliable_input)
     print("Wrote:", *write_report(args.output_dir, overall, details), sep="\n")
 
 
