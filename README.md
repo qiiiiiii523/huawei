@@ -1,3 +1,7 @@
+# B5-best-exp-PublicSlow：慢CNN公开长记录扩充
+
+本分支从B5-best创建，提供C（华为）、M（华为＋PTB混合）、P（PTB）三组两阶段慢CNN实验；全程固定control100 FM。服务器下载后操作、预检、三卡训练、续跑和打包见 [docs/b5_public_slow_cmp.md](docs/b5_public_slow_cmp.md)。下方是继承的稳定版说明，不代表本分支已经取得新实验成绩。
+
 # B5-best：当前稳定组合
 
 当前分支的使用入口见 [docs/b5_best.md](docs/b5_best.md)。默认已升级为 **control100 FM快残差＋SlowPCC第20轮慢CNN**，β=0.75、Heun16/K16/seed42。完整推理已复现：Task1 r=0.702354、Task2 r=0.694077、平均r=0.698216。默认读取SHA固定的完整双模型包，无需重新训练；predict/validate可省略--checkpoint。只按两个任务平均r选模，RMSE不计分。下面保留公共底座的历史说明，不代表当前B5-best的评分入口。
