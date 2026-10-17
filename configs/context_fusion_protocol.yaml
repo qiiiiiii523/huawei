@@ -128,7 +128,10 @@ shared_p1_rules:
   training_stage_i_replacement: forbidden
   output: full_d12_prediction
   same_task_same_architecture_same_budget: required
-  checkpoint_selection: maximize_validation_r_missing11
+  checkpoint_selection: maximize_validation_main_correlation
+  checkpoint_task_weights: {task1: 0.5, task2: 0.5}
+  checkpoint_requires_both_tasks: true
+  require_reliable_input: true
   validation_test_submit_i_replacement: diagnostic_only_not_scored
   context_is_conditioning_only: true
 
@@ -148,7 +151,9 @@ reporting:
   required_metrics: [r_missing11, RMSE]
   task2_extra_metrics: [shuffled_context]
   checkpoint_metric_view: raw_uV_v0
-  checkpoint_metric: r_missing11
+  checkpoint_metric: main_correlation
+  score_protocol: mean-r-reliable-input-target-qc-v1
+  rmse_role: diagnostic_only
   architecture_fields: [architecture_id, architecture_config_hash]
 
 forbidden:

@@ -47,7 +47,8 @@ def main() -> None:
     assert protocol["validation"]["aggregation"] == "target_macro_after_pair_mean_after_chronological_window_stitch"
     assert protocol["validation"]["target_record_aggregation"] == TARGET_RECORD_AGGREGATION
     assert protocol["validation"]["task2_device_weights"] == {"ecg_machine_d6": .5, "body_scale_d6": .5}
-    assert protocol["validation"]["task2_bonus_aggregation"] == "convert_each_device_rmse_then_equal_weight"
+    assert protocol["validation"]["rmse_role"] == "diagnostic_only"
+    assert protocol["validation"]["diagnostic_rmse_leads"] == ["V1", "V2", "V3", "V4", "V5", "V6"]
     assert common["joint_anchor"]["context_layout"] == "independent_record_windows"
     assert common["joint_anchor"]["target_record_seconds"] == 120
     assert preprocessing["output_contract"]["prohibited_at_inference"] == "using_true_target_baseline_uV"
@@ -115,10 +116,14 @@ def main() -> None:
         assert context_protocol["forbidden"][forbidden_name] is True
         assert context_protocol["shared_p1_rules"][forbidden_name] == "forbidden"
     assert context_protocol["shared_p1_rules"]["loss"] == "joint_anchor_sync_loss"
-    assert protocol["validation"]["checkpoint_selection"] == "maximize_validation_r_missing11"
-    assert protocol["validation"]["checkpoint_metric"] == "r_missing11"
-    assert context_protocol["shared_p1_rules"]["checkpoint_selection"] == "maximize_validation_r_missing11"
-    assert context_protocol["reporting"]["checkpoint_metric"] == "r_missing11"
+    assert protocol["validation"]["checkpoint_selection"] == "maximize_validation_main_correlation"
+    assert protocol["validation"]["checkpoint_metric"] == "main_correlation"
+    assert protocol["validation"]["checkpoint_task_weights"] == {"task1": .5, "task2": .5}
+    assert protocol["validation"]["checkpoint_requires_both_tasks"] is True
+    assert protocol["validation"]["bonus_in_checkpoint_selection"] is False
+    assert protocol["validation"]["require_reliable_input"] is True
+    assert context_protocol["shared_p1_rules"]["checkpoint_selection"] == "maximize_validation_main_correlation"
+    assert context_protocol["reporting"]["checkpoint_metric"] == "main_correlation"
     for task_name in ("task1", "task2"):
         with (ROOT / "configs" / "experiments" / f"{task_name}_joint_anchor.yaml").open(encoding="utf-8") as handle:
             experiment = yaml.safe_load(handle)

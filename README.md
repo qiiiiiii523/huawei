@@ -2,6 +2,8 @@
 
 `main` 是供组员创建 baseline 分支的公共底座。它提供数据、预处理、loss、评估和检查；**不提供网络、训练循环、checkpoint 或预测结果**。
 
+当前新运行按`R=0.5×Task1 r+0.5×Task2 r`选择`best_r.pt`，RMSE只做诊断。验证应显式启用实际输入I可靠性过滤和目标导联QC；旧评分接口默认行为为兼容而保留，模型分支需自行接入。[协议、CPU重评分与同步步骤](docs/reliable_input_mean_r.md)。
+
 ## 1. 固定任务：模型到底要做什么
 
 ```text
@@ -197,18 +199,18 @@ test:             organizer context + organizer machine-I -> prediction
 
 validation 的 target 只用于：构造模拟可见 anchor、计算 loss、离线 V0 评分；不能作为模型输入的 hidden target。
 
-checkpoint selection uses validation record-level `r_missing11` (mean Pearson r over II--V6 after windows are stitched by `pair_id`). Lead I and anchor-I replacement are excluded from the primary metric.
+每个任务计算完整120秒、缺失II--V6的`r_missing11`，先在物理目标内平均配对指标，再按目标及导联规则汇总；双任务选模使用`main_correlation=0.5*r1+0.5*r2`。I不参加相关性，但其实际输入质量决定整条记录是否进入可靠输入验证。
 
 正式 record evaluator 会验证窗口从 0 开始、以 5000 点连续递增，并与
 `expected_window_count` 一致；缺窗缓存会直接报错，不能伪装成完整记录分数。
 新版正式评估要求每个pair严格12窗/120秒；旧Task1的110秒缓存会拒绝评分，需重建。
 
-每次 validation 只保留 `r_missing11`（II--V6 的逐记录平均相关系数）；RMSE 保留用于加分。
+每次双任务validation记录r1、r2及R，以R最高选择best_r.pt。RMSE保留作诊断，不用于新选模或加分。
 
-两任务 r1/r2 使用上述 r_missing11。Task 2 加分字段 `task2_missing_lead_mean_rmse_uV` 只计算 V1–V6；`missing11_mean_rmse_uV` 是 11 导联误差统计，不用于加分。旧报告需重新评估，总分脚本会拒绝未声明 V1–V6 范围的旧报告。
+Task2诊断字段`task2_missing_lead_mean_rmse_uV`只计算V1--V6；`missing11_mean_rmse_uV`是11导联误差统计。旧60分函数/脚本只作历史报告审计，新汇总使用scripts/summarize_mean_r.py。可靠输入新范围与旧报告不能混比。
 
 评估输入必须为已乘回冻结 d12 scale 的原始 μV，target 必须为原始 NPY。
-评估不减 median、乘 scale、滤波或替换 I。Task2按input_type分别计算，再设备1:1平均r；各设备胸导联RMSE先换算加分，再1:1平均加分。两设备均须存在，缺一设备报错，不按记录数量混合。
+评估不减median、不再乘scale、不滤波或替换I。Task2按input_type分别计算，再设备1:1平均r；新协议中的RMSE仅作诊断。两设备均须有有效目标，缺一设备报错，不按记录数量混合。下面是保留旧默认行为的兼容CLI；启用新范围及双任务重算见上述协议文档。
 
 ```powershell
 python -m ecg12gen.evaluate `
@@ -231,7 +233,7 @@ python -m ecg12gen.evaluate `
 4. 先报告 Anchor-only baseline。
 5. 添加 Context encoder + Fusion module，跑 Joint-anchor adaptation。
 6. 在相同预算下比较 Anchor-only vs Joint-anchor。
-7. 仅以逐记录 raw-uV r_missing11 选择 checkpoint。
+7. 双任务按相同可靠输入/QC规则验证，以0.5r1+0.5r2选择best_r.pt；last.pt保存最新训练状态。
 8. 测试时只传 context + 主办方 machine-I anchor。
 ```
 
