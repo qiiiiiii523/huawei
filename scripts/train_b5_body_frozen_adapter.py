@@ -12,6 +12,7 @@ from baselines.B5.config import ModelConfig
 from baselines.B5.context_body import B5BodyContext
 from baselines.B5.context_body_attention import B5BodyContextAttention
 from baselines.B5.context_body_beat_rhythm import B5BodyContextBeatRhythm
+from baselines.B5.context_body_lead_relation import B5BodyContextLeadRelation
 from baselines.B5.context_body_meanstd import B5BodyContextMeanStd
 from baselines.B5.losses import flow_loss
 from baselines.B5.metadata import DemographicsTable
@@ -26,6 +27,8 @@ MEANSTD_NAME = "A_frozen_meanstd_v1"
 ATTENTION_NAME = "A_frozen_attention_v1"
 FEATURE_NAMES = {"beat": "A_frozen_beat_v1", "rhythm": "A_frozen_rhythm_v1",
                  "beat_rhythm": "A_frozen_beat_rhythm_v1"}
+RELATION_NAME = "A_frozen_lead_relation_v1"
+RELATION_AUX_WEIGHT = 0.02
 SOURCE = ROOT / "results/B5/context_start/best.pt"
 MEANSTD_CHECKPOINT = ROOT / "results/context_body/A_frozen_meanstd_v1/best.pt"
 ATTENTION_CHECKPOINT = ROOT / "results/context_body/A_frozen_attention_v1/best.pt"
@@ -37,6 +40,9 @@ def adapter_name(name: str) -> bool:
 
 
 def trainable_name(name: str, encoder_variant: str) -> bool:
+    if encoder_variant == "lead_relation":
+        return name.startswith(("body_encoder.relation_encoder.",
+                                "body_encoder.transfer_head.", "body_encoder.relation_gate"))
     if encoder_variant in FEATURE_NAMES:
         active = (("beat_branch.", "beat_gate") if encoder_variant == "beat" else
                   ("rhythm_branch.", "rhythm_gate") if encoder_variant == "rhythm" else
@@ -54,12 +60,13 @@ def assert_frozen(model: B5BodyContext, source: dict) -> None:
 
 
 def make_model(source: dict, device: torch.device, encoder_variant: str = "mean") -> B5BodyContext:
-    if encoder_variant not in ("mean", "mean_std", "attention", *FEATURE_NAMES):
+    if encoder_variant not in ("mean", "mean_std", "attention", "lead_relation", *FEATURE_NAMES):
         raise ValueError(f"Unknown encoder variant: {encoder_variant}")
     model_class = {"mean": B5BodyContext, "mean_std": B5BodyContextMeanStd,
                    "attention": B5BodyContextAttention}.get(encoder_variant)
     config = ModelConfig.from_dict(source["model_config"])
-    model = (B5BodyContextBeatRhythm(config, encoder_variant) if encoder_variant in FEATURE_NAMES
+    model = (B5BodyContextLeadRelation(config) if encoder_variant == "lead_relation" else
+             B5BodyContextBeatRhythm(config, encoder_variant) if encoder_variant in FEATURE_NAMES
              else model_class(config))
     missing, unexpected = model.load_state_dict(source["ema"], strict=False)
     if unexpected or not missing or not all(adapter_name(name) for name in missing):
@@ -84,7 +91,7 @@ def make_model(source: dict, device: torch.device, encoder_variant: str = "mean"
             raise ValueError("Mean+std adapter is missing compatible encoder/FiLM weights")
         model.load_state_dict(compatible, strict=False)
         assert_frozen(model, source)
-    if encoder_variant in FEATURE_NAMES:
+    if encoder_variant in (*FEATURE_NAMES, "lead_relation"):
         initial = torch.load(ATTENTION_CHECKPOINT, map_location="cpu", weights_only=True)
         settings = initial.get("run_config", {})
         if (initial.get("format") != "b5-body-frozen-adapter-v1"
@@ -96,7 +103,12 @@ def make_model(source: dict, device: torch.device, encoder_variant: str = "mean"
         compatible = {name: value for name, value in initial["ema"].items()
                       if adapter_name(name) and name in model.state_dict()}
         required = {name for name in model.state_dict() if adapter_name(name) and
-                    not trainable_name(name, "beat_rhythm")}
+                    not trainable_name(name, "beat_rhythm") and
+                    not trainable_name(name, "lead_relation")}
+        if encoder_variant == "lead_relation":
+            required = {name for name in required if not name.startswith((
+                "body_encoder.beat_branch.", "body_encoder.rhythm_branch.",
+                "body_encoder.beat_gate", "body_encoder.rhythm_gate"))}
         if set(compatible) != required:
             raise ValueError("Attention adapter does not match beat/rhythm model")
         model.load_state_dict(compatible, strict=False)
@@ -120,13 +132,14 @@ def run(args) -> None:
                                        "body_scale_d6", "A_raw_window")
     encoder_variant = getattr(args, "encoder_variant", "mean")
     experiment_name = {"mean": NAME, "mean_std": MEANSTD_NAME,
-                       "attention": ATTENTION_NAME, **FEATURE_NAMES}[encoder_variant]
+                       "attention": ATTENTION_NAME, "lead_relation": RELATION_NAME,
+                       **FEATURE_NAMES}[encoder_variant]
     output = ROOT / "results/context_body" / experiment_name
     model = make_model(source, device, encoder_variant)
     trainable = [p for p in model.parameters() if p.requires_grad]
     if not trainable or not any(p.requires_grad for p in model.body_encoder.parameters()):
         raise ValueError("Body encoder must be trainable")
-    if encoder_variant not in ("attention", *FEATURE_NAMES) and not any(p.requires_grad for p in model.body_film.parameters()):
+    if encoder_variant not in ("attention", "lead_relation", *FEATURE_NAMES) and not any(p.requires_grad for p in model.body_film.parameters()):
         raise ValueError("FiLM must be trainable for the original adapter variants")
     train_data, val_data = BodySubset("train", "A_raw_window"), BodySubset("validation", "A_raw_window")
     try:
@@ -144,11 +157,17 @@ def run(args) -> None:
         rng_before, collate_before, loader_before = pack_rng(), train_adapter.rng.bit_generator.state, generator.get_state()
         batch = on_device(next(iter(train_loader)), device)
         loss, _ = flow_loss(model, batch, LOSS, scale, body_context=True)
+        relation_aux = loss.new_zeros(())
+        if encoder_variant == "lead_relation":
+            relation_aux = model.body_encoder.last_auxiliary_loss
+            if relation_aux is None or not torch.isfinite(relation_aux) or model.body_encoder.last_valid_records < 1:
+                raise ValueError("Lead-relation auxiliary preflight lacks valid paired beats")
+            loss = loss + RELATION_AUX_WEIGHT * relation_aux
         loss.backward()
         film_grad = sum(float(p.grad.detach().abs().sum()) for p in model.body_film.parameters() if p.grad is not None)
         encoder_grad = sum(float(p.grad.detach().abs().sum()) for p in model.body_encoder.parameters()
                            if p.grad is not None)
-        if encoder_variant in ("attention", *FEATURE_NAMES):
+        if encoder_variant in ("attention", "lead_relation", *FEATURE_NAMES):
             if encoder_grad <= 0 or film_grad != 0 or any(
                     p.grad is not None for p in model.parameters() if not p.requires_grad):
                 raise ValueError("Encoder-only gradient/freeze preflight failed")
@@ -160,6 +179,8 @@ def run(args) -> None:
         generator.set_state(loader_before)
         print(json.dumps({"preflight": "passed", "film_gradient_l1": film_grad,
                           "encoder_gradient_l1": encoder_grad,
+                          "relation_aux_loss": float(relation_aux.detach()),
+                          "relation_valid_records": getattr(model.body_encoder, "last_valid_records", None),
                           "trainable_parameters": sum(p.numel() for p in trainable)}), flush=True)
         if args.preflight:
             return
@@ -177,10 +198,15 @@ def run(args) -> None:
             settings["initial_adapter_checkpoint"] = str(MEANSTD_CHECKPOINT.relative_to(ROOT)).replace("\\", "/")
             settings["initial_adapter_sha256"] = file_sha256(MEANSTD_CHECKPOINT)
             settings["trainable_scope"] = "body_encoder_only"
-        if encoder_variant in FEATURE_NAMES:
+        if encoder_variant in (*FEATURE_NAMES, "lead_relation"):
             settings["initial_adapter_checkpoint"] = str(ATTENTION_CHECKPOINT.relative_to(ROOT)).replace("\\", "/")
             settings["initial_adapter_sha256"] = file_sha256(ATTENTION_CHECKPOINT)
-            settings["trainable_scope"] = "explicit_beat_rhythm_branch_only"
+            settings["trainable_scope"] = ("lead_relation_encoder_transfer_and_gate_only"
+                                           if encoder_variant == "lead_relation" else
+                                           "explicit_beat_rhythm_branch_only")
+        if encoder_variant == "lead_relation":
+            settings["relation_aux_weight"] = RELATION_AUX_WEIGHT
+            settings["relation_support_query"] = "even_support_odd_query_body_beats"
         ledger = output / "run_config.json"
         if args.resume:
             if not ledger.is_file() or json.loads(ledger.read_text(encoding="utf-8")) != settings:
@@ -212,11 +238,18 @@ def run(args) -> None:
             model.eval()  # Keep frozen metadata dropout off; gradients still flow through B5.
             optimizer.zero_grad(set_to_none=True)
             running = 0.0
+            auxiliary_running = 0.0
             for index, raw in enumerate(train_loader):
                 batch = on_device(raw, device)
                 group_start = (index // args.accumulation) * args.accumulation
                 divisor = min(args.accumulation, len(train_loader) - group_start)
                 loss, _ = flow_loss(model, batch, LOSS, scale, body_context=True)
+                if encoder_variant == "lead_relation":
+                    auxiliary = model.body_encoder.last_auxiliary_loss
+                    if auxiliary is None or not torch.isfinite(auxiliary):
+                        raise ValueError("Invalid body I-to-II auxiliary loss")
+                    auxiliary_running += float(auxiliary.detach())
+                    loss = loss + RELATION_AUX_WEIGHT * auxiliary
                 (loss / divisor).backward()
                 running += float(loss.detach())
                 if (index + 1) % args.accumulation == 0 or index + 1 == len(train_loader):
@@ -231,6 +264,8 @@ def run(args) -> None:
             assert_frozen(model, source)
             record = {"epoch": epoch + 1, "updates": updates,
                       "train_loss": running / len(train_loader)}
+            if encoder_variant == "lead_relation":
+                record["train_relation_aux_loss"] = auxiliary_running / len(train_loader)
             improved = False
             if (epoch + 1) % args.validate_every == 0 or epoch + 1 == args.epochs:
                 evaluation = make_model(source, device, encoder_variant)
@@ -268,7 +303,7 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--validate-every", type=int, default=5)
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
-    parser.add_argument("--encoder-variant", choices=("mean", "mean_std", "attention", *FEATURE_NAMES), default="mean")
+    parser.add_argument("--encoder-variant", choices=("mean", "mean_std", "attention", "lead_relation", *FEATURE_NAMES), default="mean")
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--resume", action="store_true")
     run(parser.parse_args())

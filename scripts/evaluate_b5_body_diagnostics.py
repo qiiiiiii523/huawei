@@ -22,6 +22,7 @@ from baselines.B5.config import ModelConfig
 from baselines.B5.context_body import B5BodyContext, sample_body
 from baselines.B5.context_body_attention import B5BodyContextAttention
 from baselines.B5.context_body_beat_rhythm import B5BodyContextBeatRhythm
+from baselines.B5.context_body_lead_relation import B5BodyContextLeadRelation
 from baselines.B5.context_body_meanstd import B5BodyContextMeanStd
 from baselines.B5.flow import sample
 from baselines.B5.metadata import DemographicsTable
@@ -41,6 +42,7 @@ FROZEN_MEANSTD_CHECKPOINT = ROOT / "results/context_body/A_frozen_meanstd_v1/bes
 FROZEN_ATTENTION_CHECKPOINT = ROOT / "results/context_body/A_frozen_attention_v1/best.pt"
 FEATURE_CHECKPOINTS = {kind: ROOT / f"results/context_body/A_frozen_{kind.removeprefix('frozen_')}_v1/best.pt"
                        for kind in ("frozen_beat", "frozen_rhythm", "frozen_beat_rhythm")}
+RELATION_CHECKPOINT = ROOT / "results/context_body/A_frozen_lead_relation_v1/best.pt"
 
 
 def body_pairs(dataset: BodySubset):
@@ -112,7 +114,8 @@ def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
         raise ValueError("Frozen-adapter diagnostics do not support base mode")
     path = {"A": A_CHECKPOINT, "frozen": FROZEN_CHECKPOINT,
             "frozen_meanstd": FROZEN_MEANSTD_CHECKPOINT,
-            "frozen_attention": FROZEN_ATTENTION_CHECKPOINT, **FEATURE_CHECKPOINTS}.get(checkpoint_kind)
+            "frozen_attention": FROZEN_ATTENTION_CHECKPOINT,
+            "frozen_lead_relation": RELATION_CHECKPOINT, **FEATURE_CHECKPOINTS}.get(checkpoint_kind)
     if path is None:
         raise ValueError(f"Unknown checkpoint kind: {checkpoint_kind}")
     payload = torch.load(path, map_location="cpu", weights_only=True)
@@ -124,10 +127,12 @@ def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
                 or settings.get("steps") != 16 or settings.get("samples") != 16
                 or payload.get("epoch") != 15):
             raise ValueError("A checkpoint does not match the first A ablation")
-    elif checkpoint_kind in ("frozen", "frozen_meanstd", "frozen_attention", *FEATURE_CHECKPOINTS):
+    elif checkpoint_kind in ("frozen", "frozen_meanstd", "frozen_attention",
+                             "frozen_lead_relation", *FEATURE_CHECKPOINTS):
         expected_experiment = {"frozen": "A_frozen_adapter_v1",
                                "frozen_meanstd": "A_frozen_meanstd_v1",
                                "frozen_attention": "A_frozen_attention_v1",
+                               "frozen_lead_relation": "A_frozen_lead_relation_v1",
                                **{kind: f"A_{kind}_v1" for kind in FEATURE_CHECKPOINTS}}[checkpoint_kind]
         if (payload.get("format") != "b5-body-frozen-adapter-v1"
                 or settings.get("experiment") != expected_experiment
@@ -136,6 +141,8 @@ def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
                 or not settings.get("frozen_backbone") or payload.get("epoch") not in (5, 10)
                 or (checkpoint_kind == "frozen_meanstd" and settings.get("encoder_variant") != "mean_std")
                 or (checkpoint_kind == "frozen_attention" and settings.get("encoder_variant") != "attention")
+                or (checkpoint_kind == "frozen_lead_relation" and
+                    settings.get("encoder_variant") != "lead_relation")
                 or (checkpoint_kind in FEATURE_CHECKPOINTS and
                     settings.get("encoder_variant") != checkpoint_kind.removeprefix("frozen_"))):
             raise ValueError("Frozen adapter checkpoint does not match the pilot")
@@ -147,7 +154,8 @@ def load_model(mode: str, source, device, checkpoint_kind: str = "A"):
     model_class = {"frozen_meanstd": B5BodyContextMeanStd,
                    "frozen_attention": B5BodyContextAttention}.get(checkpoint_kind, B5BodyContext)
     config = ModelConfig.from_dict(source["model_config"])
-    model = (B5BodyContextBeatRhythm(config, checkpoint_kind.removeprefix("frozen_"))
+    model = (B5BodyContextLeadRelation(config) if checkpoint_kind == "frozen_lead_relation" else
+             B5BodyContextBeatRhythm(config, checkpoint_kind.removeprefix("frozen_"))
              if checkpoint_kind in FEATURE_CHECKPOINTS else model_class(config))
     model.load_state_dict(payload["ema"], strict=True)
     return model.to(device).eval()
@@ -210,7 +218,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--checkpoint-kind",
-                        choices=("A", "frozen", "frozen_meanstd", "frozen_attention", *FEATURE_CHECKPOINTS), default="A")
+                        choices=("A", "frozen", "frozen_meanstd", "frozen_attention",
+                                 "frozen_lead_relation", *FEATURE_CHECKPOINTS), default="A")
     parser.add_argument("--preflight", action="store_true", help="Check data/model only; no inference/output")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--batch-size", type=int, default=4)
@@ -261,6 +270,7 @@ def main():
                            {"A": A_CHECKPOINT, "frozen": FROZEN_CHECKPOINT,
                             "frozen_meanstd": FROZEN_MEANSTD_CHECKPOINT,
                             "frozen_attention": FROZEN_ATTENTION_CHECKPOINT,
+                            "frozen_lead_relation": RELATION_CHECKPOINT,
                             **FEATURE_CHECKPOINTS}[args.checkpoint_kind])
         info = {"mode": args.mode, "checkpoint_kind": args.checkpoint_kind,
                 "windows": len(dataset), "pairs": len(pairs),
@@ -294,6 +304,7 @@ def main():
             "A": "diagnostics", "frozen": "A_frozen_adapter_v1/diagnostics",
             "frozen_meanstd": "A_frozen_meanstd_v1/diagnostics",
             "frozen_attention": "A_frozen_attention_v1/diagnostics",
+            "frozen_lead_relation": "A_frozen_lead_relation_v1/diagnostics",
             **{kind: f"A_{kind}_v1/diagnostics" for kind in FEATURE_CHECKPOINTS}}[args.checkpoint_kind]
         output = output_root / output_name
         if output.exists():
