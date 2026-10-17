@@ -1,0 +1,10 @@
+{
+  "protocol": "B5-best-context-fir25-v1",
+  "machine_mode": "fir25",
+  "fir_strength": 0.25,
+  "routes": {
+    "ecg_machine_d6": "historical_fir25",
+    "body_scale_d6": "identity",
+    "watch_ecg": "identity"
+  }
+}
