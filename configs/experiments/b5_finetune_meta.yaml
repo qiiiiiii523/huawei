@@ -2,4 +2,4 @@ base: b5_base.yaml
 experiment_id: B5-main-v2-Huawei-finetune
 stage: finetune
 paths:
-  output_dir: results/B5/main_v2_score60_k16_finetune_meta
+  output_dir: results/B5/mean_r_k16_finetune_meta_reliable_i_v1

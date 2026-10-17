@@ -12,13 +12,15 @@ from .data import HuaweiTrainDataset, HuaweiValidationDataset, demographics_tabl
 
 def preflight(config: dict[str, Any], fit_scales: bool = False) -> dict[str, Any]:
     from . import CACHE_PROTOCOL, EVALUATION_PROTOCOL
+    from .scoring import SCORE_PROTOCOL
     from .sampling_settings import inference_sampling
     from ecg12gen.evaluate import QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL
     report = {'cache_protocol': CACHE_PROTOCOL, 'evaluation_protocol': EVALUATION_PROTOCOL, 'context_used': False, 'training_started': False, 'downloads_started': False, 'stage': config['stage'], 'errors': []}
     report.update({'sampling': dict(config['sampling']), 'final_sampling': inference_sampling(),
                    'sampling_matches_final_default': config['sampling'] == inference_sampling(),
                    'selection_metric': config['validation']['selection_metric'],
-                   'competition_score_protocol': COMPETITION_SCORE_PROTOCOL,
+                   'metric_aggregation_protocol': COMPETITION_SCORE_PROTOCOL, 'score_protocol': SCORE_PROTOCOL,
+                   'require_reliable_input': True, 'input_quality_source': 'same_record_target_I',
                    'output_dir': str(resolve_path(config, 'output_dir'))})
     try:
         if fit_scales:

@@ -74,7 +74,7 @@ def repository_root(path: Path) -> Path:
     raise ValueError("B5 config must be located inside the huawei repository")
 
 
-def load_config(path: str | Path) -> dict[str, Any]:
+def load_config(path: str | Path, *, data_only: bool = False) -> dict[str, Any]:
     path = Path(path).resolve()
     config = _read(path, set())
     config["repository_root"] = str(repository_root(path))
@@ -104,10 +104,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if not tasks or len(set(tasks)) != len(tasks) or any(task not in {"task1", "task2"} for task in tasks):
         raise ValueError("validation.tasks must contain distinct task1/task2 entries")
     if set(tasks) != {"task1", "task2"} or int(config["validation"]["batch_size"]) < 1:
-        raise ValueError("Competition selection requires both tasks and a positive validation batch size")
-    config["validation"].setdefault("selection_metric", "competition_total_score")
-    if config["validation"]["selection_metric"] != "competition_total_score":
-        raise ValueError("B5 best.pt must maximize competition_total_score")
+        raise ValueError("Mean-r selection requires both tasks and a positive validation batch size")
+    if data_only:
+        # Reading an old checkout's data paths is not resuming its old score ledger.
+        config["validation"]["selection_metric"] = "main_correlation"
+    config["validation"].setdefault("selection_metric", "main_correlation")
+    if config["validation"]["selection_metric"] != "main_correlation":
+        raise ValueError("B5-best best_r.pt must maximize main_correlation")
     return config
 
 

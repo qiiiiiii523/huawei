@@ -1,83 +1,57 @@
-"""Independent checkpoint records for total points, correlation, and bonus."""
+"""B5-best: only best_r.pt and last.pt; legacy resume scores are rejected."""
 from __future__ import annotations
-
 import copy
 import math
 from pathlib import Path
-from typing import Any
+from .scoring import SCORE_PROTOCOL, scores_from_summaries
 
-from ecg12gen.evaluate import (competition_score, QC_COMPETITION_SCORE_PROTOCOL as COMPETITION_SCORE_PROTOCOL,
-                              TARGET_LEAD_QC_PROTOCOL, QC_TASK2_DEVICE_AGGREGATION)
-
-SELECTION_PROTOCOL = "b5-total-correlation-bonus-target-qc-v2"
-METRIC_FILES = {"competition_total_score": "best.pt", "main_correlation": "best_r.pt",
-                "task2_rmse_bonus_score": "best_bonus.pt"}
+SELECTION_PROTOCOL = "b5-mean-r-reliable-input-v2"
+METRIC_FILES = {"main_correlation": "best_r.pt"}
 
 
-def empty_best_metrics() -> dict[str, Any]:
-    return {key: None for key in METRIC_FILES}
+def empty_best_metrics():
+    return {"main_correlation": None}
 
 
-def scores_from_summaries(summaries: dict[str, Any]) -> dict[str, Any]:
-    if not {"task1", "task2"}.issubset(summaries):
-        raise ValueError("Four-checkpoint selection requires both task1 and task2 validation")
-    for name in ("task1", "task2"):
-        summary = summaries[name]
-        if (summary.get("competition_score_protocol") != COMPETITION_SCORE_PROTOCOL or
-                summary.get("target_lead_qc_protocol") != TARGET_LEAD_QC_PROTOCOL or
-                summary.get("quality_mask_applied") is not True):
-            raise ValueError("B5 selection requires both tasks scored under the same explicit target-lead QC protocol")
-    task2 = summaries["task2"]
-    if task2.get("task2_device_aggregation") != QC_TASK2_DEVICE_AGGREGATION:
-        raise ValueError("B5 QC selection requires device-equal Task2 scoring")
-    return competition_score(float(summaries["task1"]["r_missing11"]), float(task2["r_missing11"]),
-        float(task2["ecg_machine_d6_task2_missing_lead_mean_rmse_uV"]),
-        float(task2["body_scale_d6_task2_missing_lead_mean_rmse_uV"]), score_protocol=COMPETITION_SCORE_PROTOCOL)
-
-
-def update_best_metrics(best: dict[str, Any], scores: dict[str, Any], epoch: int) -> tuple[dict[str, Any], list[str]]:
+def update_best_metrics(best, scores, epoch):
     if set(best) != set(METRIC_FILES) or isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
-        raise ValueError("Invalid checkpoint selection state or epoch")
-    if scores.get("competition_score_protocol") != COMPETITION_SCORE_PROTOCOL:
-        raise ValueError("B5 checkpoint selection cannot mix full-lead and QC scores")
-    values = {key: float(scores[key]) for key in METRIC_FILES}
-    if not all(math.isfinite(value) for value in values.values()):
-        raise FloatingPointError("Nonfinite validation selection metric")
+        raise ValueError("Invalid best-r state or epoch")
+    if scores.get("score_protocol") != SCORE_PROTOCOL:
+        raise ValueError("Cannot mix old total/bonus scores with mean-r selection")
+    value = float(scores["main_correlation"])
+    if not math.isfinite(value):
+        raise FloatingPointError("Nonfinite mean r")
     result = copy.deepcopy(best)
-    improved = []
-    for key, value in values.items():
-        if result[key] is None or value > result[key]["value"]:
-            result[key] = {"value": value, "epoch": epoch}
-            improved.append(key)
-    return result, improved
+    if result["main_correlation"] is None or value > result["main_correlation"]["value"]:
+        result["main_correlation"] = {"value": value, "epoch": epoch}
+        return result, ["main_correlation"]
+    return result, []
 
 
-def restore_best_metrics(checkpoint: dict[str, Any]) -> dict[str, Any]:
+def restore_best_metrics(checkpoint):
     if (checkpoint.get("selection_protocol") != SELECTION_PROTOCOL or
-            checkpoint.get("competition_score_protocol") != COMPETITION_SCORE_PROTOCOL or
-            checkpoint.get("selection_metric") != "competition_total_score"):
-        raise ValueError("Legacy score/selection state cannot be resumed; initialize weights in a new output directory")
+            checkpoint.get("score_protocol") != SCORE_PROTOCOL or
+            checkpoint.get("selection_metric") != "main_correlation"):
+        raise ValueError("Legacy score state cannot resume; use --init-checkpoint in a new output directory")
     if checkpoint.get("checkpoint_role") != "last":
-        raise ValueError("Exact resume requires last.pt; selected checkpoints can initialize a new run")
+        raise ValueError("Exact resume requires last.pt")
     best = checkpoint.get("best_metrics")
     if not isinstance(best, dict) or set(best) != set(METRIC_FILES):
-        raise ValueError("Checkpoint lacks complete total/correlation/bonus best state")
-    for entry in best.values():
-        if entry is not None and (not isinstance(entry, dict) or not math.isfinite(float(entry.get("value", float('nan'))))
-                or isinstance(entry.get("epoch"), bool) or not isinstance(entry.get("epoch"), int) or entry["epoch"] < 0):
-            raise ValueError("Invalid best metric entry")
-    expected = None if best["competition_total_score"] is None else best["competition_total_score"]["value"]
-    if checkpoint.get("best_score") != expected:
-        raise ValueError("Checkpoint total best_score disagrees with its best_metrics")
+        raise ValueError("Missing best-r ledger")
+    entry = best["main_correlation"]
+    if entry is not None and (not isinstance(entry, dict) or
+            not math.isfinite(float(entry.get("value", float("nan")))) or
+            isinstance(entry.get("epoch"), bool) or not isinstance(entry.get("epoch"), int) or entry["epoch"] < 0):
+        raise ValueError("Invalid best-r entry")
+    if checkpoint.get("best_score") != (None if entry is None else entry["value"]):
+        raise ValueError("best_score must equal best mean r")
     return copy.deepcopy(best)
 
 
-def save_selected_checkpoints(output: Path, payload: dict[str, Any], improved: list[str]) -> None:
+def save_selected_checkpoints(output: Path, payload, improved):
     from .checkpoint import atomic_save
     if any(key not in METRIC_FILES for key in improved):
-        raise ValueError("Unknown selected checkpoint metric")
-    # Commit selected files before last: a failed save never commits a resume
-    # ledger claiming that a missing selected file has already been saved.
+        raise ValueError("Unknown selected metric")
     for key in improved:
         atomic_save(output / METRIC_FILES[key], {**payload, "checkpoint_role": key})
     atomic_save(output / "last.pt", {**payload, "checkpoint_role": "last"})
