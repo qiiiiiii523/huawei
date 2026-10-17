@@ -1,0 +1,18 @@
+{
+  "protocol": "B5-PublicFM-paired-v1",
+  "public": {
+    "updates": 20000,
+    "batch_size": 8,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "ema_decay": 0.999,
+    "gradient_clip": 1.0,
+    "save_every": 2000,
+    "validation_records_per_source": 64,
+    "seed": 42
+  },
+  "huawei": {"epochs": 100, "validate_every": 5},
+  "sampling": {"seed": 42, "solver": "heun", "steps": 16, "samples": 16},
+  "slow_beta": 0.75,
+  "note": "Initial fixed-budget experiment, not validated optimal hyperparameters. Expanded source probability defaults to audited training-record proportions. Public validation is diagnostic only; final EMA initializes Huawei."
+}

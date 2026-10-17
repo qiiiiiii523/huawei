@@ -1,4 +1,10 @@
-# B5-best：当前稳定组合
+# B5-best-exp-PublicFM：公开数据扩充实验
+
+本分支从B5-best的`ec12008`创建。服务器步骤见 **[docs/b5_public_fm.md](docs/b5_public_fm.md)**：同一公开FM初始化，配对比较PTB-XL继续训练与PTB-XL＋Chapman扩充训练，随后各自进行华为微调。固定同一慢PCC20，按完整120秒组合平均r选模；保留每5轮FM候选和预测，支持以后更换慢CNN重评。原网络、条件、损失和稳定版默认模型不变。
+
+当前可靠I/QC协议下会重新生成稳定版基准；下面0.698216是历史已验证参考，不代表本次新协议的分数。
+
+# 继承的B5-best稳定组合
 
 当前分支的使用入口见 [docs/b5_best.md](docs/b5_best.md)。默认已升级为 **control100 FM快残差＋SlowPCC第20轮慢CNN**，β=0.75、Heun16/K16/seed42。完整推理已复现：Task1 r=0.702354、Task2 r=0.694077、平均r=0.698216。默认读取SHA固定的完整双模型包，无需重新训练；predict/validate可省略--checkpoint。只按两个任务平均r选模，RMSE不计分。下面保留公共底座的历史说明，不代表当前B5-best的评分入口。
 
