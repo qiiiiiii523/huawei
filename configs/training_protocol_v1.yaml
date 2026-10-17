@@ -1,4 +1,4 @@
-protocol_version: "v2.0-joint-anchor"
+protocol_version: "v2.1-mean-r-reliable-anchor"
 protocol_status: frozen_public_contract
 reproducibility: {seed: 42, deterministic: true}
 data:
@@ -53,13 +53,22 @@ validation:
   target_record_aggregation: target_record_equal_after_pair_mean_v1
   primary_metric_task1: r_missing11
   primary_metric_task2: r_missing11
-  task2_bonus_metric: task2_missing_lead_mean_rmse_uV
-  task2_bonus_leads: [V1, V2, V3, V4, V5, V6]
+  diagnostic_rmse_metric: task2_missing_lead_mean_rmse_uV
+  diagnostic_rmse_leads: [V1, V2, V3, V4, V5, V6]
   target_record_seconds: 120
   task2_device_weights: {ecg_machine_d6: 0.5, body_scale_d6: 0.5}
-  task2_bonus_aggregation: convert_each_device_rmse_then_equal_weight
-  checkpoint_selection: maximize_validation_r_missing11
-  checkpoint_metric: r_missing11
+  checkpoint_selection: maximize_validation_main_correlation
+  checkpoint_metric: main_correlation
+  checkpoint_task_weights: {task1: 0.5, task2: 0.5}
+  checkpoint_requires_both_tasks: true
+  checkpoint_files: {best: best_r.pt, latest: last.pt}
+  bonus_in_checkpoint_selection: false
+  rmse_role: diagnostic_only
+  score_protocol: mean-r-reliable-input-target-qc-v1
+  target_lead_qc: explicit_target_lead_mask_v1
+  input_quality_protocol: explicit_reliable_anchor_record_v1
+  require_reliable_input: true
+  input_quality_source: explicit_actual_input_source_required
   required_metrics: [r_missing11]
   official_prediction_view: raw_prediction_scored_on_II_through_V6
 results: {record_template: docs/experiment-record-template.md, generated_output_dir: results}
