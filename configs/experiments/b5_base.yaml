@@ -7,7 +7,7 @@ paths:
   common_config: configs/common.yaml
   preprocessing_config: configs/preprocessing.yaml
   scales: results/B5/shared/preprocessing_scales.npz
-  output_dir: results/B5-best/mean_r_k16_finetune_meta
+  output_dir: results/B5-best/mean_r_k16_finetune_meta_reliable_i_v1
 model:
   channels: [64, 128, 256]
   time_dim: 128

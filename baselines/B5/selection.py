@@ -3,10 +3,9 @@ from __future__ import annotations
 import copy
 import math
 from pathlib import Path
-from baselines.B5_best import SCORE_PROTOCOL
-from baselines.B5_best.scoring import scores_from_summaries
+from .scoring import SCORE_PROTOCOL, scores_from_summaries
 
-SELECTION_PROTOCOL = "b5-mean-r-only-v1"
+SELECTION_PROTOCOL = "b5-mean-r-reliable-input-v2"
 METRIC_FILES = {"main_correlation": "best_r.pt"}
 
 

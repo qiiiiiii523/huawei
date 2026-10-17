@@ -26,6 +26,8 @@ class PublicVsScratchTests(unittest.TestCase):
         self.assertEqual(report['sampling'],inference_sampling())
         self.assertTrue(report['sampling_matches_final_default'])
         self.assertEqual(report['selection_metric'],'main_correlation')
+        self.assertTrue(report['require_reliable_input'])
+        self.assertEqual(report['score_protocol'],'mean-r-reliable-input-target-qc-v1')
         self.assertEqual(report['metric_aggregation_protocol'],COMPETITION_SCORE_PROTOCOL)
         self.assertIn('mean_r_k16',report['output_dir'])
 

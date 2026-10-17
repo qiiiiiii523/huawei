@@ -1,5 +1,7 @@
 # B5-best：control100 FM＋SlowPCC20稳定组合
 
+> 当前默认验证已启用可靠输入I过滤。本文0.698216等参考分数属于旧目标QC范围，保留为历史记录；权重没有改变。新分数需重算，不能与这些旧分数直接比较。更新与CPU重算见[同步操作步骤](b5_sync_reliable_i.md)。
+
 ## 当前默认方案
 
 2026-10-17，将已完成交叉评估和真实完整推理复现的组合提升为B5-best默认：
@@ -90,6 +92,7 @@ python -u -m baselines.B5_best.validate \
   --config "$config" \
   --device cuda \
   --verify-reference \
+  --legacy-target-qc-only \
   --output-dir "$run" \
   2>&1 | tee "${run}.log"
 
@@ -98,7 +101,7 @@ echo "结果目录：$run"
 )
 ```
 
-省略checkpoint时读取并核对默认包SHA、两个组件来源、β、采样及参考r。验证保留完整120秒、目标导联QC、目标记录等权、Task2两设备等权；只按R=(r1+r2)/2比较。RMSE仅诊断。复现还核对原数据/人口学/划分/QC等SHA；每任务参考容差2e-5。
+上面的命令显式复现历史目标QC范围。省略checkpoint时仍核对默认包SHA、组件来源、β、采样及原参考r。新验证请去掉--legacy-target-qc-only和--verify-reference，或使用新协议重算得到的同权重--reference-report配合--verify-reference。不能拿旧参考r要求新范围复现。120秒、目标记录/导联规则、Task2设备等权及RMSE仅诊断保持不变。
 
 数据配置从原服务器训练run_config读取；其旧选模字段在data_only模式下不参与当前评分。无需把数据复制到这个工作树。
 

@@ -5,8 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import torch
-from baselines.B5_best import SCORE_PROTOCOL
-from baselines.B5_best.scoring import correlation_score
+from baselines.B5.scoring import SCORE_PROTOCOL, correlation_score
 from baselines.B5.selection import (SELECTION_PROTOCOL, empty_best_metrics, update_best_metrics,
                                    restore_best_metrics, save_selected_checkpoints)
 from baselines.B5.config import load_config

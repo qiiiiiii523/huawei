@@ -14,11 +14,26 @@ from baselines.B5.config import load_config, ModelConfig
 from baselines.B5.data import preprocessing_config, common_config, demographics_path
 from baselines.B5.runtime import build_validation_datasets, device_from_name, seed_all
 from ecg12gen.evaluate import evaluate_record_predictions, write_report
-from . import SCORE_PROTOCOL
+from baselines.B5.scoring import SCORE_PROTOCOL, scores_from_summaries, write_score_report, diagnostic_summary
+from . import SCORE_PROTOCOL as LEGACY_SCORE_PROTOCOL
 from .bundle import DEFAULT_PROFILE, load_inference_bundle
 from .common import csv_write, write, sha
 from .predict import Predictor
-from .scoring import scores_from_summaries, write_score_report, diagnostic_summary
+from . import scoring as legacy_scoring
+
+
+def reference_settings(bundle, legacy_target_qc_only=False, reference_report=None):
+    protocol = LEGACY_SCORE_PROTOCOL if legacy_target_qc_only else SCORE_PROTOCOL
+    if reference_report is not None:
+        if reference_report.get("score_protocol") != protocol:
+            raise ValueError("Reference report uses a different input-QC score protocol")
+        reference = {k: float(reference_report[k]) for k in ("task1_r_missing11", "task2_r_missing11")}
+        if not np.isfinite(list(reference.values())).all():
+            raise ValueError("Reference report has nonfinite correlations")
+        return protocol, reference, True
+    reference = bundle.get("reference_qc_r")
+    reference_protocol = bundle.get("reference_score_protocol", bundle.get("score_protocol", LEGACY_SCORE_PROTOCOL))
+    return protocol, reference, reference_protocol == protocol
 
 
 def pair_indices(rows):
@@ -54,7 +69,12 @@ def verify_reference_inputs(bundle, config):
             raise ValueError("Reference data/QC/demographics changed: " + key)
 
 
-def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_reference=False):
+def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_reference=False,
+             legacy_target_qc_only=False, reference_report=None):
+    protocol, reference, same_reference_scope = reference_settings(bundle, legacy_target_qc_only, reference_report)
+    if verify_reference and (reference is None or not same_reference_scope):
+        raise ValueError("Historical bundle reference excludes no bad-I records. Use --legacy-target-qc-only "
+                         "for historical reproduction, or --reference-report with a new reliable-input score")
     output = Path(output)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("Use an empty validation output directory")
@@ -95,8 +115,12 @@ def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_
                 metadata[index] = item["evaluation_metadata"]
             print(f"{task}: {key} complete", flush=True)
         prediction.flush(); target.flush(); quality.flush()
-        overall, details = evaluate_record_predictions(prediction, target, task, metadata, target_quality_mask=quality)
-        overall = diagnostic_summary(overall)
+        options = {} if legacy_target_qc_only else {
+            "input_quality_mask": quality[:, 0], "require_reliable_input": True,
+            "input_quality_source": "same_record_target_I"}
+        overall, details = evaluate_record_predictions(prediction, target, task, metadata,
+                                                       target_quality_mask=quality, **options)
+        overall = legacy_scoring.diagnostic_summary(overall) if legacy_target_qc_only else diagnostic_summary(overall)
         overall.update(sampling=bundle["sampling"], slow_beta=bundle.get("slow_beta", 1.0), model="B5-best-output-hybrid",
                        target_used_at_inference=False, target_record_seconds=120)
         write_report(folder, overall, details, title=f"B5-best {task} full-record QC correlation")
@@ -106,14 +130,17 @@ def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_
                             "target_sha256": sha(folder / "target_uV.npy"),
                             "QC_sha256": sha(folder / "target_quality_mask.npy")}
         del prediction, target, quality
-    score = scores_from_summaries(summaries)
-    write_score_report(output, score)
-    reference = bundle.get("reference_qc_r")
-    matched = None if reference is None else all(
+    scorer = legacy_scoring if legacy_target_qc_only else None
+    score = scorer.scores_from_summaries(summaries) if scorer else scores_from_summaries(summaries)
+    (scorer.write_score_report if scorer else write_score_report)(output, score)
+    matched = None if reference is None or not same_reference_scope else all(
         abs(score[k] - reference[k]) <= bundle["reference_tolerance"] for k in reference)
     write(output / "evaluation.json", {"completed": True, "checkpoint_sha256": bundle_sha,
-          "score_protocol": SCORE_PROTOCOL, "sampling": bundle["sampling"], "slow_beta": bundle.get("slow_beta", 1.0), "population": population,
+          "score_protocol": protocol, "sampling": bundle["sampling"], "slow_beta": bundle.get("slow_beta", 1.0), "population": population,
           "score": score, "reference_qc_r": reference, "reference_matched": matched,
+          "require_reliable_input": not legacy_target_qc_only,
+          "reference_scope_matched": same_reference_scope,
+          "reference_comparison_skipped_reason": None if same_reference_scope else "historical reference uses another input-quality population",
           "target_used_at_inference": False, "provenance": bundle["provenance"]})
     if verify_reference and matched is not True:
         raise ValueError("Historical r not reproduced: keep this report and check inputs/numerics before promoting the bundle")
@@ -130,8 +157,15 @@ def main():
     p.add_argument("--device", default="auto")
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--verify-reference", action="store_true")
+    p.add_argument("--legacy-target-qc-only", action="store_true", help="Explicit historical reproduction; does NOT filter bad input I")
+    p.add_argument("--reference-report", help="New correlation_score.json to verify new input-QC scores without changing weights")
     args = p.parse_args()
     bundle, checkpoint = load_inference_bundle(args.checkpoint, args.profile)
+    reference_report = None if args.reference_report is None else json.loads(Path(args.reference_report).read_text(encoding="utf-8-sig"))
+    _, reference, same_scope = reference_settings(bundle, args.legacy_target_qc_only, reference_report)
+    if args.verify_reference and (reference is None or not same_scope):
+        p.error("Reference belongs to the old target-QC-only population. Use --legacy-target-qc-only "
+                "or supply the new --reference-report")
     cfg = load_config(args.config, data_only=True)
     if args.verify_reference:
         verify_reference_inputs(bundle, cfg)
@@ -144,7 +178,8 @@ def main():
         if source.get(task) and source[task] != ds.manifest_digest:
             raise ValueError("Validation population differs from source: " + task)
     evaluate(bundle, datasets, device_from_name(args.device), args.output_dir,
-             sha(checkpoint), args.batch_size, args.verify_reference)
+             sha(checkpoint), args.batch_size, args.verify_reference,
+             args.legacy_target_qc_only, reference_report)
 
 
 if __name__ == "__main__":

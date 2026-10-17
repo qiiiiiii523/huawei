@@ -26,8 +26,7 @@ from .losses import flow_loss
 from .model import B5UNet
 from .objective import file_sha256, validate_resume_loss
 
-from baselines.B5_best import SCORE_PROTOCOL
-from baselines.B5_best.scoring import write_score_report as write_competition_score, diagnostic_summary
+from .scoring import SCORE_PROTOCOL, write_score_report as write_competition_score, diagnostic_summary
 
 from .selection import (SELECTION_PROTOCOL, METRIC_FILES, empty_best_metrics, restore_best_metrics,
                         scores_from_summaries, update_best_metrics, save_selected_checkpoints)
@@ -136,13 +135,16 @@ def validate(model: B5UNet, datasets: dict[str, Any], config: dict[str, Any], pr
         target.flush()
         quality.flush()
         task_id = name
-        overall, details = evaluate_record_predictions(prediction, target, task_id, rows, target_quality_mask=quality)
+        overall, details = evaluate_record_predictions(
+            prediction, target, task_id, rows, target_quality_mask=quality,
+            input_quality_mask=quality[:, 0], require_reliable_input=True,
+            input_quality_source="same_record_target_I")
         overall = diagnostic_summary(overall)
         overall.update({"source_domain": "Huawei", "solver": settings["solver"],
                         "architecture_id": ARCHITECTURE_ID, "condition_schema": CONDITION_SCHEMA,
                         "metadata_enabled": model.config.metadata_enabled,
                         "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL,
-                        "context_used": False, "competition_score_protocol": COMPETITION_SCORE_PROTOCOL,
+                        "context_used": False, "metric_aggregation_protocol": COMPETITION_SCORE_PROTOCOL,
                         "target_quality_mask_sha256": file_sha256(output / "target_quality_mask.npy"),
                         "device_interpretation_qc_sha256": file_sha256(common_config(config).path("device_interpretation_qc_csv")),
                         "integration_steps": int(settings["steps"]), "samples": int(settings["samples"]),
@@ -248,7 +250,7 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
     (output / "initialization.json").write_text(json.dumps({
         'initialization': initialization, 'scales_sha256': scales_digest(scale_payload),
         'manifests': manifests, 'selection_task': selection, 'selection_metric': 'main_correlation',
-        'selection_protocol': SELECTION_PROTOCOL, 'score_protocol': SCORE_PROTOCOL, 'competition_score_protocol': COMPETITION_SCORE_PROTOCOL,
+        'selection_protocol': SELECTION_PROTOCOL, 'score_protocol': SCORE_PROTOCOL, 'metric_aggregation_protocol': COMPETITION_SCORE_PROTOCOL,
         'architecture_hash': model_config.fingerprint,
         'cache_protocol': CACHE_PROTOCOL, 'evaluation_protocol': EVALUATION_PROTOCOL,
         'loss_config': config['loss'], 'resumed': bool(resume_path)}, indent=2), encoding='utf-8')
@@ -259,7 +261,7 @@ def run_training(config: dict[str, Any], device_name: str, init_path: str | None
 
     def checkpoint_payload(epoch: int) -> dict[str, Any]:
         return {"format_version": 4, "selection_protocol": SELECTION_PROTOCOL, "score_protocol": SCORE_PROTOCOL,
-                "competition_score_protocol": COMPETITION_SCORE_PROTOCOL, "best_metrics": best_metrics, "cache_protocol": CACHE_PROTOCOL,
+                "metric_aggregation_protocol": COMPETITION_SCORE_PROTOCOL, "best_metrics": best_metrics, "cache_protocol": CACHE_PROTOCOL,
                 "evaluation_protocol": EVALUATION_PROTOCOL, "sampling_config": dict(config["sampling"]),
                 "architecture_id": ARCHITECTURE_ID,
                 "architecture_hash": model_config.fingerprint, "model_config": asdict(model_config),

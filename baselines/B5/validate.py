@@ -41,8 +41,8 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     (output / "inference_sampling.json").write_text(json.dumps({
         "sampling": settings, "sampling_config": str(Path(args.sampling_config).resolve()),
-        "checkpoint": str(Path(args.checkpoint).resolve()), "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL, "metric_aggregation_protocol": QC_COMPETITION_SCORE_PROTOCOL, "score_protocol": "mean-r-target-record-qc-v1", "context_used": False}, indent=2), encoding="utf-8")
-    from baselines.B5_best.scoring import scores_from_summaries
+        "checkpoint": str(Path(args.checkpoint).resolve()), "cache_protocol": CACHE_PROTOCOL, "evaluation_protocol": EVALUATION_PROTOCOL, "metric_aggregation_protocol": QC_COMPETITION_SCORE_PROTOCOL, "score_protocol": "mean-r-reliable-input-target-qc-v1", "require_reliable_input": True, "context_used": False}, indent=2), encoding="utf-8")
+    from .scoring import scores_from_summaries
     print(json.dumps(scores_from_summaries(summaries), ensure_ascii=False), flush=True)
 
 

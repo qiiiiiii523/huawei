@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from baselines.B5 import CACHE_PROTOCOL, EVALUATION_PROTOCOL
-from baselines.B5_best import SCORE_PROTOCOL
+from baselines.B5.scoring import SCORE_PROTOCOL
 from baselines.B5.config import load_config
 from baselines.B5.data import HuaweiValidationDataset, common_config, demographics_path
 from baselines.B5.metadata import encode_demographics
