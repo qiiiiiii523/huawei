@@ -1,0 +1,21 @@
+{
+  "release_id": "d6-context-v6-fir25-20261017",
+  "base_branch": "d6-context",
+  "base_commit": "975f6bde79ee9be1ff73e9eb97f500388cec69a2",
+  "candidate_only": true,
+  "weights": {
+    "file": "ema_inference.pt",
+    "bytes": 16495499,
+    "sha256": "fd4dd0d28b62be1a76fbd2a3fee91bca17eb91d10aa7e182e6f2e02e5f62ee46",
+    "source_training_checkpoint_sha256": "563a04172c11459b47a427d5108ed0e395f13c08105494a07b337867970f1d46",
+    "ema_tensors_exactly_equal_to_source": true,
+    "embedded_scales_exactly_equal_to_source": true,
+    "optimizer_and_rng_removed": true,
+    "contains_patient_waveforms_or_personal_FIR_lookup": false
+  },
+  "preprocessing": "embedded frozen scales + repository configs/preprocessing.yaml; raw_uV required for FIR",
+  "postprocess": {"history_inputs": "historical I/II plus validity mask", "sample_rate_hz": 500, "kernel_taps": 61, "ridge_alpha": 0.01, "mixture": 0.25, "unavailable_history_fallback": "projected_model_without_any_FIR"},
+  "results": {"source_validation_raw_r": 0.6223096598141257, "source_validation_safe25_r": 0.6280740487470864, "gpu_replay_raw_r": 0.6222991849411598, "gpu_replay_safe25_r": 0.6280608584436425},
+  "limitations": ["same40 validation patients, no independent patient confirmation", "individual patients/leads may degrade", "chest leads unchanged", "not automatically validated for a new B5-best checkpoint or other devices"],
+  "integration_document": "docs/d6-context-fir25-接入说明.md"
+}

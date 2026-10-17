@@ -1,0 +1,15 @@
+{
+  "release_id": "d6-context-v6-fir25-20261017",
+  "language": "python",
+  "authorization": "User requested publishing only the current best candidate for captain integration, separate from original version",
+  "checks": {
+    "syntax": {"status": "PASS", "evidence": ["7 self-contained release tests pass in clean staged snapshot; full local context suite30 passed"]},
+    "input_contract": {"status": "PASS", "evidence": ["NumPy-only postprocessor, no exploratory script dependency or target input;500Hz raw-uV and lead order documented; no patient datasets or coefficient lookup uploaded"]},
+    "method_alignment": {"status": "PASS", "evidence": ["61tap alpha.01 fixed25%; invalid history returns projected V6; original B5 and V6 files not changed"]},
+    "reproducibility": {"status": "PASS", "evidence": ["Repackaged EMA/scales exactly match exp013 source; raw-input replay safe r0.6280740487470864 unchanged; clean CPU strict loading and finite condition encoding passed"]},
+    "output_contract": {"status": "PASS", "evidence": ["Named inference artifact, SHA256 manifest, Chinese integration document and tests; old release retained at old path"]}
+  },
+  "findings": ["Inherited full-suite tests in a data-free export need the original private B5 checkpoint/dataset and therefore cannot run there; release-specific7 tests and model loader run without those files", "Current candidate still has individual negative effects and no independent-patient confirmation", "A new B5-best backbone requires its own validation; do not transplant reference scales/weights blindly"],
+  "verdict": "PASSED_FOR_CANDIDATE_HANDOFF",
+  "reviewed_at": "2026-10-17"
+}
