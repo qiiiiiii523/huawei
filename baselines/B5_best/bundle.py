@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import shutil
 
 import numpy as np
 import torch
@@ -16,6 +18,64 @@ from .common import read, write, sha, state_sha
 from .slow import load_slow
 
 DEFAULT_PROFILE = Path(__file__).resolve().parents[2] / "configs/b5_best.json"
+
+
+def verified_source(profile):
+    """Resolve only the explicitly pinned portable package; no raw checkpoint fallback."""
+    if "default_bundle" not in profile:
+        raise ValueError("This legacy profile describes raw components; export a portable bundle first "
+                         "and pass it with --checkpoint")
+    if (profile.get("bundle_protocol") != BUNDLE_PROTOCOL or profile.get("sampling") != SAMPLING):
+        raise ValueError("Default profile must preserve v2 and Heun16/K16/seed42")
+    source = Path(profile["default_bundle"])
+    if not source.is_file():
+        raise FileNotFoundError("Verified default model bundle is missing: " + str(source)
+                                + "; keep/copy the verified .pt or pass --checkpoint explicitly")
+    if sha(source) != profile["default_bundle_sha256"]:
+        raise ValueError("Default model bundle SHA256 differs from the verified package")
+    bundle = load_bundle(source)
+    if bundle_slow_beta(bundle) != bundle_slow_beta(profile):
+        raise ValueError("Default package/profile slow_beta mismatch")
+    reference = bundle.get("reference_qc_r")
+    tolerance = float(profile.get("reference_tolerance", 2e-5))
+    if reference is None or any(abs(reference[k] - v) > tolerance for k, v in profile["reference_qc_r"].items()):
+        raise ValueError("Default package/profile reference r mismatch")
+    for component, field in (("fm", "fm_sha256"), ("slow", "slow_sha256")):
+        expected = profile.get("components", {}).get(component + "_sha256")
+        if expected and bundle["provenance"].get(field) != expected:
+            raise ValueError("Default package component provenance mismatch: " + component)
+    return source.resolve(), bundle
+
+
+def load_inference_bundle(checkpoint=None, profile_path=DEFAULT_PROFILE):
+    """Explicit --checkpoint remains backward compatible; omitted means the promoted default."""
+    if checkpoint is not None:
+        path = Path(checkpoint).resolve()
+        return load_bundle(path), path
+    path, bundle = verified_source(read(profile_path))
+    return bundle, path
+
+
+def export_profile(profile_path, output):
+    """Copy a verified portable model byte-for-byte, or export an explicit legacy profile."""
+    profile, output = read(profile_path), Path(output)
+    if "default_bundle" not in profile:
+        return export_bundle(profile["fm_checkpoint"], profile["slow_checkpoint"],
+                             profile["prepared_info"], output, profile)
+    if output.exists() or output.with_suffix(".json").exists():
+        raise FileExistsError("Choose a new bundle path; existing weights are never overwritten")
+    source, bundle = verified_source(profile)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(output.name + ".tmp")
+    shutil.copyfile(source, temporary)
+    if sha(temporary) != profile["default_bundle_sha256"]:
+        raise ValueError("Copied default bundle checksum mismatch")
+    os.replace(temporary, output)
+    write(output.with_suffix(".json"), {k: v for k, v in bundle.items() if k not in ("fm", "slow")} |
+          {"bundle_sha256": sha(output), "verified_default_source": str(source),
+           "deployment_verification": profile.get("deployment_verification"),
+           "training_started": False, "optimizer_updates": 0})
+    return bundle
 
 
 def export_bundle(fm_path, slow_path, prepared_info, output, profile, candidate=False):
@@ -127,8 +187,15 @@ def main():
     p.add_argument("--candidate", action="store_true", help="Explicitly export a different compatible B5-U/S50 pair; no historical score claim")
     args = p.parse_args()
     cfg = read(args.profile)
-    export_bundle(args.fm_checkpoint or cfg["fm_checkpoint"], args.slow_checkpoint or cfg["slow_checkpoint"],
-                  args.prepared_info or cfg["prepared_info"], args.output, cfg, args.candidate)
+    overrides = any((args.fm_checkpoint, args.slow_checkpoint, args.prepared_info, args.candidate))
+    if "default_bundle" in cfg:
+        if overrides:
+            p.error("Current default uses a verified portable package. For raw B5-U/S50 sources use "
+                    "--profile configs/b5_best_legacy_beta075.json with explicit --candidate overrides")
+        export_profile(args.profile, args.output)
+    else:
+        export_bundle(args.fm_checkpoint or cfg["fm_checkpoint"], args.slow_checkpoint or cfg["slow_checkpoint"],
+                      args.prepared_info or cfg["prepared_info"], args.output, cfg, args.candidate)
     print({"bundle": args.output, "training_started": False, "optimizer_updates": 0}, flush=True)
 
 

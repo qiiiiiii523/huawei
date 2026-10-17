@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Export the verified pair and reproduce its full-record QC r. No training.
+# Copy the verified current bundle and reproduce full-record QC r. No training.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 gpu=1
-root=/home/qht/huawei/results/B5-best/stable_beta075_v2
-config=/home/qht/huawei/configs/experiments/b5_main_v2_public_finetune_meta.yaml
+root=/home/qht/huawei/results/B5-best/stable_control100_pcc20_v3
+config=/home/qht/huawei/results/B5/main_v2_score60_k16_public_finetune_meta_20261012_001711_2114239/run_config.yaml
 while (($#)); do
   case "$1" in
     --gpu) gpu="$2"; shift 2 ;;

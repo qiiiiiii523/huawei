@@ -1,6 +1,6 @@
 # B5-best：当前稳定组合
 
-当前分支的使用入口见 [docs/b5_best.md](docs/b5_best.md)。方案是原B5 FM快残差＋冻结S50-F慢曲线，统一导出、验证、新记录推理；Heun16/K16，按两个任务平均r选模，不使用RMSE加分。新训练仅保留best_r.pt、last.pt和历史。下面保留公共底座的历史说明，不代表当前B5-best的评分入口。
+当前分支的使用入口见 [docs/b5_best.md](docs/b5_best.md)。默认已升级为 **control100 FM快残差＋SlowPCC第20轮慢CNN**，β=0.75、Heun16/K16/seed42。完整推理已复现：Task1 r=0.702354、Task2 r=0.694077、平均r=0.698216。默认读取SHA固定的完整双模型包，无需重新训练；predict/validate可省略--checkpoint。只按两个任务平均r选模，RMSE不计分。下面保留公共底座的历史说明，不代表当前B5-best的评分入口。
 
 # ECG-12 joint-anchor 公共主干
 

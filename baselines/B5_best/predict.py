@@ -11,7 +11,7 @@ from baselines.B5.flow import sample
 from baselines.B5.metadata import encode_demographics
 from baselines.B5.runtime import device_from_name, seed_all
 from . import LEADS
-from .bundle import load_bundle, models, bundle_slow_beta
+from .bundle import DEFAULT_PROFILE, load_inference_bundle, models, bundle_slow_beta
 from .combine import combine, upsample_native
 from .common import read, write, sha
 from .slow import predict_native
@@ -60,7 +60,8 @@ class Predictor:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--checkpoint", required=True, help="Portable B5-best bundle, not the original FM alone")
+    p.add_argument("--checkpoint", help="Portable bundle override; omitted uses the verified B5-best default")
+    p.add_argument("--profile", default=str(DEFAULT_PROFILE))
     p.add_argument("--anchor-npy", required=True)
     p.add_argument("--metadata-json")
     p.add_argument("--record-key", required=True)
@@ -71,14 +72,14 @@ def main():
     out = Path(args.output)
     if out.exists() and any(out.iterdir()):
         raise FileExistsError("Use an empty inference output directory")
-    bundle = load_bundle(args.checkpoint)
+    bundle, checkpoint = load_inference_bundle(args.checkpoint, args.profile)
     seed_all(bundle["sampling"]["seed"], True)
     engine = Predictor(bundle, device_from_name(args.device))
     prediction = engine.predict(np.load(args.anchor_npy, allow_pickle=False),
                                 read(args.metadata_json) if args.metadata_json else {}, args.record_key, args.batch_size)
     out.mkdir(parents=True, exist_ok=True)
     np.save(out / "prediction_uV.npy", prediction, allow_pickle=False)
-    write(out / "inference.json", {"checkpoint_sha256": sha(args.checkpoint), "shape": list(prediction.shape),
+    write(out / "inference.json", {"checkpoint_sha256": sha(checkpoint), "shape": list(prediction.shape),
           "lead_order": list(LEADS), "unit": "uV", "sampling_rate_hz": 500, "sampling": bundle["sampling"],
           "slow_beta": bundle_slow_beta(bundle),
           "record_key": args.record_key, "target_used_at_inference": False,

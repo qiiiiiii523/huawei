@@ -1,55 +1,29 @@
-# B5-best默认采用beta=0.75
+# 历史实验：原FM＋原S50-F的β选择
 
-新模型包保存`slow_beta=0.75`。最终缺失11导联为：
+这是升级control100＋SlowPCC之前的历史记录。**当前默认已经变更**，见`docs/b5_best.md`；下表不代表新权重的参考成绩。
 
-```text
-FM预测 − 对完整120秒FM预测做501点居中移动平均
-       ＋ 0.75 × S50-F预测慢曲线
-```
+旧组合缺失11导联为：FM完整预测−501点全记录移动平均＋β×原S50-F预测慢曲线。
 
-I输出仍来自原FM的I头。两个源网络、权重、尺度、条件和训练损失不变，不需要重新训练。Heun16/K16/seed42不变。
+|推理seed|β|Task1 r|Task2 r|平均r|
+|---:|---:|---:|---:|---:|
+|42|0.5|0.691914|0.685830|0.688872|
+|42|0.75|0.698164|0.691673|0.694918|
+|42|1|0.695855|0.689403|0.692629|
+|43|0.75|0.698445|0.691056|0.694750|
+|43|1|0.696160|0.688680|0.692420|
 
-## 已有验证依据
+旧权重上0.75优于已测0.5、1；只是同批患者上的噪声复核。RMSE不选模。
 
-| 推理seed | beta | Task1 r | Task2 r | 平均r |
-|---|---|---|---|---|
-| 42 | 0.5 | 0.691914 | 0.685830 | 0.688872 |
-| 42 | 0.75 | 0.698164 | 0.691673 | 0.694918 |
-| 42 | 1 | 0.695855 | 0.689403 | 0.692629 |
-| 43 | 0.75 | 0.698445 | 0.691056 | 0.694750 |
-| 43 | 1 | 0.696160 | 0.688680 | 0.692420 |
-
-0.75是已测试候选中更好的选择；两次噪声复核仍来自同一批验证患者，不保证新患者同样获益。RMSE不参与当前选模。
-
-## 服务器更新后，导出并验证新模型包
-
-在BioFlow环境执行。已有worktree仍使用原位置，不切换其他训练目录：
+复现旧模型包须明确选择旧配置：
 
 ```bash
-cd /home/qht/huawei_B5_best
-git fetch gitee B5-best
-git switch --detach FETCH_HEAD
-bash scripts/run_b5_best.sh --gpu 1
+python -m baselines.B5_best.bundle \
+  --profile configs/b5_best_legacy_beta075.json \
+  --output /home/qht/huawei/results/B5-best/legacy_beta075_copy/model.pt
 ```
 
-脚本按顺序导出、评估，无训练；默认结果：
+该旧导出器需要原FM、原S50-F与prepared.json；新版默认只复制已验证的完整组合包，不读取这几份训练源文件。
 
-```text
-/home/qht/huawei/results/B5-best/stable_beta075_v2/
-    model.pt
-    model.json
-    evaluation/evaluation.json
-    evaluation/correlation_score.csv
-```
+旧v1包没有slow_beta，仍按β=1；v2包必须显式保存合法slow_beta。显式checkpoint始终使用该包自己的参数，更新默认配置不会改变旧包输出。
 
-成功时evaluation.json中`completed=true`、`reference_matched=true`、`slow_beta=0.75`；平均r应接近0.69491841，每任务参考容差2e-5。若目录已存在，使用`--root`指定新目录，勿覆盖原包。真实源权重和华为数据需在服务器保留；本机只做CPU合成检查。
-
-之后predict/validate指向这个新model.pt即可，不用额外传beta。新记录输入示例见`docs/b5_best.md`。
-
-## 旧模型包与历史诊断
-
-- v1包没有slow_beta字段，更新代码后仍按beta=1推理，旧参考分数保持其原含义。
-- v2包必须显式保存合法的slow_beta；新默认配置为0.75，错误或缺失参数会报错。
-- 只更新配置不会改变已导出的旧包，必须重新导出，无需重新训练源权重。
-- 历史诊断读取的原组合数组仍是beta=1，使用单独保留的`reference_qc_r_beta1`核验，不能拿0.75的新参考比较。
-- 下一轮训练实验中，对照和实验采用相同beta，避免把组合系数变化当作模块收益。
+历史diagnose仍分析旧原FM/S50-F数组，自动读取旧配置及reference_qc_r_beta1。新best的参考r不能用于核验这些历史数组。

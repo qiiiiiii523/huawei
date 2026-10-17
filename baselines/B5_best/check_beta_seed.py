@@ -15,7 +15,7 @@ from baselines.B5.data import preprocessing_config
 from baselines.B5.flow import sample
 from baselines.B5.runtime import build_validation_datasets, device_from_name, seed_all
 from ecg12gen.evaluate import evaluate_record_predictions, write_report
-from .bundle import DEFAULT_PROFILE, export_bundle
+from .bundle import DEFAULT_PROFILE, export_profile
 from .common import read, write, csv_write
 from .combine import combine, upsample_native
 from .predict import Predictor
@@ -61,6 +61,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repository-root", default="/home/qht/huawei")
     p.add_argument("--config")
+    p.add_argument("--profile", default=str(DEFAULT_PROFILE), help="Default promoted pair; legacy profile is explicit")
     p.add_argument("--seed", type=int, default=43)
     p.add_argument("--device", default="cuda")
     p.add_argument("--batch-size", type=int, default=8)
@@ -72,9 +73,7 @@ def main():
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("Use an empty output directory")
     output.mkdir(parents=True, exist_ok=True)
-    profile = read(DEFAULT_PROFILE)
-    bundle = export_bundle(profile["fm_checkpoint"], profile["slow_checkpoint"],
-                           profile["prepared_info"], output / "components.pt", profile)
+    bundle = export_profile(args.profile, output / "components.pt")
     config_path = args.config or root / "configs/experiments/b5_main_v2_public_finetune_meta.yaml"
     cfg = load_config(config_path, data_only=True)
     verify_reference_inputs(bundle, cfg)

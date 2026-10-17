@@ -1,13 +1,23 @@
 {
   "bundle_protocol": "B5-best-output-hybrid-v2",
   "slow_beta": 0.75,
-  "fm_checkpoint": "/home/qht/huawei/results/B5/main_v2_score60_k16_public_finetune_meta_20261012_001711_2114239/best.pt",
-  "slow_checkpoint": "/home/qht/huawei/results/B5-exp/slow_context_s50_f_v1/S50_F/checkpoints/best_score.pt",
-  "prepared_info": "/home/qht/huawei/results/B5-exp/slow_probe_parallel_v1/prepared/prepared.json",
-  "fm_sha256": "11dfcb8de1b90bfe5b33b320c4a243b3693d329e04c44ccb9cb9221d8cc70ca7",
-  "slow_sha256": "10fedeedb50fb2a74a25a5c8e85de4df0d53925364844914109b63ab347479c2",
+  "default_bundle": "/home/qht/huawei/results/B5-best-cross/seed42_20261017_094115_417122/control100__pcc20.pt",
+  "default_bundle_sha256": "a8d32cd598f73a0d3335ff4453da9168eccbc518a9b508ae81fdb8babcce254b",
+  "components": {
+    "fm": "B5-scratch control epoch100 EMA",
+    "fm_checkpoint": "/home/qht/huawei/results/B5-scratch/early_public_v1/control/checkpoints/last.pt",
+    "fm_sha256": "ef2c17935680bc9cfe1f2377bd9ec979dceb951ffa0388f21b5a13e5986d0d04",
+    "slow": "SlowPCC pcc best epoch20",
+    "slow_checkpoint": "/home/qht/huawei/results/B5-best-exp-SlowPCC/combo_pcc_v1/pcc/best.pt",
+    "slow_sha256": "be3658bba7943e25e8bc9f27a362068e70e93c0e3bd183de4043d8b01de6a7d3"
+  },
   "sampling": {"seed": 42, "solver": "heun", "steps": 16, "samples": 16},
-  "reference_qc_r": {"task1_r_missing11": 0.6981642811507435, "task2_r_missing11": 0.691672541213693},
-  "reference_qc_r_beta1": {"task1_r_missing11": 0.6958553635393026, "task2_r_missing11": 0.6894033429678901},
-  "reference_tolerance": 0.00002
+  "reference_qc_r": {"task1_r_missing11": 0.7023541744018759, "task2_r_missing11": 0.6940770972377628},
+  "reference_tolerance": 0.00002,
+  "deployment_verification": {
+    "evaluation_dir": "/home/qht/huawei/results/B5-best-cross/deployment_check_20261017_100949_439149",
+    "reference_matched": true,
+    "main_correlation": 0.6982156358198193
+  },
+  "legacy_diagnostics_profile": "b5_best_legacy_beta075.json"
 }

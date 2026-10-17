@@ -15,7 +15,7 @@ from baselines.B5.data import preprocessing_config, common_config, demographics_
 from baselines.B5.runtime import build_validation_datasets, device_from_name, seed_all
 from ecg12gen.evaluate import evaluate_record_predictions, write_report
 from . import SCORE_PROTOCOL
-from .bundle import load_bundle
+from .bundle import DEFAULT_PROFILE, load_inference_bundle
 from .common import csv_write, write, sha
 from .predict import Predictor
 from .scoring import scores_from_summaries, write_score_report, diagnostic_summary
@@ -123,14 +123,16 @@ def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--checkpoint", help="Portable bundle override; omitted uses the verified B5-best default")
+    p.add_argument("--profile", default=str(DEFAULT_PROFILE))
     p.add_argument("--config", required=True, help="May use a data config from the original /home/qht/huawei checkout")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--device", default="auto")
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--verify-reference", action="store_true")
     args = p.parse_args()
-    bundle, cfg = load_bundle(args.checkpoint), load_config(args.config, data_only=True)
+    bundle, checkpoint = load_inference_bundle(args.checkpoint, args.profile)
+    cfg = load_config(args.config, data_only=True)
     if args.verify_reference:
         verify_reference_inputs(bundle, cfg)
     if ModelConfig.from_dict(cfg["model"]).fingerprint != bundle["fm"]["architecture_hash"]:
@@ -142,7 +144,7 @@ def main():
         if source.get(task) and source[task] != ds.manifest_digest:
             raise ValueError("Validation population differs from source: " + task)
     evaluate(bundle, datasets, device_from_name(args.device), args.output_dir,
-             sha(args.checkpoint), args.batch_size, args.verify_reference)
+             sha(checkpoint), args.batch_size, args.verify_reference)
 
 
 if __name__ == "__main__":

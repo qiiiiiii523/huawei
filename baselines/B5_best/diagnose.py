@@ -368,7 +368,10 @@ def run(args):
     repo = Path(args.repository_root).resolve()
     prepared = Path(args.prepared_info or repo / "results/B5-exp/slow_probe_parallel_v1/prepared/prepared.json")
     info = read(prepared)
-    profile = read(Path(__file__).resolve().parents[2] / "configs/b5_best.json")
+    profile_path = Path(__file__).resolve().parents[2] / "configs/b5_best.json"
+    profile = read(profile_path)
+    if profile.get("legacy_diagnostics_profile"):
+        profile = read(profile_path.parent / profile["legacy_diagnostics_profile"])
     fm_dir = Path(args.fm_evaluation_dir or info["evaluation_dir"])
     slow_root = Path(args.slow_evaluation_dir or repo / "results/B5-exp/slow_context_s50_f_v1/S50_F/checkpoints/evaluation_best_score")
     hybrid_dir = slow_root / "learned_slow_hybrid"
