@@ -1,4 +1,4 @@
-"""Train only the slow CNN; paired arms differ solely by the TRAIN FM cache."""
+"""A/B differ only by TRAIN FM cache; B/C differ only by multiscale supervision."""
 import argparse
 import csv
 import json
@@ -12,7 +12,7 @@ from baselines.B5.runtime import device_from_name, seed_all
 from baselines.B5_best import SAMPLING
 from baselines.B5_best.common import write, sha, state_sha
 from . import PROTOCOL, GROUPS
-from .common import load_study, load_cache, load_checkpoint, slow_model, Records
+from .common import load_study, load_cache, load_checkpoint, slow_model, Records, multiscale_for_group
 from .core import generate, device_batch, model_inputs
 from .evaluate import evaluate
 from .losses import objective
@@ -47,6 +47,7 @@ def run(study_path, cache_root, output, group, device_name, resume=None):
                         shuffle=True, generator=generator, num_workers=0)
     scales = torch.tensor(bundle["fm"]["scales"]["d12"], device=device)
     combo_weight = study["combo_weight"]
+    multiscale = multiscale_for_group(study, group)
     start, updates, best_r, best_epoch = 1, 0, None, None
     fm_digest = bundle["fm_state_sha256"]
     if resume:
@@ -70,12 +71,13 @@ def run(study_path, cache_root, output, group, device_name, resume=None):
         output.mkdir(parents=True, exist_ok=True)
         write(output / "initialization.json", {"group": group, "study_sha256": sha(study_path),
               "cache_sha256": cache_sha, "initial_slow_state_sha256": state_sha(model.state_dict()),
-              "fixed_FM_state_sha256": fm_digest, "optimizer_initialization": "fresh_AdamW_same_both_arms",
+              "fixed_FM_state_sha256": fm_digest, "optimizer_initialization": "fresh_AdamW_same_all_arms",
               "training": cfg, "old_F_weight": study["residual_weight"], "mean_weight": 0.,
               "combo_PCC_weight": combo_weight, "sampling": dict(SAMPLING), "beta": study["beta"],
+              'multiscale': multiscale,
               "selection": "final_hybrid_main_correlation", "epoch_zero_is_candidate": True,
               "score_protocol": study["score_protocol"], "train_FM_cache_root": train_source["root"],
-              "validation_FM_same_both_arms": "control100", "require_reliable_input": True,
+              "validation_FM_same_all_arms": "control100", "require_reliable_input": True,
               "FM_training_started": False})
         seed_all(cfg["seed"], True)
 
@@ -86,6 +88,7 @@ def run(study_path, cache_root, output, group, device_name, resume=None):
                 "optimizer": optimizer.state_dict(), "loader_rng": generator.get_state(), "rng": pack_rng(),
                 "sampling_config": dict(SAMPLING), "validation_score": score,
                 "fixed_FM_state_sha256": fm_digest, "combo_PCC_weight": combo_weight,
+                'multiscale': multiscale,
                 "score_protocol": study["score_protocol"], "torch_version": str(torch.__version__)}
 
     def validation_at(epoch):
@@ -116,7 +119,7 @@ def run(study_path, cache_root, output, group, device_name, resume=None):
             optimizer.zero_grad(set_to_none=True)
             prediction = generate(model, model_inputs(inputs))
             loss, parts = objective(prediction, inputs, scales, study["residual_weight"], combo_weight,
-                                    study["residual_width_native"], beta=study["beta"])
+                                    study["residual_width_native"], beta=study["beta"], multiscale=multiscale)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["gradient_clip"], error_if_nonfinite=True)
             optimizer.step()
@@ -146,7 +149,8 @@ def run(study_path, cache_root, output, group, device_name, resume=None):
             handle.write(json.dumps(record, allow_nan=False, ensure_ascii=False) + "\n")
         print(json.dumps(record, allow_nan=False, ensure_ascii=False), flush=True)
     write(output / "completed.json", {"completed": True, "group": group, "epochs": cfg["epochs"],
-          "best_r": best_r, "best_epoch": best_epoch, "FM_training_started": False})
+          "best_r": best_r, "best_epoch": best_epoch, 'multiscale_weight': multiscale['weight'],
+          "FM_training_started": False})
 
 
 def main():

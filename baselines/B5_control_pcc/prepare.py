@@ -17,6 +17,39 @@ ROOT = Path('/home/qht/huawei/results/B5-best-exp-SlowPCC')
 NON_FM_FIELDS = {'anchor', 'numeric', 'sex', 'field_mask', 'age_topcoded', 'target_uV', 'mask', 'slow_target'}
 
 
+def multiscale_settings(root, entries, weight):
+    """Freeze quiet-label floors using TRAIN labels/QC only; validation is never read."""
+    if not np.isfinite(weight) or weight <= 0:
+        raise ValueError('Need a positive finite multiscale weight')
+    statistics = [[[] for _ in range(11)] for _ in range(3)]
+
+    def average(x, width):
+        padded = np.pad(x, ((0, 0), (width // 2, width // 2)), mode='edge')
+        acc = np.concatenate((np.zeros((len(x), 1)), padded.cumsum(-1)), axis=-1)
+        return (acc[:, width:] - acc[:, :-width]) / width
+
+    for entry in entries:
+        with np.load(root / entry['file'], allow_pickle=False) as record:
+            y, mask = record['slow_target'].astype(np.float64), record['mask'].astype(bool)
+            if y.shape != (11, 6000) or mask.shape != (12,) or not mask[0] or not np.isfinite(y).all():
+                raise ValueError('Invalid TRAIN slow target for multiscale statistics')
+            five, fifteen = average(y, 251), average(y, 751)
+            for band, value in enumerate((y - five, five - fifteen, fifteen)):
+                std = value.std(-1)
+                for lead in range(11):
+                    if mask[lead + 1]:
+                        statistics[band][lead].append(float(std[lead]))
+    medians = [[float(np.median(v)) if v else 0. for v in band] for band in statistics]
+    floors = np.maximum(np.asarray(medians) * .1, 1e-4)
+    return {'protocol': 'native50-full120-multiscale-shape-v1', 'weight': float(weight),
+            'shape_huber_weight': .1, 'widths': [251, 751], 'floor_source': 'TRAIN-target-QC-only',
+            'floor_rule': 'max(0.1 * TRAIN median band std per lead, 1e-4 normalized units)',
+            'std_floor': floors.tolist(), 'train_median_std': medians,
+            'train_eligible_label_counts': [[len(v) for v in band] for band in statistics],
+            'bands': ['slow_minus_MA5s', 'MA5s_minus_MA15s', 'MA15s'],
+            'centering': 'loss only, per band per complete120s; output and original losses unchanged'}
+
+
 def source_cache(run):
     study_path = run / 'shared/study.json'
     study, manifest = read(study_path), read(run / 'cache/cache.json')
@@ -116,6 +149,9 @@ def prepare(args):
         raise FileExistsError('Use an empty NEW study output; old source caches stay read-only')
     if args.epochs < 1:
         raise ValueError('Need a positive paired training budget')
+    ms_weight = float(getattr(args, 'multiscale_weight', .1))
+    if not np.isfinite(ms_weight) or ms_weight <= 0:
+        raise ValueError('Need a positive finite multiscale coefficient')
     reference = read(args.reference_report)
     if reference.get('score_protocol') != SCORE_PROTOCOL or any(
             not np.isfinite(reference.get(k, np.nan)) or not -1 <= reference[k] <= 1
@@ -145,6 +181,8 @@ def prepare(args):
     differences = [check_train_pair(old_run / 'cache', a[k], new_run / 'cache', b[k]) for k in sorted(a)]
     if not any(v > 0 for v in differences):
         raise ValueError('Two TRAIN FM caches are identical; no partner ablation is possible')
+    print('Freezing multiscale quiet-label thresholds from TRAIN labels only', flush=True)
+    ms_settings = multiscale_settings(new_run / 'cache', [b[k] for k in sorted(b)], ms_weight)
     audit = validation_audit(nm, new_run / 'cache', {e['subject_id'] for e in nm['train']})
     training = copy.deepcopy(new['training'])
     training.update(epochs=args.epochs)
@@ -164,12 +202,14 @@ def prepare(args):
              'residual_width_native': new['residual_width_native'], 'combo_weight': new['combo_weight'],
              'mean_weight': 0., 'bundle_sha256': sha(output / 'components.pt'),
              'source_files': source_files, 'code_sha256': code_digest(), 'reference_score': reference,
-             'paired_difference': 'TRAIN FM prediction used by unchanged final-waveform PCC only',
-             'validation_FM': 'control100 for BOTH arms', 'source_code_executed': False}
+             'multiscale': ms_settings,
+             'comparisons': {'B_minus_A': 'TRAIN FM partner only', 'C_minus_B': 'extra multiscale loss only'},
+             'validation_FM': 'control100 for ALL three arms', 'source_code_executed': False}
     write(output / 'study.json', study)
     view = {'completed': True, 'study_sha256': sha(output / 'study.json'),
             'train_sources': {GROUPS[0]: {'root': str(old_run / 'cache'), 'entries': [a[k] for k in sorted(a)]},
-                              GROUPS[1]: {'root': str(new_run / 'cache'), 'entries': [b[k] for k in sorted(b)]}},
+                              GROUPS[1]: {'root': str(new_run / 'cache'), 'entries': [b[k] for k in sorted(b)]},
+                              GROUPS[2]: {'root': str(new_run / 'cache'), 'entries': [b[k] for k in sorted(b)]}},
             'validation_root': str(new_run / 'cache'), 'validation': nm['validation'],
             'validation_rows': nm['validation_rows']}
     write(output / 'cache_view.json', view)
@@ -185,7 +225,9 @@ def prepare(args):
               'cache_regenerated': False, 'source_caches_modified': False, 'train_records': len(a),
               'same_initial_slow_state_sha256': state_sha(model.state_dict()),
               'validation_audit': audit, 'score_protocol': SCORE_PROTOCOL,
-              'reference_main_correlation': reference['main_correlation'], 'groups': list(GROUPS)}
+              'reference_main_correlation': reference['main_correlation'], 'groups': list(GROUPS),
+              'multiscale_weight_by_group': dict(zip(GROUPS, [0., 0., ms_weight])),
+              'multiscale_floor_source': ms_settings['floor_source']}
     write(output / 'preflight.json', status)
     print(status, flush=True)
     return status
@@ -197,6 +239,7 @@ def main():
     p.add_argument('--control100-run', default=str(ROOT / 'control100_pcc20_cache_v1'))
     p.add_argument('--reference-report', required=True)
     p.add_argument('--epochs', type=int, default=20)
+    p.add_argument('--multiscale-weight', type=float, default=.1)
     p.add_argument('--output', required=True)
     args = p.parse_args()
     torch.set_num_threads(min(torch.get_num_threads(), 2))

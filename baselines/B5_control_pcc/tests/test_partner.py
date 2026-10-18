@@ -16,7 +16,9 @@ from baselines.B5_control_pcc.core import generate, model_inputs
 from baselines.B5_control_pcc.losses import objective
 from baselines.B5_control_pcc.evaluate import evaluate
 from baselines.B5_control_pcc import GROUPS, LEGACY_CACHE_PROTOCOL
-from baselines.B5_control_pcc.common import load_study, load_cache
+from baselines.B5_control_pcc.common import load_study, load_cache, multiscale_for_group
+from baselines.B5_control_pcc.compare import compare
+from baselines.B5_control_pcc import PROTOCOL
 from baselines.B5_best.tests.test_hybrid import fixture
 from baselines.B5_best.bundle import export_bundle
 from baselines.B5_control_pcc.export import export
@@ -182,6 +184,41 @@ class PartnerTests(unittest.TestCase):
             view = load_cache(root / 'out/cache_view.json', root / 'out/study.json')
             self.assertEqual(study['score_protocol'], SCORE_PROTOCOL)
             self.assertEqual(set(view['train_sources']), set(GROUPS))
+            self.assertEqual(view['train_sources'][GROUPS[1]], view['train_sources'][GROUPS[2]])
+            # Test three-arm result aggregation with metadata-only checkpoints; no training.
+            run = root / 'reports'
+            (run / 'shared').mkdir(parents=True)
+            (run / 'shared/study.json').write_text('{}', encoding='utf-8')
+            for i, group in enumerate(GROUPS):
+                folder = run / group
+                folder.mkdir()
+                init = {'initial_slow_state_sha256': 'same', 'fixed_FM_state_sha256': 'same',
+                        'training': {'epochs': 20}, 'combo_PCC_weight': .1, 'sampling': dict(SAMPLING),
+                        'beta': .75, 'cache_sha256': 'same_view', 'score_protocol': SCORE_PROTOCOL,
+                        'multiscale': multiscale_for_group(study, group),
+                        'train_FM_cache_root': 'old' if i == 0 else 'control100'}
+                write(folder / 'initialization.json', init)
+                write(folder / 'completed.json', {'completed': True})
+                r = .7 + i * .01
+                checkpoint = {'protocol': PROTOCOL, 'group': group, 'epoch': 20,
+                              'study_sha256': sha(run / 'shared/study.json'),
+                              'multiscale': multiscale_for_group(study, group),
+                              'validation_score': {'score_protocol': SCORE_PROTOCOL,
+                                                   'task1_r_missing11': r, 'task2_r_missing11': r,
+                                                   'main_correlation': r}}
+                for name in ('best', 'last'):
+                    torch.save(checkpoint, folder / (name + '.pt'))
+            with patch('baselines.B5_control_pcc.compare.load_study', return_value=(study, bundle)):
+                results = compare(run)
+                self.assertEqual(len(results), 6)
+                comparisons = read(run / 'comparison.json')['comparisons']
+                self.assertAlmostEqual(comparisons['best_B_minus_A'], .01)
+                self.assertAlmostEqual(comparisons['best_C_minus_B'], .01)
+                changed = read(run / GROUPS[2] / 'initialization.json')
+                changed['training']['epochs'] = 30
+                write(run / GROUPS[2] / 'initialization.json', changed)
+                with self.assertRaisesRegex(ValueError, 'Shared settings differ'):
+                    compare(run)
             with self.assertRaises(FileExistsError):
                 prepare(args)
 

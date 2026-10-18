@@ -28,9 +28,10 @@ def export(study_path, checkpoint_path, output):
     bundle["reference_qc_r"] = ({k: score[k] for k in ("task1_r_missing11", "task2_r_missing11")}
                                 if score is not None else None)
     bundle['reference_score_protocol'] = study['score_protocol']
-    bundle['provenance']['validation_FM'] = 'control100_for_both_arms'
+    bundle['provenance']['validation_FM'] = 'control100_for_all_arms'
     bundle['provenance']['training_FM_partner'] = cp['group']
     bundle['provenance']['slow_component'] = f"Control100PCC-{cp['group']}-epoch{cp['epoch']}"
+    bundle['provenance']['multiscale_training_weight'] = cp.get('multiscale', {}).get('weight', 0.)
     validate_bundle(bundle)
     if state_sha(bundle["fm"]["ema"]) != original["fm_state_sha256"]:
         raise ValueError("Export unexpectedly changed FM")

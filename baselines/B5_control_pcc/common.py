@@ -11,6 +11,14 @@ from baselines.B5.scoring import SCORE_PROTOCOL
 from . import PROTOCOL, GROUPS
 
 
+def multiscale_for_group(study, group):
+    if group not in GROUPS:
+        raise ValueError('Unknown experiment group')
+    result = dict(study['multiscale'])
+    result['weight'] = study['multiscale']['weight'] if group == GROUPS[2] else 0.
+    return result
+
+
 def code_digest():
     root = Path(__file__).resolve().parents[2]
     paths = list(Path(__file__).parent.glob('*.py'))
@@ -32,6 +40,14 @@ def load_study(path):
         raise ValueError('Wrong paired experiment / reliable-I scoring / sampling')
     if study.get('code_sha256') != code_digest():
         raise ValueError('Study code changed: use its frozen worktree or prepare a new study')
+    cfg = study.get('multiscale', {})
+    floors = np.asarray(cfg.get('std_floor', []))
+    if (cfg.get('protocol') != 'native50-full120-multiscale-shape-v1' or cfg.get('widths') != [251, 751]
+            or cfg.get('floor_source') != 'TRAIN-target-QC-only' or floors.shape != (3, 11)
+            or not np.isfinite(floors).all() or np.any(floors <= 0)
+            or not np.isfinite(cfg.get('weight', np.nan)) or cfg.get('weight', 0) <= 0
+            or cfg.get('shape_huber_weight') != .1):
+        raise ValueError('Missing or invalid frozen TRAIN-only multiscale settings')
     for name, expected in study['source_files'].items():
         if sha(name) != expected:
             raise ValueError('Read-only source changed: ' + name)
@@ -47,11 +63,19 @@ def load_cache(path, study_path):
     manifest = read(path)
     if manifest.get('study_sha256') != sha(study_path) or not manifest.get('completed'):
         raise ValueError('Cache view belongs to another study')
+    verified = set()
     for group in GROUPS:
         source = manifest['train_sources'][group]
         for item in source['entries']:
-            if sha(Path(source['root']) / item['file']) != item['sha256']:
+            file = (Path(source['root']) / item['file']).resolve()
+            identity = (str(file), item['sha256'])
+            if identity in verified:
+                continue
+            if sha(file) != item['sha256']:
                 raise ValueError('Training cache changed: ' + item['file'])
+            verified.add(identity)
+    if manifest['train_sources'][GROUPS[1]] != manifest['train_sources'][GROUPS[2]]:
+        raise ValueError('B/C must use the identical control100 training cache')
     for item in manifest['validation']:
         if sha(Path(manifest['validation_root']) / item['file']) != item['sha256']:
             raise ValueError('Validation cache changed: ' + item['file'])
@@ -83,7 +107,8 @@ def load_checkpoint(path, study_path, device):
     checkpoint = torch.load(path, map_location='cpu', weights_only=True)
     if (checkpoint.get('protocol') != PROTOCOL or checkpoint.get('group') not in GROUPS
             or checkpoint.get('study_sha256') != sha(study_path)
-            or checkpoint.get('sampling_config') != SAMPLING):
+            or checkpoint.get('sampling_config') != SAMPLING
+            or checkpoint.get('multiscale') != multiscale_for_group(study, checkpoint.get('group'))):
         raise ValueError('Checkpoint belongs to another experiment')
     model = slow_model(bundle, device)
     model.load_state_dict(checkpoint['model'], strict=True)
