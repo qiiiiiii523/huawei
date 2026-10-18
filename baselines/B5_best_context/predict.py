@@ -31,6 +31,8 @@ def main():
     parser.add_argument("--profile", default=str(Path(__file__).resolve().parents[2] / "configs/b5_best.json"))
     parser.add_argument("--context-config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--machine-mode", choices=MODES)
+    parser.add_argument("--body-checkpoint", help="Optional B5-best-aligned trained body II adapter; default remains identity")
+    parser.add_argument("--body-mode", choices=("correct", "disabled"), default="correct")
     parser.add_argument("--anchor-npy", required=True, help="Raw current I[1,60000], 500Hz uV")
     parser.add_argument("--metadata-json")
     parser.add_argument("--record-key", required=True)
@@ -57,7 +59,12 @@ def main():
         args.input_type, args.history_record_id, np.load(args.history_npy, allow_pickle=False),
         np.load(args.history_mask_npy, allow_pickle=False))
     settings = load_settings(args.context_config)
-    engine = Predictor(bundle, device_from_name(args.device), settings=settings, machine_mode=args.machine_mode)
+    device = device_from_name(args.device)
+    body_adapter = None
+    if args.body_checkpoint:
+        from .body_model import BodyAdapter
+        body_adapter = BodyAdapter(args.body_checkpoint, sha(checkpoint), device, mode=args.body_mode)
+    engine = Predictor(bundle, device, settings=settings, machine_mode=args.machine_mode, body_adapter=body_adapter)
     prediction, status = engine.predict(np.load(args.anchor_npy, allow_pickle=False),
         read(args.metadata_json) if args.metadata_json else {}, args.record_key,
         task_id=args.task_id, input_type=args.input_type, history=history, batch_size=args.batch_size)

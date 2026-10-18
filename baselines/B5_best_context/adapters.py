@@ -121,6 +121,8 @@ class ContextRouter:
             output = np.asarray(output)
             if output.shape != p.shape or not np.isfinite(output).all():
                 raise ValueError("Body adapter violates the full-record output contract")
+            if not np.array_equal(output[[0, *range(2, 12)]], p[[0, *range(2, 12)]]):
+                raise ValueError("Body II adapter must preserve I and all other ten missing leads")
             return output, {**status, **details}
         if input_type != "ecg_machine_d6" or self.mode == "none":
             return p.copy(), status
