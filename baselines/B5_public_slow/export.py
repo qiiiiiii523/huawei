@@ -32,6 +32,8 @@ def export(study_path, checkpoint, output):
     bundle["reference_qc_r"] = {k: score[k] for k in ("task1_r_missing11", "task2_r_missing11")}
     bundle["reference_score_protocol"] = study["score_protocol"]
     bundle["provenance"].update(experiment=PROTOCOL, experiment_group=cp["group"],
+        candidate_role=cp.get("candidate_role", "original_coarse"),
+        training_seed=cp.get("training_seed", study["training"]["seed"]),
         source_updated_slow_stage=cp["stage"], source_updated_slow_step=cp["step"],
         slow_sha256=sha(checkpoint), original_slow_sha256=original["provenance"]["slow_sha256"],
         study_sha256=sha(study_path), FM_frozen=True, stable_reference=False)
@@ -39,6 +41,8 @@ def export(study_path, checkpoint, output):
     atomic_save(output, bundle)
     write(output.with_suffix(".json"), {"bundle_sha256": sha(output), "checkpoint_sha256": sha(checkpoint),
           "group": cp["group"], "stage": cp["stage"], "step": cp["step"], "score": score,
+          "candidate_role": cp.get("candidate_role", "original_coarse"),
+          "training_seed": cp.get("training_seed", study["training"]["seed"]),
           "FM_unchanged": True, "target_required_at_inference": False, "cache_required_at_inference": False})
 
 

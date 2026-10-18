@@ -208,6 +208,8 @@ class PublicSlowTests(unittest.TestCase):
                     torch.testing.assert_close(last["model"]["scale"], repeated["model"]["scale"], rtol=0, atol=0)
             compare(root, root / "comparison")
             self.assertEqual(len(read(root / "comparison/summary.json")["rows"]), 3)
+            compare(root, root / "MP_only", groups=("M", "P"), checkpoint="dense_best.pt")
+            self.assertEqual(len(read(root / "MP_only/summary.json")["rows"]), 2)
 
     def test_export_preserves_FM_and_carries_reliable_input_reference(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -316,6 +318,83 @@ class PublicSlowTests(unittest.TestCase):
             actual = torch.load(root / "interrupted/last.pt", weights_only=True)
             torch.testing.assert_close(expected["model"]["scale"], actual["model"]["scale"], rtol=0, atol=0)
             self.assertEqual(expected["samplers"], actual["samplers"])
+
+    def test_seed_parameter_changes_training_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); _, _ = study_fixture(root)
+            with patch.object(prepare, "DEFAULT_PROFILE", root / "profile.json"):
+                prepare.prepare(root / "initial.pt", root / "source/cache", root / "public", root / "shared43",
+                                u1=1, u2=1, validate_every=1, train_seed=43,
+                                dense_validate_every=1, dense_until=1)
+            settings = read(root / "shared43/study.json")
+            self.assertEqual(settings["training"]["seed"], 43)
+            self.assertEqual(settings["sampling"]["seed"], 42)
+            self.assertEqual(settings["initial_slow_state_sha256"], read(root / "shared/study.json")["initial_slow_state_sha256"])
+            self.assertEqual(settings["public"], read(root / "shared/study.json")["public"])
+
+    def test_dense_schedule_preserves_coarse_selection_grid(self):
+        settings = {"validate_every": 390, "dense_validate_every": 78, "dense_stage2_until": 390}
+        self.assertEqual(train.validation_schedule(1, 78, 1560, settings), (False, False))
+        self.assertEqual(train.validation_schedule(2, 78, 1560, settings), (False, True))
+        self.assertEqual(train.validation_schedule(2, 390, 1560, settings), (True, True))
+        self.assertEqual(train.validation_schedule(2, 468, 1560, settings), (False, False))
+        self.assertEqual(train.validation_schedule(2, 780, 1560, settings), (True, False))
+
+    def test_extra_validation_does_not_change_training_weights_and_keeps_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); path, _ = study_fixture(root)
+            settings = read(path)
+            settings["training"].update(stage2_updates=3, validate_every=3)
+            write(path, settings)
+            def fake_eval(model, study, bundle, device, output, *args, **kwargs):
+                Path(output).mkdir(parents=True)
+                name = Path(output).name
+                r = .9 if name.startswith("stage2_step000001") else .5 if name.startswith("stage0") else .4
+                # Evaluation can consume RNG. The wrapper must restore it for exact paired training.
+                torch.rand(10)
+                return {"task1_r_missing11": r, "task2_r_missing11": r,
+                        "main_correlation": r, "score_protocol": SCORE_PROTOCOL, "selection_metric": "main_correlation"}
+            with patch.object(train, "model_from_bundle", side_effect=lambda *args: Tiny()), \
+                 patch.object(train, "evaluate", side_effect=fake_eval), \
+                 patch.object(train, "public_diagnostic", return_value={}):
+                train.run(path, "M", root / "coarse", "cpu")
+                settings["training"].update(dense_validate_every=1, dense_stage2_until=3)
+                write(path, settings)
+                train.run(path, "M", root / "dense", "cpu")
+            expected = torch.load(root / "coarse/last.pt", weights_only=True)
+            actual = torch.load(root / "dense/last.pt", weights_only=True)
+            torch.testing.assert_close(expected["model"]["scale"], actual["model"]["scale"], rtol=0, atol=0)
+            self.assertEqual(expected["samplers"], actual["samplers"])
+            best = torch.load(root / "dense/best.pt", weights_only=True)
+            dense = torch.load(root / "dense/dense_best.pt", weights_only=True)
+            phase1 = torch.load(root / "dense/stage1_best.pt", weights_only=True)
+            self.assertEqual((best["stage"], best["step"]), (0, 0))
+            self.assertEqual((dense["stage"], dense["step"]), (2, 1))
+            self.assertEqual(phase1["stage"], 1)
+
+    def test_training_seed_review_rejects_mixed_candidate_grids(self):
+        from baselines.B5_public_slow.review_seeds import review
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); path, _ = study_fixture(root)
+            original = read(path)
+            roots = (root / "seed42", root / "seed43")
+            for i, folder in enumerate(roots):
+                settings = copy.deepcopy(original)
+                settings["training"]["seed"] = 42 + i
+                write(folder / "shared/study.json", settings)
+                report = {"baseline": {"task1_r_missing11": .7, "task2_r_missing11": .69},
+                          "training_seed": 42 + i, "rows": [
+                              {"group": "M", "task1_r_missing11": .71, "task2_r_missing11": .69,
+                               "main_correlation": .70},
+                              {"group": "P", "task1_r_missing11": .70, "task2_r_missing11": .71,
+                               "main_correlation": .705}]}
+                write(folder / ("comparison/summary.json" if i == 0 else "comparison_coarse/summary.json"), report)
+            review(*roots, root / "review")
+            self.assertAlmostEqual(read(root / "review/seed_comparison.json")["mean_R_by_group"]["P"], .705)
+            target = roots[1] / "comparison_coarse/summary.json"
+            report = read(target); report["checkpoint"] = "dense_best.pt"; write(target, report)
+            with self.assertRaisesRegex(ValueError, "mix dense"):
+                review(*roots, root / "invalid")
 
 
 if __name__ == "__main__":

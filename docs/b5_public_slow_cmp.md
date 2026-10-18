@@ -4,6 +4,8 @@
 
 只更新慢CNN，FM固定control100，网络结构、β=0.75、Heun16/K16不改。当前稳定B5-best和旧SlowPCC实验不修改。
 
+首轮已完成后，M/P的训练seed43复核与额外早期验证见 [b5_public_slow_seed_review.md](b5_public_slow_seed_review.md)。复核使用新目录，不覆盖首轮结果。
+
 ## 1. 本轮跑什么
 
 | 项目 | C | M | P |

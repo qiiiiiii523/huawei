@@ -21,6 +21,13 @@ def sources_for(group, stage):
     return ("huawei", "public") if group == "M" else ("public", "public")
 
 
+def validation_schedule(stage, step, budget, cfg):
+    coarse = step % cfg["validate_every"] == 0 or step == budget
+    every = cfg.get("dense_validate_every", 0)
+    dense = bool(stage == 2 and every and step <= cfg.get("dense_stage2_until", 390) and step % every == 0)
+    return coarse, dense
+
+
 def run(study_path, group, output, device_name, resume=False):
     study_path, output = Path(study_path).resolve(), Path(output).resolve()
     study, bundle = load_study(study_path, deep=True)
@@ -56,6 +63,7 @@ def run(study_path, group, output, device_name, resume=False):
     def payload(score=None):
         return {"protocol": PROTOCOL, "study_sha256": study_sha, "group": group, "output": str(output),
             "stage": stage, "step": step, "model": model.state_dict(),
+            "training_seed": cfg["seed"],
             "optimizer": None if optimizer is None else optimizer.state_dict(), "rng": pack_rng(),
             "samplers": None if samplers is None else {k: s.state() for k, s in samplers.items()},
             "best": best, "validation_score": score, "FM_state_sha256": bundle["fm_state_sha256"],
@@ -74,6 +82,11 @@ def run(study_path, group, output, device_name, resume=False):
             if select and (best is None or score["main_correlation"] > best["score"]["main_correlation"]):
                 best = {"stage": stage, "step": step, "score": score}
                 atomic_save(output / "best.pt", payload(score))
+            # Keep diagnostic candidates separate from the predeclared 390-step seed comparison.
+            if stage == 1:
+                save_candidate("stage1_best.pt", score, "stage1_diagnostic_only")
+            if stage == 0 or stage == 2:
+                save_candidate("dense_best.pt", score, "stage2_all_observed_checks_plus_initial")
             write(path / "selection.json", {"eligible_for_best": select, "current_best": best})
             print(json.dumps({"phase": "validation", "stage": stage, "step": step, **score,
                               "best": best}, ensure_ascii=False), flush=True)
@@ -81,10 +94,21 @@ def run(study_path, group, output, device_name, resume=False):
         finally:
             restore_rng(rng)
 
+    def save_candidate(filename, score, role):
+        destination = output / filename
+        if destination.is_file():
+            previous = torch.load(destination, map_location="cpu", weights_only=True)
+            if previous.get("study_sha256") != study_sha or previous.get("group") != group:
+                raise ValueError("Diagnostic candidate identity mismatch")
+            if previous["validation_score"]["main_correlation"] >= score["main_correlation"]:
+                return
+        atomic_save(destination, payload(score) | {"candidate_role": role})
+
     if not resume:
         initial = validation(True)
         atomic_save(output / "last.pt", payload(initial))
         write(output / "initialization.json", {"group": group, "study_sha256": study_sha,
+              "training_seed": cfg["seed"],
               "slow_state_sha256": state_sha(model.state_dict()), "FM_frozen": True,
               "score_protocol": study["score_protocol"], "initial_score": initial})
 
@@ -129,8 +153,9 @@ def run(study_path, group, output, device_name, resume=False):
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["gradient_clip"], error_if_nonfinite=True)
             optimizer.step()
             score = None
-            if step % cfg["validate_every"] == 0 or step == budget:
-                score = validation(stage == 2)
+            coarse_check, dense_check = validation_schedule(stage, step, budget, cfg)
+            if coarse_check or dense_check:
+                score = validation(stage == 2 and coarse_check)
                 if state_sha(bundle["fm"]["ema"]) != bundle["fm_state_sha256"]:
                     raise ValueError("Frozen FM changed")
                 write(output / f"stage{stage}_coverage.json", {k: s.coverage() for k, s in samplers.items()})
@@ -145,7 +170,7 @@ def run(study_path, group, output, device_name, resume=False):
         cp = None
     write(output / "completed.json", {"completed": True, "group": group, "best": best,
           "stage1_updates": cfg["stage1_updates"], "stage2_updates": cfg["stage2_updates"],
-          "FM_optimizer_updates": 0, "score_protocol": study["score_protocol"]})
+          "FM_optimizer_updates": 0, "score_protocol": study["score_protocol"], "training_seed": cfg["seed"]})
 
 
 def main():

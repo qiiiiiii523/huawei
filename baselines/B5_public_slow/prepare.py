@@ -66,9 +66,14 @@ def compatibility(bundle):
             "parameters": sum(p.numel() for p in model.parameters())}
 
 
-def prepare(bundle_path, cache, public_root, output, cache_study=None, u1=1560, u2=1560, validate_every=390):
+def prepare(bundle_path, cache, public_root, output, cache_study=None, u1=1560, u2=1560, validate_every=390,
+            train_seed=42, dense_validate_every=0, dense_until=390):
     if min(u1, u2, validate_every) < 1:
         raise ValueError("Positive update budgets and validation interval required")
+    if not 0 <= train_seed <= 2 ** 31 - 1 or dense_validate_every < 0 or dense_until < 0:
+        raise ValueError("Invalid training seed/dense validation interval")
+    if dense_validate_every and (dense_until < dense_validate_every or dense_until > u2):
+        raise ValueError("Dense interval must fit inside the stage2 early interval and budget")
     bundle, initial_path = load_inference_bundle(bundle_path)
     profile = read(DEFAULT_PROFILE)
     if (bundle_slow_beta(bundle) != .75 or bundle["sampling"] != SAMPLING or
@@ -128,7 +133,8 @@ def prepare(bundle_path, cache, public_root, output, cache_study=None, u1=1560, 
         "sampling": dict(SAMPLING), "beta": .75, "residual_weight": 2.5890171538829843,
         "F_width_native": 51, "combo_weight": .1, "mean_weight": 0.,
         "training": {"stage1_updates": u1, "stage2_updates": u2, "validate_every": validate_every,
-                     "batch_records": 2, "seed": 42, "learning_rate": 1e-4, "weight_decay": .01, "gradient_clip": 1.},
+                     "batch_records": 2, "seed": train_seed, "learning_rate": 1e-4, "weight_decay": .01, "gradient_clip": 1.,
+                     "dense_validate_every": dense_validate_every, "dense_stage2_until": dense_until},
         "selection": "initial_bundle_or_stage2_initial_or_stage2_periodic_mean_r",
         "stage1_handoff": "fixed_final_update_not_validation_best",
         "public_patient_balanced": True, "M_batch": ["huawei", "public"],
@@ -137,6 +143,8 @@ def prepare(bundle_path, cache, public_root, output, cache_study=None, u1=1560, 
         raise ValueError("Source S50-F coefficient differs; do not guess a new F weight")
     write(output / "study.json", study)
     write(output / "preflight.json", {"ready": True, "training_started": False, "FM_optimizer_updates": 0,
+          "training_seed": train_seed, "fixed_inference_sampling": dict(SAMPLING),
+          "dense_validate_every": dense_validate_every, "dense_stage2_until": dense_until,
           "score_protocol": SCORE_PROTOCOL, "baseline_must_be_recomputed_in_current_QC_scope": True,
           "train_records": len(manifest["train"]), "public_train_records": len(public["train"]), **checked})
     print({"ready": True, "study": str(output / "study.json"), "training_started": False}, flush=True)
@@ -152,9 +160,13 @@ def main():
     p.add_argument("--stage1-updates", type=int, default=1560)
     p.add_argument("--stage2-updates", type=int, default=1560)
     p.add_argument("--validate-every", type=int, default=390)
+    p.add_argument("--train-seed", type=int, default=42, help="Training RNG only; FM noise/data split remain fixed")
+    p.add_argument("--dense-validate-every", type=int, default=0, help="Extra early stage2 checks; do not change coarse best selection")
+    p.add_argument("--dense-stage2-until", type=int, default=390)
     a = p.parse_args()
     prepare(a.bundle, a.huawei_cache, a.public, a.output, a.cache_study,
-            a.stage1_updates, a.stage2_updates, a.validate_every)
+            a.stage1_updates, a.stage2_updates, a.validate_every, a.train_seed,
+            a.dense_validate_every, a.dense_stage2_until)
 
 
 if __name__ == "__main__":
