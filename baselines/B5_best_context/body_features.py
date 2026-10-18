@@ -11,7 +11,8 @@ BODY_PROTOCOL = "B5-best-body-II-adapter-v1"
 LEGACY_ENCODING = "legacy_shared_i_v1"
 SHAPE_ENCODING = "shape_amplitude_v1"
 UNCLIPPED_ENCODING = "shape_amplitude_unclipped_v1"
-FEATURE_ENCODINGS = (LEGACY_ENCODING, SHAPE_ENCODING, UNCLIPPED_ENCODING)
+BEAT16_ENCODING = "legacy_beat16_stats8_v1"
+FEATURE_ENCODINGS = (LEGACY_ENCODING, SHAPE_ENCODING, UNCLIPPED_ENCODING, BEAT16_ENCODING)
 BEFORE, AFTER, MAX_BEATS = 100, 200, 32
 
 
@@ -67,7 +68,8 @@ def relation_features(history, *, audit=None, encoding=LEGACY_ENCODING):
         audit.update(candidate_beats=0, selected_beats=0, I_beat_clipped_fraction=None,
             II_beat_clipped_fraction=None, I_peak_before_clip=None, II_peak_before_clip=None,
             I_beat_exceeds_8_fraction=None, II_beat_exceeds_8_fraction=None,
-            template_clip_applied=encoding != UNCLIPPED_ENCODING)
+            template_clip_applied=encoding != UNCLIPPED_ENCODING,
+            template_clip_limit=None if encoding == UNCLIPPED_ENCODING else 16 if encoding == BEAT16_ENCODING else 8)
     empty = (np.zeros((2, 300), np.float32), np.zeros(27, np.float32), False)
     if history is None or history.raw_uV is None or history.valid_mask is None:
         return empty
@@ -113,7 +115,8 @@ def relation_features(history, *, audit=None, encoding=LEGACY_ENCODING):
                         normalized = pair / scale
                     if not np.isfinite(normalized).all():
                         raise ValueError("Nonfinite normalized historical beat")
-                    candidates.append(normalized if encoding == UNCLIPPED_ENCODING else np.clip(normalized, -8, 8))
+                    limit = 16 if encoding == BEAT16_ENCODING else 8
+                    candidates.append(normalized if encoding == UNCLIPPED_ENCODING else np.clip(normalized, -limit, limit))
                     if audit is not None:
                         before_clip.append(normalized.copy())
         usable = valid.all(axis=0)
@@ -144,8 +147,12 @@ def relation_features(history, *, audit=None, encoding=LEGACY_ENCODING):
         uncut = np.median(selected, axis=0)
         uncut -= np.median(uncut, axis=1, keepdims=True)
         summary = clipping_summary(selected)
+        limit = 16 if encoding == BEAT16_ENCODING else 8
         for lead in ("I", "II"):
             summary[f"{lead}_beat_exceeds_8_fraction"] = summary[f"{lead}_beat_clipped_fraction"]
+            if encoding == BEAT16_ENCODING:
+                channel = 0 if lead == "I" else 1
+                summary[f"{lead}_beat_clipped_fraction"] = float(np.mean(np.abs(selected[:, channel]) > limit))
             if encoding == UNCLIPPED_ENCODING:
                 summary[f"{lead}_beat_clipped_fraction"] = 0.
         audit.update(summary, template_clip_applied=encoding != UNCLIPPED_ENCODING, candidate_beats=len(candidates),

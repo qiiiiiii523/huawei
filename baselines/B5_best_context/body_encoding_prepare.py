@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from baselines.B5_best.common import read, write, sha, csv_write
-from .body_features import (BODY_PROTOCOL, LEGACY_ENCODING, SHAPE_ENCODING, UNCLIPPED_ENCODING,
+from .body_features import (BODY_PROTOCOL, LEGACY_ENCODING, SHAPE_ENCODING, UNCLIPPED_ENCODING, BEAT16_ENCODING,
                             feature_encoding, relation_features)
 from .body_prepare import load_cache, write_ledger
 from .adapters import history_from_sample, _visible_digest
@@ -36,7 +36,7 @@ def check_cached_pair(old_root, new_root, *, expected_encoding=SHAPE_ENCODING):
     """Verify the experiment differs ONLY in historical beat/stat features."""
     old_root, new_root = Path(old_root), Path(new_root)
     old, new = load_cache(old_root), load_cache(new_root)
-    if (expected_encoding not in (SHAPE_ENCODING, UNCLIPPED_ENCODING)
+    if (expected_encoding not in (SHAPE_ENCODING, UNCLIPPED_ENCODING, BEAT16_ENCODING)
             or feature_encoding(old) != LEGACY_ENCODING or feature_encoding(new) != expected_encoding):
         raise ValueError("Expected legacy control and shape/amplitude experimental cache")
     if (old["frozen"] != new["frozen"] or new.get("source_cache_sha256") != sha(old_root / "cache.json")
@@ -58,6 +58,8 @@ def check_cached_pair(old_root, new_root, *, expected_encoding=SHAPE_ENCODING):
             for name, shape in (("beat", (2, 300)), ("stats", (27,))):
                 if right[name].shape != shape or not np.isfinite(right[name]).all():
                     raise ValueError("Invalid encoded historical feature: " + name)
+            if expected_encoding == BEAT16_ENCODING and not np.array_equal(left["stats"], right["stats"]):
+                raise ValueError("O16 must retain the original stats8 values exactly")
     return old, new
 
 
@@ -91,8 +93,8 @@ def run(args):
         raise ValueError("New feature cache must be separate from the source cache")
     source = load_cache(root)
     encoding = getattr(args, "encoding", SHAPE_ENCODING)
-    if encoding not in (SHAPE_ENCODING, UNCLIPPED_ENCODING):
-        raise ValueError("Prepare E or E0 from the same original legacy cache")
+    if encoding not in (SHAPE_ENCODING, UNCLIPPED_ENCODING, BEAT16_ENCODING):
+        raise ValueError("Prepare E, E0 or O16 from the same original legacy cache")
     if feature_encoding(source) != LEGACY_ENCODING:
         raise ValueError("Use the original body_v1/cache as the legacy control")
     expected = {"protocol": BODY_PROTOCOL, "feature_encoding": encoding,
@@ -157,7 +159,8 @@ def run(args):
                         raise ValueError("Legacy feature extraction failed to reproduce original cache")
                 if new_features[2] != bool(arrays["available"]):
                     raise ValueError("Encoding must not change history availability/QC")
-                for label, audit in (("O", old_audit), ("E0" if encoding == UNCLIPPED_ENCODING else "E", new_audit)):
+                new_label = {SHAPE_ENCODING: "E", UNCLIPPED_ENCODING: "E0", BEAT16_ENCODING: "O16"}[encoding]
+                for label, audit in (("O", old_audit), (new_label, new_audit)):
                     uncut, clipped = audit.pop("_unclipped_template", None), audit.pop("_clipped_template", None)
                     write(output / "audit" / f"{split}_{record['pair_id']}_{label}.json",
                         {"split": split, "pair_id": record["pair_id"], "subject_id": record["subject_id"],
@@ -196,7 +199,7 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--cache", required=True, help="Existing original body_v1/cache, read-only")
     p.add_argument("--output", required=True)
-    p.add_argument("--encoding", choices=(SHAPE_ENCODING, UNCLIPPED_ENCODING), default=SHAPE_ENCODING)
+    p.add_argument("--encoding", choices=(SHAPE_ENCODING, UNCLIPPED_ENCODING, BEAT16_ENCODING), default=SHAPE_ENCODING)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--subjects", nargs="+", default=["HNU11135", "HNU11141", "HNU11119", "HNU11104"])
     run(p.parse_args())
