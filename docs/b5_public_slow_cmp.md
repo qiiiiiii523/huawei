@@ -77,6 +77,26 @@ find /home/qht/huawei/data/PTB-Diagnostic -maxdepth 2 -name '*.hea' | wc -l
 
 本轮不重新训练FM、不修改现有权重。control100缓存只有准备完成并有`cache.json`后才能使用；仅有部分npz不算完成。
 
+### 3.1 上传后先检查完整性（独立脚本，不需要torch/wfdb）
+
+先把本分支的`scripts/check_ptb_integrity.py`更新或手动上传到服务器工作树的`scripts/`。
+
+```bash
+cd /home/qht/huawei_B5_public_slow
+
+python scripts/check_ptb_integrity.py \
+  --root /home/qht/huawei/data/PTB-Diagnostic \
+  --output-dir /home/qht/huawei/results/B5-slow-public/integrity_$(date +%Y%m%d_%H%M%S)
+```
+
+若上传后实际目录名为`/home/qht/huawei/data/PTB_db`，只将`--root`替换为该路径。它必须直接包含`patient001`等患者文件夹、`RECORDS`和`SHA256SUMS.txt`。
+
+脚本只读原始数据，根据提供的官方SHA256清单逐文件校验，检查RECORDS、标准导联、头文件引用、二进制长度并统计记录时长。清单本身需来自原始下载；此脚本不联网认证清单。默认允许缺少未参与训练的根目录图片等辅助文件，并报告提示；加`--strict-root`要求清单内所有根目录文件也齐全。
+
+结果包含`summary.json`、`summary.md`、`files.csv`和`records.csv`。只有`ready_for_preprocessing=true`才继续步骤4；未通过时退出码2，缺失文件见`missing_required_files`，损坏文件见`checksum_mismatches`。短于50秒是长度不适用，不算文件损坏；完整性通过也不等于波形QC通过，波形QC在步骤4完成。
+
+本机前次检查发现`patient279/s0533_re.hea`缺失，应特别查看它是否已补齐。脚本不自动删除、修复、下载或排除损坏记录。
+
 ## 4. 一次性处理PTB（CPU，不训练）
 
 ```bash
