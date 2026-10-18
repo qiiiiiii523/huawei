@@ -2,7 +2,7 @@
 # Run ONE arm. Existing source caches are read-only; no git/network/FM inference.
 set -euo pipefail
 code_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-run=/home/qht/huawei/results/B5-best-exp-Control100PCC/partner_multiscale_v1
+run=/home/qht/huawei/results/B5-best-exp-ScaleAblation/seed43_v1
 group=
 gpu=
 resume=
@@ -15,8 +15,8 @@ while (($#)); do
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
-if [[ ! "$group" =~ ^(control_old_fm|adapt_control100|adapt_multiscale)$ || ! "$gpu" =~ ^[0-9]+$ ]]; then
-  echo "Need --group control_old_fm|adapt_control100|adapt_multiscale --gpu N [--run ABS/path] [--resume ABS/last.pt]" >&2
+if [[ ! "$group" =~ ^(adapt_control100|adapt_short_middle|adapt_long|adapt_multiscale)$ || ! "$gpu" =~ ^[0-9]+$ ]]; then
+  echo "Need --group adapt_control100|adapt_short_middle|adapt_long|adapt_multiscale --gpu N [--run ABS/path] [--resume ABS/last.pt]" >&2
   exit 2
 fi
 export CUDA_VISIBLE_DEVICES=$gpu

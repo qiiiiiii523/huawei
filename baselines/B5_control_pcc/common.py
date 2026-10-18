@@ -8,14 +8,15 @@ from baselines.B5_best.common import read, sha
 from baselines.B5_best.slow import load_slow
 from baselines.B5_best import SAMPLING
 from baselines.B5.scoring import SCORE_PROTOCOL
-from . import PROTOCOL, GROUPS
+from . import PROTOCOL, GROUPS, BANDS_BY_GROUP
 
 
 def multiscale_for_group(study, group):
     if group not in GROUPS:
         raise ValueError('Unknown experiment group')
     result = dict(study['multiscale'])
-    result['weight'] = study['multiscale']['weight'] if group == GROUPS[2] else 0.
+    result['enabled_bands'] = list(BANDS_BY_GROUP[group])
+    result['weight'] = study['multiscale']['weight'] if BANDS_BY_GROUP[group] else 0.
     return result
 
 
@@ -40,6 +41,10 @@ def load_study(path):
         raise ValueError('Wrong paired experiment / reliable-I scoring / sampling')
     if study.get('code_sha256') != code_digest():
         raise ValueError('Study code changed: use its frozen worktree or prepare a new study')
+    if (study.get('bands_by_group') != {g:list(BANDS_BY_GROUP[g]) for g in GROUPS}
+            or type(study.get('training', {}).get('seed')) is not int
+            or not 0 <= study['training']['seed'] < 2**32):
+        raise ValueError('Need the explicit four-group scale plan and training seed')
     cfg = study.get('multiscale', {})
     floors = np.asarray(cfg.get('std_floor', []))
     if (cfg.get('protocol') != 'native50-full120-multiscale-shape-v1' or cfg.get('widths') != [251, 751]
@@ -74,8 +79,8 @@ def load_cache(path, study_path):
             if sha(file) != item['sha256']:
                 raise ValueError('Training cache changed: ' + item['file'])
             verified.add(identity)
-    if manifest['train_sources'][GROUPS[1]] != manifest['train_sources'][GROUPS[2]]:
-        raise ValueError('B/C must use the identical control100 training cache')
+    if any(manifest['train_sources'][g] != manifest['train_sources'][GROUPS[0]] for g in GROUPS):
+        raise ValueError('All four groups must use identical control100 training caches')
     for item in manifest['validation']:
         if sha(Path(manifest['validation_root']) / item['file']) != item['sha256']:
             raise ValueError('Validation cache changed: ' + item['file'])

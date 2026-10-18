@@ -63,12 +63,18 @@ def multiscale_shape_loss(prediction, target, mask, config):
     amplitude_weight = float(config['shape_huber_weight'])
     if amplitude_weight < 0 or not torch.isfinite(torch.tensor(amplitude_weight)):
         raise ValueError('Shape Huber coefficient must be finite and nonnegative')
+    enabled = config.get('enabled_bands', [0, 1, 2])
+    if (not isinstance(enabled, (tuple, list)) or not enabled or
+            any(type(i) is not int or i not in (0, 1, 2) for i in enabled) or len(set(enabled)) != len(enabled)):
+        raise ValueError('Need unique enabled scale indices from 0,1,2')
     valid = mask.bool()
     p = torch.where(valid[..., None], prediction, 0.)
     y = torch.where(valid[..., None], target, 0.)
     losses, metrics = [], {}
     names = ('short_lt5s', 'middle_5to15s', 'long_gt15s')
     for index, (name, pb, yb) in enumerate(zip(names, scale_bands(p), scale_bands(y))):
+        if index not in enabled:
+            continue
         # Whole-record centering is ONLY part of the added shape loss.
         pc = pb - pb.mean(-1, keepdim=True)
         yc = yb - yb.mean(-1, keepdim=True)

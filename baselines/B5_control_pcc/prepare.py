@@ -9,12 +9,22 @@ from baselines.B5_best.common import read, write, sha, state_sha
 from baselines.B5_best.bundle import load_bundle, verified_source, DEFAULT_PROFILE
 from baselines.B5_best import SAMPLING
 from baselines.B5.scoring import SCORE_PROTOCOL
-from . import PROTOCOL, LEGACY_CACHE_PROTOCOL, GROUPS
+from . import PROTOCOL, LEGACY_CACHE_PROTOCOL, GROUPS, BANDS_BY_GROUP
 from .common import code_digest, slow_model, validation_key, load_cache
 from .core import generate
 
 ROOT = Path('/home/qht/huawei/results/B5-best-exp-SlowPCC')
 NON_FM_FIELDS = {'anchor', 'numeric', 'sex', 'field_mask', 'age_topcoded', 'target_uV', 'mask', 'slow_target'}
+
+
+def paired_training_config(original, epochs, seed):
+    if type(seed) is not int or not 0 <= seed < 2**32 or type(epochs) is not int or epochs < 1:
+        raise ValueError('Need positive epochs and integer training seed in [0,2**32)')
+    training = copy.deepcopy(original)
+    training.update(epochs=epochs, seed=seed)
+    if training['validate_every'] != 5:
+        raise ValueError('Preserve validation every five epochs')
+    return training
 
 
 def multiscale_settings(root, entries, weight):
@@ -184,10 +194,7 @@ def prepare(args):
     print('Freezing multiscale quiet-label thresholds from TRAIN labels only', flush=True)
     ms_settings = multiscale_settings(new_run / 'cache', [b[k] for k in sorted(b)], ms_weight)
     audit = validation_audit(nm, new_run / 'cache', {e['subject_id'] for e in nm['train']})
-    training = copy.deepcopy(new['training'])
-    training.update(epochs=args.epochs)
-    if training['seed'] != 42 or training['validate_every'] != 5:
-        raise ValueError('Preserve paired seed42 and validation every five epochs')
+    training = paired_training_config(new['training'], args.epochs, args.training_seed)
     output.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(new_run / 'shared/components.pt', output / 'components.pt')
     source_files = {}
@@ -203,13 +210,15 @@ def prepare(args):
              'mean_weight': 0., 'bundle_sha256': sha(output / 'components.pt'),
              'source_files': source_files, 'code_sha256': code_digest(), 'reference_score': reference,
              'multiscale': ms_settings,
-             'comparisons': {'B_minus_A': 'TRAIN FM partner only', 'C_minus_B': 'extra multiscale loss only'},
-             'validation_FM': 'control100 for ALL three arms', 'source_code_executed': False}
+             'comparisons': {'ALL_minus_B': 'paired training-seed replication',
+                             'SM_L_ALL_minus_B': 'fixed total auxiliary weight distributed over enabled scales'},
+             'bands_by_group': {g: list(BANDS_BY_GROUP[g]) for g in GROUPS},
+             'initialization': 'same original PCC20 from control100 source components, not C20',
+             'validation_FM': 'control100 for ALL four arms', 'source_code_executed': False}
     write(output / 'study.json', study)
     view = {'completed': True, 'study_sha256': sha(output / 'study.json'),
-            'train_sources': {GROUPS[0]: {'root': str(old_run / 'cache'), 'entries': [a[k] for k in sorted(a)]},
-                              GROUPS[1]: {'root': str(new_run / 'cache'), 'entries': [b[k] for k in sorted(b)]},
-                              GROUPS[2]: {'root': str(new_run / 'cache'), 'entries': [b[k] for k in sorted(b)]}},
+            'train_sources': {g: {'root': str(new_run / 'cache'), 'entries': [b[k] for k in sorted(b)]}
+                              for g in GROUPS},
             'validation_root': str(new_run / 'cache'), 'validation': nm['validation'],
             'validation_rows': nm['validation_rows']}
     write(output / 'cache_view.json', view)
@@ -226,7 +235,9 @@ def prepare(args):
               'same_initial_slow_state_sha256': state_sha(model.state_dict()),
               'validation_audit': audit, 'score_protocol': SCORE_PROTOCOL,
               'reference_main_correlation': reference['main_correlation'], 'groups': list(GROUPS),
-              'multiscale_weight_by_group': dict(zip(GROUPS, [0., 0., ms_weight])),
+              'training_seed': training['seed'], 'inference_seed': SAMPLING['seed'],
+              'enabled_bands_by_group': {g: list(BANDS_BY_GROUP[g]) for g in GROUPS},
+              'multiscale_weight_by_group': {g: ms_weight if BANDS_BY_GROUP[g] else 0. for g in GROUPS},
               'multiscale_floor_source': ms_settings['floor_source']}
     write(output / 'preflight.json', status)
     print(status, flush=True)
@@ -239,6 +250,7 @@ def main():
     p.add_argument('--control100-run', default=str(ROOT / 'control100_pcc20_cache_v1'))
     p.add_argument('--reference-report', required=True)
     p.add_argument('--epochs', type=int, default=20)
+    p.add_argument('--training-seed', type=int, default=43)
     p.add_argument('--multiscale-weight', type=float, default=.1)
     p.add_argument('--output', required=True)
     args = p.parse_args()

@@ -1,4 +1,5 @@
-"""A/B isolate the TRAIN FM partner; B/C isolate multiscale supervision."""
-PROTOCOL = "B5-control100-partner-multiscale-reliable-I-v2"
+"""Paired B/SM/L/ALL scale allocation with an explicit common training seed."""
+PROTOCOL = "B5-control100-scale-ablation-reliable-I-v3"
 LEGACY_CACHE_PROTOCOL = "B5-best-SlowPCC-fixed-FM-records-v2-pair-validation"
-GROUPS = ("control_old_fm", "adapt_control100", "adapt_multiscale")
+GROUPS = ("adapt_control100", "adapt_short_middle", "adapt_long", "adapt_multiscale")
+BANDS_BY_GROUP = dict(zip(GROUPS, ((), (0, 1), (2,), (0, 1, 2))))

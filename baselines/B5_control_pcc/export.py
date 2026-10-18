@@ -32,6 +32,8 @@ def export(study_path, checkpoint_path, output):
     bundle['provenance']['training_FM_partner'] = cp['group']
     bundle['provenance']['slow_component'] = f"Control100PCC-{cp['group']}-epoch{cp['epoch']}"
     bundle['provenance']['multiscale_training_weight'] = cp.get('multiscale', {}).get('weight', 0.)
+    bundle['provenance']['enabled_bands'] = cp.get('multiscale', {}).get('enabled_bands', [])
+    bundle['provenance']['training_seed'] = study['training']['seed']
     validate_bundle(bundle)
     if state_sha(bundle["fm"]["ema"]) != original["fm_state_sha256"]:
         raise ValueError("Export unexpectedly changed FM")
