@@ -21,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --group) group=$2; shift 2 ;;
     --stage) stage=$2; shift 2 ;;
     --resume) resume=1; shift ;;
+    --resume-audit) extra+=(--resume-audit); shift ;;
     --ptbxl-root) ptb=$2; shift 2 ;;
     --chapman-root) chapman=$2; shift 2 ;;
     --public-checkpoint|--fixed-bundle|--data-reference|--data-config|--settings|--chapman-probability|--chapman-patient-map)
@@ -74,7 +75,7 @@ case "$action" in
     ;;
   help|-h|--help)
     echo 'Usage: bash scripts/run_b5_public_fm.sh prepare|check|baseline|train|compare|pack [options]'
-    echo 'prepare: --ptbxl-root PATH --chapman-root PATH [--public-checkpoint PATH] [--fixed-bundle PATH]'
+    echo 'prepare: --ptbxl-root PATH --chapman-root PATH [--public-checkpoint PATH] [--fixed-bundle PATH] [--resume-audit]'
     echo 'train: --group control|expanded --gpu N [--stage public|huawei|both] [--resume]'
     echo 'Common: --run ABSOLUTE_RUN_ROOT --repository-root /home/qht/huawei'
     ;;

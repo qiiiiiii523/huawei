@@ -22,7 +22,7 @@ from baselines.B5_public_fm import prepare as preparation, train as training, ev
 from baselines.B5_public_fm import check as checking, recombine, compare, pack
 from baselines.B5_public_fm.common import ROOT, read, write, sha, state_sha, load_study, training_lock
 from baselines.B5_public_fm.public_data import (
-    physical_uV, quality_mask, descriptors, audit_public, PublicDataset, chapman_split)
+    physical_uV, quality_mask, descriptors, audit_public, PublicDataset, chapman_split, KNOWN_MALFORMED_HEADERS)
 from baselines.B5_public_fm.stream import PairedStream
 
 torch.set_num_threads(2)
@@ -134,6 +134,48 @@ def prepared_fixture(root):
 
 
 class PublicDataTests(unittest.TestCase):
+    def test_known_malformed_header_exclusion_is_exact_hash_bound_and_other_errors_remain_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ptb, chap = public_files(root)
+            header = sorted(chap.glob("*.hea"))[0]
+            split = chapman_split(header.stem)
+            name = next(f"EX{i}" for i in range(1000) if chapman_split(f"EX{i}") == split)
+            wfdb.wrsamp(name, fs=500, units=["uV"] * 12,
+                        sig_name=["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"],
+                        p_signal=wave(77).T.astype(float), fmt=["16"] * 12, adc_gain=[1.] * 12, baseline=[0] * 12,
+                        write_dir=str(chap))
+            header.write_text("broken first line\n", encoding="utf-8")
+            known = {"chapman:" + header.stem: {"sha256": sha(header), "reason": "verified synthetic malformed header"}}
+            with patch.dict(KNOWN_MALFORMED_HEADERS, known):
+                result = audit_public(ptb, chap, root / "cache", expected_chapman_records=4)
+                self.assertEqual(result["excluded"]["known_malformed_header"], 1)
+                self.assertEqual(read(root / "cache/known_header_exclusions.json")[0]["sha256"], sha(header))
+                self.assertFalse(any(r["key"] == "chapman:" + header.stem for r in read(root / "cache/manifest.json")))
+                header.write_text("different malformed content\n", encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    audit_public(ptb, chap, root / "unknown", expected_chapman_records=4)
+                self.assertTrue(read(root / "unknown/errors.json"))
+
+    def test_resume_audit_reuses_only_identical_cached_waveforms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ptb, chap = public_files(root)
+            output = root / "cache"
+            audit_public(ptb, chap, output, expected_chapman_records=3)
+            entry = read(output / "manifest.json")[0]
+            cache = output / entry["cache"]
+            before = cache.stat().st_mtime_ns
+            result = audit_public(ptb, chap, output, expected_chapman_records=3, reuse_cached=True)
+            self.assertEqual(result["reused_matching_waveform_caches"], 6)
+            self.assertEqual(before, cache.stat().st_mtime_ns)
+            value = np.load(cache)
+            value[0, 0] += 1
+            np.save(cache, value)
+            with self.assertRaises(ValueError):
+                audit_public(ptb, chap, output, expected_chapman_records=3, reuse_cached=True)
+            self.assertIn("partial cache differs", str(read(output / "errors.json")))
+
     def test_physical_units_lead_order_and_qc_mask(self):
         names = ["V6", "V5", "V4", "V3", "V2", "V1", "aVF", "aVL", "aVR", "III", "II", "I"]
         x = np.tile(np.arange(12), (5000, 1)).astype(float)
@@ -199,6 +241,28 @@ class PublicDataTests(unittest.TestCase):
 
 
 class PairAndResumeTests(unittest.TestCase):
+    def test_prepare_resume_audit_refuses_completed_study_but_recovers_unfinished_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, val = prepared_fixture(root)
+            config = read(root / "shared/data_config.json")
+            sources = read(path)["huawei_sources"]
+            args = SimpleNamespace(settings=root / "settings.json", repository_root=ROOT, data_reference=None,
+                public_checkpoint=str(root / "fm.pt"), fixed_bundle=root / "verified.pt", profile=None,
+                data_config=None, output=root / "shared", resume_audit=True, ptbxl_root=root / "ptb",
+                chapman_root=root / "chapman", chapman_patient_map=None, chapman_probability=None, expected_chapman_records=3)
+            with patch.object(preparation, "load_config", return_value=config), \
+                 patch.object(preparation, "huawei_sources", return_value=sources), \
+                 patch.object(preparation, "build_datasets", return_value=(TrainFixture(), val)), \
+                 patch("sys.stdout", io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    preparation.prepare(args)
+                path.rename(path.with_name("unfinished_reference.json"))
+                preparation.prepare(args)
+            self.assertTrue(read(path)["completed"])
+            self.assertEqual(read(root / "shared/public/audit_summary.json")["reused_matching_waveform_caches"], 6)
+            self.assertTrue(list((root / "shared/public").glob("errors_before_resume_*.json")))
+
     def test_stream_restarts_exactly_and_control_never_draws_chapman(self):
         control = PairedStream({"ptbxl": 3, "chapman": 7}, 0, 42)
         self.assertEqual({s for s, _ in control.next(50)}, {"ptbxl"})

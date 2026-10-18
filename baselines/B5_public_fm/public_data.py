@@ -14,6 +14,17 @@ from .common import read, write, sha, csv_write
 QC_POLICY = {"minimum_ptp_uV": 1.0, "maximum_constant_run_samples": 2500,
              "digital_rail_fraction": 0.001, "minimum_good_leads": 6}
 
+# Exact release files verified against the local official SHA256SUMS.txt.
+# Neither repair a missing signal description by inference nor skip arbitrary parser errors.
+KNOWN_MALFORMED_HEADERS = {
+    "chapman:JS23074": {
+        "sha256": "4871cf624b433f42d5cab90c6b0a0a05aa4d451094bec67654b93c005ab03afd",
+        "reason": "Record line and first signal descriptor concatenated; record name truncated"},
+    "chapman:JS01052": {
+        "sha256": "64103cf4725ce4acbc8377cd5fa2173f16f81417ae7067326652185ce4c04f6b",
+        "reason": "Malformed record line and missing first signal descriptor; not an optional date field"},
+}
+
 
 def lead_order(names):
     names = [str(v).strip().upper() for v in names]
@@ -137,18 +148,47 @@ def header_demographics(comments):
     return values
 
 
-def audit_public(ptb_root, chapman_root, output, patient_map=None, expected_chapman_records=45152):
+def audit_public(ptb_root, chapman_root, output, patient_map=None, expected_chapman_records=45152,
+                 reuse_cached=False):
     import wfdb
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    manifest, audit, seen, errors = [], [], {}, []
+    manifest, audit, seen, errors, excluded_headers = [], [], {}, [], []
+    reused = 0
     rows = descriptors(ptb_root, chapman_root, patient_map)
     count = sum(r["source"] == "chapman" for r in rows)
     if count != expected_chapman_records:
         raise ValueError(f"Expected {expected_chapman_records} Chapman headers, found {count}; finish/extract the full download first")
+    # Detect missing transfers before decoding tens of thousands of records.
+    # Read literal .dat/.mat dependencies, without invoking the WFDB date parser.
+    for row in rows:
+        base = Path(row["path"])
+        head = base.with_suffix(".hea")
+        files = {head}
+        if head.is_file() and head.stat().st_size:
+            try:
+                for line in head.read_text(encoding="utf-8-sig").splitlines():
+                    fields = line.split()
+                    if fields and not fields[0].startswith("#") and fields[0].lower().endswith((".dat", ".mat")):
+                        files.add(contained(base.parent, fields[0]))
+            except (OSError, UnicodeError, ValueError) as exc:
+                errors.append({"key": row["key"], "error": "Header precheck: " + str(exc)})
+        for file in files:
+            if not file.is_file() or file.stat().st_size == 0:
+                errors.append({"key": row["key"], "error": "Missing or empty source file: " + str(file)})
+    if errors:
+        write(output / "errors.json", errors)
+        raise ValueError(f"Source-file precheck found {len(errors)} missing/empty files; see {output / 'errors.json'}; no full audit started")
     for index, row in enumerate(rows):
         try:
             path = Path(row["path"])
+            known = KNOWN_MALFORMED_HEADERS.get(row["key"])
+            if known and sha(path.with_suffix(".hea")) == known["sha256"]:
+                audit.append({**{k: row[k] for k in ("source", "key", "patient", "split")},
+                    "status": "known_malformed_header", "duplicate_of": "", "waveform_sha256": "",
+                    "good_leads": 0, "lead_reasons": known["reason"]})
+                excluded_headers.append({"key": row["key"], "header": str(path.with_suffix(".hea")), **known})
+                continue
             header = wfdb.rdheader(str(path))
             # Missing/incomplete files are fatal, not silently converted into QC exclusions.
             if header.n_sig != 12 or header.sig_len != 5000 or header.fs != 500:
@@ -158,7 +198,7 @@ def audit_public(ptb_root, chapman_root, output, patient_map=None, expected_chap
             for filename in set(header.file_name):
                 file = contained(path.parent, filename)
                 if not file.is_file() or file.stat().st_size == 0:
-                    raise FileNotFoundError(file)
+                    raise FileNotFoundError("Missing or empty waveform file: " + str(file))
                 source_files.append(file)
             physical = wfdb.rdrecord(str(path), physical=True)
             raw = physical_uV(physical.p_signal, physical.units, physical.sig_name, physical.fs)
@@ -182,7 +222,17 @@ def audit_public(ptb_root, chapman_root, output, patient_map=None, expected_chap
             (output / "waveforms").mkdir(exist_ok=True)
             # Invalid leads have no supervision; zeroing here only makes preprocessing finite.
             clean = np.where(mask[:, None], raw, 0).astype(np.float32)
-            np.save(output / cache, clean, allow_pickle=False)
+            destination = output / cache
+            if reuse_cached and destination.is_file():
+                cached = np.load(destination, allow_pickle=False)
+                if cached.dtype != np.float32 or not np.array_equal(cached, clean):
+                    raise ValueError("Existing partial cache differs from current audited waveform: " + cache)
+                reused += 1
+            else:
+                temporary = destination.with_name(destination.name + ".tmp")
+                with temporary.open("wb") as handle:
+                    np.save(handle, clean, allow_pickle=False)
+                temporary.replace(destination)
             demo = row["demographics"] if row["source"] == "ptbxl" else header_demographics(header.comments)
             manifest.append({**row, "demographics": demo, "quality_mask": mask.tolist(),
                              "waveform_sha256": identity, "cache": cache, "cache_sha256": sha(output / cache),
@@ -194,13 +244,16 @@ def audit_public(ptb_root, chapman_root, output, patient_map=None, expected_chap
     if audit:
         csv_write(output / "audit.csv", audit)
     write(output / "errors.json", errors)
+    write(output / "known_header_exclusions.json", excluded_headers)
     if errors:
-        raise ValueError(f"Public audit found {len(errors)} file/format errors; see {output / 'errors.json'}. Fix download, then use a new output.")
+        raise ValueError(f"Public audit found {len(errors)} file/format errors; see {output / 'errors.json'}. "
+                         "Fix the listed files, then prepare --resume-audit to re-audit the unfinished directory.")
     counts = Counter((r["source"], r["split"]) for r in manifest)
     if any(counts[(s, split)] == 0 for s in ("ptbxl", "chapman") for split in ("train", "validation", "test")):
         raise ValueError("Both sources need nonempty patient-disjoint train/validation/test splits")
     write(output / "manifest.json", manifest)
     summary = {"completed": True, "QC_policy": QC_POLICY,
+               "known_header_exclusions": excluded_headers, "reused_matching_waveform_caches": reused,
                "counts": {s: {split: {"records": counts[(s, split)],
                    "patients": len({r['patient'] for r in manifest if r['source'] == s and r['split'] == split})}
                    for split in ("train", "validation", "test")} for s in ("ptbxl", "chapman")},

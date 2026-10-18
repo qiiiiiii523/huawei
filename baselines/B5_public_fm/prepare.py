@@ -5,6 +5,7 @@ import argparse
 import copy
 from pathlib import Path
 import shutil
+import time
 
 import numpy as np
 import torch
@@ -101,10 +102,21 @@ def prepare(args):
         raise ValueError("This initial pair preserves batch8, accumulation1, full precision")
     preprocessor = checkpoint_preprocessor(public, preprocessing_config(config))
     train, validation = build_datasets(config, preprocessor)
-    output = fresh_directory(args.output)
+    output = Path(args.output).resolve()
+    resume_audit = bool(getattr(args, "resume_audit", False))
+    if resume_audit:
+        if (output / "study.json").exists():
+            raise ValueError("study.json already exists: completed studies cannot resume audit or change code/data")
+        if not (output / "public").is_dir():
+            raise FileNotFoundError("--resume-audit requires an existing unfinished shared/public directory")
+        old_errors = output / "public/errors.json"
+        if old_errors.is_file():
+            shutil.copyfile(old_errors, old_errors.with_name(f"errors_before_resume_{time.time_ns()}.json"))
+    else:
+        output = fresh_directory(output)
     sources = huawei_sources(config)
     summary = audit_public(args.ptbxl_root, args.chapman_root, output / "public", args.chapman_patient_map,
-                           args.expected_chapman_records)
+                           args.expected_chapman_records, reuse_cached=resume_audit)
     a, b = (summary["counts"][s]["train"]["records"] for s in ("ptbxl", "chapman"))
     probability = b / (a + b) if args.chapman_probability is None else args.chapman_probability
     if not np.isfinite(probability) or not 0 < probability < 1:
@@ -142,7 +154,8 @@ def prepare(args):
                                  "demographic_field_coverage": np.stack(coverage).mean(0).tolist()}
     write(output / "train_distribution.json", distributions)
     files = ["public_initializer.pt", "fixed_slow_bundle.pt", "data_config.json", "public/manifest.json",
-             "public/audit_summary.json", "train_distribution.json"]
+             "public/audit_summary.json", "public/known_header_exclusions.json", "public/audit.csv", "public/errors.json",
+             "train_distribution.json"]
     study = {"protocol": PROTOCOL, "completed": True, "training_started": False, "optimizer_updates": 0,
              "implementation_sha256": code_hash(), "settings": settings,
              "expanded_chapman_probability": probability, "mixture_rule": "audited_train_record_proportions" if args.chapman_probability is None else "explicit_probability",
@@ -172,6 +185,7 @@ def main():
     p.add_argument("--chapman-probability", type=float)
     p.add_argument("--chapman-patient-map", help="Optional CSV with record_id,patient_id; otherwise official patient-ECG ID assumption is recorded")
     p.add_argument("--expected-chapman-records", type=int, default=45152, help="Full official release header count; change only for an explicitly audited variant")
+    p.add_argument("--resume-audit", action="store_true", help="Re-audit an unfinished shared directory, verify/reuse matching waveform caches; refuses an existing study.json")
     p.add_argument("--output", required=True)
     prepare(p.parse_args())
 

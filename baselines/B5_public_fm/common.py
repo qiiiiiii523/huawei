@@ -70,6 +70,9 @@ def training_lock(output):
 
 def load_study(path, verify_data=True):
     path = Path(path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError("No completed study.json: prepare must finish successfully before check/train. "
+                                "Inspect " + str(path.parent / "public/errors.json"))
     study = read(path)
     if study.get("protocol") != PROTOCOL or study.get("completed") is not True:
         raise ValueError("A completed PublicFM study.json is required")

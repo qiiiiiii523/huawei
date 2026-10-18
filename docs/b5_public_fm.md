@@ -98,7 +98,8 @@ bash scripts/run_b5_public_fm.sh prepare \
 
 prepare会：
 
-- 要求发现完整45,152个Chapman头文件，检查所有记录及依赖文件完整；缺文件/不支持格式会报错，不静默跳过。
+- 要求发现完整45,152个Chapman头文件；先检查波形文件是否存在/为空，再开始全量解析。缺文件/未知格式错误仍报错。
+- 原下载版本的JS23074、JS01052头文件损坏：只在头文件SHA256匹配已核实版本时，显式排除这两条记录并写入`known_header_exclusions.json`及审计CSV；不猜测修复、不跳过其他未知错误。
 - WFDB按头文件gain/baseline读取物理电压并统一μV，规范导联顺序；不逐窗去均值，不额外去漂移、不裁振幅。
 - 基本QC标记非有限、近乎平直、长时间常值、ADC打满的坏导联；记录须有可靠I且至少6导联有效。
 - 坏导联在缓存中填0仅保证预处理有限，loss用mask排除，绝不以填0后的信号作为正常标签评分。
@@ -110,7 +111,50 @@ prepare会：
 
 这一步会花时间和磁盘：公开缓存约十几GB；100轮两组每5轮保存raw FM、组合预测和标签，整个实验建议预留**至少120GB**，实际取决于验证配对数。
 查看`shared/public/audit_summary.json`、`shared/train_distribution.json`、`shared/study.json`中的有效量、排除原因、振幅分布与实际混合概率后再训练。
-准备完成不要重复执行prepare。输出已存在会拒绝覆盖；若审计失败，修好下载后用新的`--run /绝对路径/新名字`重新准备。
+准备完成不要重复执行prepare。若尚未生成`study.json`，修好文件后可用`prepare --resume-audit`复核已有目录，并复用数值一致的波形缓存；这仍会重新审计源数据，不是绕过检查。已有`study.json`的完整实验禁止这样恢复或改代码。
+
+### 4.1 本次3条错误的处理
+
+| 记录 | 原因 | 处理 |
+|---|---|---|
+| JS23074 | 首行粘连了I导联描述、记录名也异常 | 新代码按已核实的头文件SHA显式排除 |
+| JS01052 | 首行损坏且缺I导联描述，日期报错只是解析症状 | 新代码按已核实的头文件SHA显式排除 |
+| JS03309 | 服务器.mat未找到或为空；本地文件正常 | 从本地补传该.mat，不能跳过 |
+
+补传的本地文件：
+
+```text
+C:\Users\Ashley\Desktop\HW\Data\Chapman_Shaoxing_Ningbo\WFDBRecords\04\041\JS03309.mat
+```
+
+服务器目标文件：
+
+```text
+/home/qht/huawei/data/Chapman_Shaoxing_Ningbo/WFDBRecords/04/041/JS03309.mat
+```
+
+正常大小120024字节，SHA256为`1161406b14b40a33a1b61c857e2dcbbb6f65633db29e49278e7b01700372727c`。
+先推送本地修复提交，再在服务器更新工作树：
+
+```bash
+cd /home/qht/huawei_B5_best_exp_public_fm
+git fetch gitee B5-best-exp-PublicFM
+git merge --ff-only FETCH_HEAD
+```
+
+补传并更新后，在原失败的v1目录继续准备（只在study.json尚未生成时使用）：
+
+```bash
+bash scripts/run_b5_public_fm.sh prepare --resume-audit \
+  --run /home/qht/huawei/results/B5-best-exp-PublicFM/public_expansion_v1 \
+  --ptbxl-root /home/qht/huawei/data/PTB-XL \
+  --chapman-root /home/qht/huawei/data/Chapman_Shaoxing_Ningbo
+
+bash scripts/run_b5_public_fm.sh check \
+  --run /home/qht/huawei/results/B5-best-exp-PublicFM/public_expansion_v1
+```
+
+必须先看到prepare完成，再执行check。若你实际使用其他run，两个命令都改成那个相同目录。
 
 ## 5. CPU预检（一次，不训练）
 
