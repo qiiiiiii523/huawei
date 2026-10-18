@@ -8,6 +8,11 @@ DILATIONS = (1, 2, 4, 8, 16, 32, 64, 128)
 
 
 def load_slow(checkpoint,device,variant='slow'):
+    if checkpoint.get('protocol') == 'B5-slow-ms-residual-v1':
+        if variant != 'slow_f':
+            raise ValueError('Residual slow predictor preserves the F variant')
+        from baselines.B5_slow_ms.model import load_residual
+        return load_residual(checkpoint, device)
     if checkpoint.get('protocol')!='B5-slow-probe-v1' or checkpoint['config'].get('context_seconds')!=50:
         raise ValueError('Requires an S50 SlowCNN checkpoint, not an FM model or S30 model')
     expected={'slow':'C','slow_f':'F'}

@@ -18,7 +18,9 @@ from .core import generate, model_inputs, device_batch
 
 
 @torch.no_grad()
-def evaluate(model, bundle, study, cache_root, manifest, device, output, group, epoch, initial=False):
+def evaluate(model, bundle, study, cache_root, manifest, device, output, group, epoch, initial=False,
+             model_info=None):
+    model_info = {} if model_info is None else dict(model_info)
     output, cache_root = Path(output), Path(manifest['validation_root'])
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("Use an empty evaluation output; keep tee log beside it")
@@ -78,7 +80,7 @@ def evaluate(model, bundle, study, cache_root, manifest, device, output, group, 
                               input_quality_mask=arrays['target_quality_mask'][:, 0],
                               require_reliable_input=True, input_quality_source='same_record_target_I')
             overall = diagnostic_summary(overall)
-            overall.update(sampling=study["sampling"], model="B5-Control100PCC-output-hybrid",
+            overall.update(sampling=study["sampling"], model=model_info.get('model', "B5-Control100PCC-output-hybrid"),
                            FM_frozen=True, beta=study["beta"], target_used_at_inference=False)
             write_report(folder, overall, details, title="SlowPCC full-record QC r")
             csv_write(folder / "window_metadata.csv", rows)
@@ -100,10 +102,10 @@ def evaluate(model, bundle, study, cache_root, manifest, device, output, group, 
           "slow_diagnostic": native_summary, "FM_frozen": True, "slow_CNN_trainable": True,
           "beta": study["beta"], "reference_matched": matched, "sampling": study["sampling"],
           "selection_is_final_hybrid_r": True, "training_validation_cache_separated": True,
-          "validation_FM_handling": "preserve_historical_predictions_per_task_pair"})
+          "validation_FM_handling": "preserve_historical_predictions_per_task_pair", **model_info})
     write(output / "evaluation.json", {"completed": True, "group": group, "epoch": epoch,
           "score": score, "sampling": study["sampling"], "FM_frozen": True,
-          "target_used_at_inference": False, "reference_matched": matched})
+          "target_used_at_inference": False, "reference_matched": matched, **model_info})
     if initial and not matched:
         raise ValueError("Initial hybrid does not reproduce B5-best; keep report and inspect data/cache before training")
     print({"group": group, "epoch": epoch, **score, **native_summary}, flush=True)
