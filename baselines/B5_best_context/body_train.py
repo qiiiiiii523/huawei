@@ -35,6 +35,7 @@ def run(args):
     from baselines.B5.runtime import device_from_name, seed_all
     from baselines.B5_best.common import state_sha
     from .body_model import BodyIIAdapter, BodyAdapter
+    from .body_gate_features import (GATE_PROTOCOL, visible_record_features, fit_normalization, normalize_features)
     root, output = Path(args.cache).resolve(), Path(args.output).resolve()
     cache = load_cache(root)
     if args.epochs < 1 or args.batch_size < 1 or args.learning_rate <= 0 or not 0 <= args.seed < 2**32:
@@ -47,6 +48,22 @@ def run(args):
     for row in rows["train"] + rows["validation"]:
         with np.load(root / row["file"], allow_pickle=False) as record:
             arrays[row["file"]] = {k: record[k].copy() for k in record.files}
+    gate_features, normalization = {}, None
+    gated = args.record_gate is not None
+    if gated:
+        if args.group != "context" or not args.init_body_checkpoint:
+            raise ValueError("Record C/G experiment requires group=context and --init-body-checkpoint")
+        for row in rows["train"] + rows["validation"]:
+            a = arrays[row["file"]]
+            gate_features[row["file"]] = visible_record_features(a["anchor"], a["base_ii"], a["beat"], a["stats"], a["available"])
+        # One sample per physical training target, never validation or hidden II.
+        training_features = {}
+        for row in rows["train"]:
+            training_features.setdefault(row["target_record_id"], gate_features[row["file"]])
+        normalization = fit_normalization(list(training_features.values()))
+        gate_features = {key: normalize_features(value, normalization) for key, value in gate_features.items()}
+    elif args.init_body_checkpoint:
+        raise ValueError("Use --record-gate C/G with this paired continuation entry")
     class Windows(Dataset):
         def __init__(self):
             self.windows = []
@@ -63,10 +80,11 @@ def run(args):
                     truth = a["target_ii"].reshape(12, 5000)[j]
                     if np.std(truth.astype(float)) == 0:
                         continue
-                    self.windows.append((signals[j], bases[j],
+                    values = (signals[j], bases[j],
                         ((truth - np.median(truth)) / scales[j]).astype(np.float32),
                         a["beat"], a["stats"], np.float32(a["available"] and args.group == "context"),
-                        np.float32(1 / counts[row["target_record_id"]])))
+                        np.float32(1 / counts[row["target_record_id"]]))
+                    self.windows.append(values + (gate_features[row["file"]],) if gated else values)
         def __len__(self):
             return len(self.windows)
         def __getitem__(self, i):
@@ -76,7 +94,19 @@ def run(args):
         raise ValueError("No eligible training windows or validation records")
     seed_all(args.seed, True)
     device = device_from_name("cpu" if args.check_only else args.device)
-    model = BodyIIAdapter().to(device)
+    source_sha = source_state_sha = None
+    if gated:
+        from .body_model import load_body_checkpoint
+        from .body_gate_model import RecordGatedIIAdapter
+        source_model, source_payload = load_body_checkpoint(args.init_body_checkpoint,
+            cache["frozen"]["base_checkpoint_sha256"], device, expected_group="context")
+        if source_payload.get("protocol") != BODY_PROTOCOL or source_payload.get("cache_sha256") != sha(root / "cache.json"):
+            raise ValueError("Initialize C/G from an original body context checkpoint aligned to this cache")
+        model = RecordGatedIIAdapter(args.record_gate).to(device)
+        model.body.load_state_dict(source_model.state_dict(), strict=True)
+        source_sha, source_state_sha = sha(args.init_body_checkpoint), state_sha(source_model.state_dict())
+    else:
+        model = BodyIIAdapter().to(device)
     initial_hash = state_sha(model.state_dict())
     output.mkdir(parents=True, exist_ok=True)
     config = {"protocol": BODY_PROTOCOL, "group": args.group, "seed": args.seed, "epochs": args.epochs,
@@ -87,6 +117,10 @@ def run(args):
         "loss": "window_PCC + 0.01 * normalized_II_residual_squared",
         "FM_frozen": True, "slow_CNN_frozen": True,
         "training_windows": len(data), "train_pairs": len(rows["train"]), "validation_pairs": len(rows["validation"])}
+    if gated:
+        config.update(protocol=GATE_PROTOCOL, record_gate=args.record_gate,
+            init_body_checkpoint_sha256=source_sha, initial_body_weights_sha256=source_state_sha,
+            gate_normalization=normalization, gate_initial_alpha=1., gate_shared_across_12_windows=True)
     if args.resume:
         from baselines.B5_best.common import read
         if read(output / "config.json") != config:
@@ -95,6 +129,32 @@ def run(args):
         write(output / "config.json", config)
     if args.check_only:
         x = next(iter(DataLoader(data, batch_size=2, shuffle=False)))
+        if gated:
+            with torch.no_grad():
+                original = model.body(x[0], x[1], x[3], x[4], x[5])
+                value = model(x[0], x[1], x[3], x[4], x[5], x[7])
+                alpha = model.alpha(x[7])
+            if not torch.equal(value, original) or not torch.equal(alpha, torch.ones_like(alpha)):
+                raise AssertionError("C/G must exactly preserve the loaded body output at initialization")
+            value = model(x[0], x[1], x[3], x[4], x[5], x[7])
+            ((value - x[1]).square().mean() + .01 * model.alpha(x[7]).mean()).backward()
+            if args.record_gate == "G":
+                gradient = model.gate[-1].bias.grad
+                if gradient is None or not torch.isfinite(gradient).all() or not gradient.abs().sum():
+                    raise AssertionError("Gate boundary initialization has no attenuation gradient")
+            else:
+                if any(p.requires_grad or p.grad is not None for p in model.gate.parameters()):
+                    raise AssertionError("Control gate must remain fixed")
+            repeated = torch.from_numpy(np.repeat(x[7][:1].numpy(), 12, axis=0))
+            with torch.no_grad():
+                values = model.alpha(repeated)
+            if values.min() < 0 or values.max() > 1 or not torch.equal(values, values[:1].expand_as(values)):
+                raise AssertionError("A record must have one bounded alpha shared by twelve windows")
+            write(output / "preflight.json", {**config, "ready": True, "training_started": False,
+                "optimizer_updates": 0, "source_output_exactly_preserved": True,
+                "gate_backward_checked": args.record_gate == "G", "one_alpha_per_record_checked": True})
+            print({"ready": True, "record_gate": args.record_gate, "optimizer_updates": 0}, flush=True)
+            return
         with torch.no_grad():
             value = model(x[0], x[1], x[3], x[4], x[5])
         if not torch.equal(value, x[1]):
@@ -135,6 +195,8 @@ def run(args):
             args_ = (signals, bases, np.repeat(a["beat"][None], 12, axis=0),
                 np.repeat(a["stats"][None], 12, axis=0),
                 np.full(12, a["available"] and args.group == "context", np.float32))
+            if gated:
+                args_ += (np.repeat(gate_features[row["file"]][None], 12, axis=0),)
             output_ = model(*(torch.from_numpy(np.asarray(x, np.float32).copy()).to(device) for x in args_))
             predicted = restore_ii(a["base_ii"], bases, output_.cpu().numpy(), scales)
             details.append({"pair_id": row["pair_id"], "target_record_id": row["target_record_id"],
@@ -143,7 +205,7 @@ def run(args):
 
     start, updates, best, best_epoch = 0, 0, -float("inf"), 0
     def payload(epoch):
-        return {"protocol": BODY_PROTOCOL, "model": model.state_dict(), "group": args.group,
+        value = {"protocol": GATE_PROTOCOL if gated else BODY_PROTOCOL, "model": model.state_dict(), "group": args.group,
             "training_seed": args.seed,
             "epoch": epoch, "updates": updates, "best_validation_II_r": best, "best_epoch": best_epoch,
             "base_checkpoint_sha256": cache["frozen"]["base_checkpoint_sha256"],
@@ -152,6 +214,10 @@ def run(args):
             "optimizer": optimizer.state_dict(), "loader_rng": generator.get_state(),
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None}
+        if gated:
+            value.update(record_gate=args.record_gate, gate_normalization=normalization,
+                init_body_checkpoint_sha256=source_sha, initial_body_weights_sha256=source_state_sha)
+        return value
     def save_checkpoint(name, epoch):
         dest = output / name
         temp = dest.with_suffix(".pending")
@@ -159,7 +225,8 @@ def run(args):
         temp.replace(dest)
     if args.resume and (output / "last.pt").exists():
         saved = torch.load(output / "last.pt", map_location="cpu", weights_only=False)
-        if (saved.get("protocol") != BODY_PROTOCOL or saved.get("group") != args.group
+        if (saved.get("protocol") != config["protocol"] or saved.get("group") != args.group
+                or saved.get("record_gate") != args.record_gate
                 or saved.get("training_seed", 42) != args.seed
                 or saved.get("cache_sha256") != config["cache_sha256"]
                 or saved.get("initial_weights_sha256") != initial_hash):
@@ -178,9 +245,10 @@ def run(args):
     for epoch in range(start + 1, args.epochs + 1):
         model.train()
         total, count = 0., 0
-        for lead_i, base, truth, beat, stats, available, weight in loader:
-            x = [a.to(device) for a in (lead_i, base, truth, beat, stats, available, weight)]
-            prediction = model(x[0], x[1], x[3], x[4], x[5])
+        for batch in loader:
+            x = [a.to(device) for a in batch]
+            forward = (x[0], x[1], x[3], x[4], x[5]) + ((x[7],) if gated else ())
+            prediction = model(*forward)
             p, t = prediction - prediction.mean(1, keepdim=True), x[2] - x[2].mean(1, keepdim=True)
             r = (p * t).sum(1) / (p.norm(dim=1) * t.norm(dim=1)).clamp_min(1e-7)
             loss = ((1 - r + .01 * (prediction - x[1]).square().mean(1)) * x[6]).mean()
@@ -189,7 +257,7 @@ def run(args):
             optimizer.zero_grad(set_to_none=True); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1., error_if_nonfinite=True)
             optimizer.step(); updates += 1
-            total += float(loss.detach()) * len(lead_i); count += len(lead_i)
+            total += float(loss.detach()) * len(x[0]); count += len(x[0])
         metric, details = assess()
         improved = metric > best
         if improved:
@@ -198,9 +266,12 @@ def run(args):
         save_checkpoint("last.pt", epoch)
         row = {"epoch": epoch, "group": args.group, "train_loss": total / count,
             "validation_full120s_II_r": metric, "best_II_r": best, "best_epoch": best_epoch, "updates": updates}
+        if gated:
+            row["record_gate"] = args.record_gate
         write(output / f"validation/epoch_{epoch:03d}.json", {**row, "pairs": details})
         print(row, flush=True)
     write(output / "completed.json", {"completed": True, "group": args.group, "epochs": args.epochs,
+        "record_gate": args.record_gate,
         "training_seed": args.seed,
         "best_epoch": best_epoch, "best_II_r": best, "FM_updates": 0, "slow_CNN_updates": 0,
         "adapter_updates": updates, "best_checkpoint_sha256": sha(output / "best.pt")})
@@ -215,6 +286,8 @@ def main():
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--learning-rate", type=float, default=2e-4)
     p.add_argument("--seed", type=int, default=42, help="II adapter initialization/shuffle seed; B5-best inference noise stays seed42")
+    p.add_argument("--record-gate", choices=("C", "G"), help="Optional paired continuation: C=fixed alpha1, G=learned record attenuation")
+    p.add_argument("--init-body-checkpoint", help="Same existing context/best.pt for both C and G; never a B5 FM checkpoint")
     p.add_argument("--device", default="cuda")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--check-only", action="store_true", help="CPU forward/backward only; no optimizer updates")

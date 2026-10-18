@@ -22,7 +22,22 @@ def normalize_i(lead_i):
     return np.clip(centered / scale, -8, 8).astype(np.float32), scale
 
 
-def relation_features(history):
+def clipping_summary(normalized_beats):
+    """Measure feature preprocessing saturation; it is not an ECG quality verdict."""
+    x = np.asarray(normalized_beats)
+    if x.ndim != 3 or x.shape[1:] != (2, 300) or not len(x) or not np.isfinite(x).all():
+        raise ValueError("Clipping audit requires finite selected normalized paired beats")
+    return {"selected_beats": len(x),
+        "I_beat_clipped_fraction": float(np.mean(np.abs(x[:, 0]) > 8)),
+        "II_beat_clipped_fraction": float(np.mean(np.abs(x[:, 1]) > 8)),
+        "I_peak_before_clip": float(np.max(np.abs(x[:, 0]))),
+        "II_peak_before_clip": float(np.max(np.abs(x[:, 1])))}
+
+
+def relation_features(history, *, audit=None):
+    if audit is not None:
+        audit.update(candidate_beats=0, selected_beats=0, I_beat_clipped_fraction=None,
+            II_beat_clipped_fraction=None, I_peak_before_clip=None, II_peak_before_clip=None)
     empty = (np.zeros((2, 300), np.float32), np.zeros(27, np.float32), False)
     if history is None or history.raw_uV is None or history.valid_mask is None:
         return empty
@@ -38,7 +53,7 @@ def relation_features(history):
     # Lazy scipy import keeps cache/checkpoint inspection lightweight.
     from scipy.signal import butter, find_peaks, sosfiltfilt
     qrs_filter = butter(2, [5, 20], btype="bandpass", fs=500, output="sos")
-    candidates, vectors = [], []
+    candidates, vectors, before_clip = [], [], []
     for start in range(0, raw.shape[1], 5000):
         window, valid = raw[:, start:start + 5000], mask[:, start:start + 5000]
         if valid[0].sum() >= 1000:
@@ -59,7 +74,10 @@ def relation_features(history):
                     pair[lead, support[lead]] -= np.median(pair[lead, support[lead]])
                 scale = float(np.sqrt(np.mean(pair[0, support[0]] ** 2)))
                 if scale >= 1e-4 and np.isfinite(scale):
-                    candidates.append(np.clip(pair / scale, -8, 8))
+                    normalized = pair / scale
+                    candidates.append(np.clip(normalized, -8, 8))
+                    if audit is not None:
+                        before_clip.append(normalized.copy())
         usable = valid.all(axis=0)
         if usable.sum() < 1000:
             continue
@@ -74,10 +92,18 @@ def relation_features(history):
         corr = cov / np.outer(rms, rms)
         vectors.append(np.r_[corr[np.triu_indices(6)], np.log(np.clip(rms, 1e-4, 1e4))])
     if len(candidates) < 4 or not vectors:
+        if audit is not None:
+            audit["candidate_beats"] = len(candidates)
         return empty
     chosen = np.linspace(0, len(candidates) - 1, min(MAX_BEATS, len(candidates)), dtype=int)
     beat = np.median(np.stack([candidates[i] for i in chosen]), axis=0)
     beat -= np.median(beat, axis=1, keepdims=True)
+    if audit is not None:
+        selected = np.stack([before_clip[i] for i in chosen])
+        uncut = np.median(selected, axis=0)
+        uncut -= np.median(uncut, axis=1, keepdims=True)
+        audit.update(clipping_summary(selected), candidate_beats=len(candidates),
+                     _unclipped_template=uncut, _clipped_template=beat.copy())
     return beat.astype(np.float32), np.median(vectors, axis=0).astype(np.float32), True
 
 

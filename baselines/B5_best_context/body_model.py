@@ -31,14 +31,19 @@ class BodyIIAdapter(nn.Module):
 
 
 def load_body_checkpoint(path, base_sha, device, expected_group=None):
+    from .body_gate_features import GATE_PROTOCOL
     payload = torch.load(path, map_location="cpu", weights_only=False)
-    if (payload.get("protocol") != BODY_PROTOCOL or payload.get("base_checkpoint_sha256") != base_sha
+    if (payload.get("protocol") not in (BODY_PROTOCOL, GATE_PROTOCOL) or payload.get("base_checkpoint_sha256") != base_sha
             or payload.get("sampling") != {"seed": 42, "solver": "heun", "steps": 16, "samples": 16}
             or payload.get("slow_beta") != .75
             or payload.get("group") not in ("no_context", "context")
             or (expected_group and payload["group"] != expected_group)):
         raise ValueError("Body checkpoint is not aligned with this frozen B5-best/group/settings")
-    model = BodyIIAdapter().to(device)
+    if payload["protocol"] == GATE_PROTOCOL:
+        from .body_gate_model import RecordGatedIIAdapter
+        model = RecordGatedIIAdapter(payload["record_gate"]).to(device)
+    else:
+        model = BodyIIAdapter().to(device)
     model.load_state_dict(payload["model"], strict=True)
     model.eval()
     return model, payload
@@ -67,6 +72,11 @@ class BodyAdapter:
         signal, base, scales = encode_windows(observed_i, predicted_ii)
         args = [signal, base, np.repeat(beat[None], 12, axis=0),
                 np.repeat(stats[None], 12, axis=0), np.full(12, enabled, np.float32)]
+        if "record_gate" in self.payload:
+            from .body_gate_features import visible_record_features, normalize_features
+            features = visible_record_features(observed_i, predicted_ii, beat, stats, enabled)
+            features = normalize_features(features, self.payload["gate_normalization"])
+            args.append(np.repeat(features[None], 12, axis=0))
         output = self.model(*(torch.from_numpy(np.asarray(x, np.float32).copy()).to(self.device) for x in args))
         result = restore_ii(predicted_ii, base, output.cpu().numpy(), scales)
         return result, scales, enabled
@@ -81,10 +91,18 @@ class BodyAdapter:
         result = prediction.copy()
         result[1] = corrected
         delta = result[1].astype(np.float64) - prediction[1]
-        return result, {"adapter": "body_II_" + self.payload["group"], "body_protocol": BODY_PROTOCOL,
+        status = {"adapter": "body_II_" + self.payload["group"], "body_protocol": self.payload["protocol"],
             "body_context_used": bool(enabled), "body_mode": self.mode, "history_available": bool(available),
             "fallback": "none" if enabled else "learned_generic_II_correction",
             "body_checkpoint_epoch": self.payload["epoch"],
             "max_II_correction_uV": float(np.max(np.abs(delta))),
             "rms_II_correction_uV": float(np.sqrt(np.mean(delta ** 2))),
             "zero_current_I_windows": int((scales == 0).sum())}
+        if "record_gate" in self.payload:
+            from .body_gate_features import visible_record_features, normalize_features
+            features = normalize_features(visible_record_features(observed_i, prediction[1], beat, stats, enabled), self.payload["gate_normalization"])
+            with torch.no_grad():
+                alpha = self.model.alpha(torch.from_numpy(features[None]).to(self.device))
+            status.update(record_gate=self.payload["record_gate"], record_alpha=float(alpha.item()),
+                          alpha_shared_across_12_windows=True)
+        return result, status

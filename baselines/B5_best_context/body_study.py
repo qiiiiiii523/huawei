@@ -38,7 +38,8 @@ def groups():
         *[(f"body_shuffled_{seed}", "none", "correct", seed) for seed in (101, 202, 303)]]
 
 
-def run_study(baseline_dir, output, provider, context_adapter, no_context_adapter, *, loaded=None):
+def run_study(baseline_dir, output, provider, context_adapter, no_context_adapter, *, loaded=None,
+              case_specs=None, adapter_map=None, additive_routes=None, notes=None):
     """Models see only visible I/prediction/history. Targets remain in the scoring code."""
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
@@ -48,10 +49,11 @@ def run_study(baseline_dir, output, provider, context_adapter, no_context_adapte
     body_rows = [item["rows"][ids[0]] for item in [data["task2"]] for ids in item["pairs"]
                  if item["rows"][ids[0]]["input_type"] == "body_scale_d6"]
     summary, base_score, reference = [], None, {}
-    for name, machine_mode, body_mode, shuffle in groups():
-        adapter = no_context_adapter if body_mode == "no_context" else context_adapter if body_mode else None
+    for name, machine_mode, body_mode, shuffle in (groups() if case_specs is None else case_specs):
+        adapter = (adapter_map.get(body_mode) if adapter_map is not None else
+                   no_context_adapter if body_mode == "no_context" else context_adapter if body_mode else None)
         if adapter is not None:
-            adapter.mode = "disabled" if body_mode in ("disabled", "no_context") else "correct"
+            adapter.mode = "disabled" if body_mode in ("disabled", "no_context") or body_mode.endswith("_disabled") else "correct"
         router = ContextRouter(load_settings(), machine_mode=machine_mode, body_adapter=adapter)
         donor = shuffled_donors(body_rows, shuffle) if shuffle is not None else None
         if donor:
@@ -124,19 +126,20 @@ def run_study(baseline_dir, output, provider, context_adapter, no_context_adapte
             "delta_mean_r": score["main_correlation"] - base_score["main_correlation"]}
         reference[name] = row; summary.append(row)
         print(row, flush=True)
-    if abs((reference["both"]["mean_r"] - reference["d6_only"]["mean_r"]) -
-           (reference["body_only"]["mean_r"] - reference["baseline"]["mean_r"])) > 1e-10:
-        raise AssertionError("Independent device-route effects must add exactly in mean r")
-    for a, b, field in (("both", "d6_only", "machine_r"), ("both", "body_only", "body_r")):
-        if abs(reference[a][field] - reference[b][field]) > 1e-10:
-            raise AssertionError("Cross-device route contamination")
+    for combined, machine, body in ([("both", "d6_only", "body_only")] if additive_routes is None else additive_routes):
+        if abs((reference[combined]["mean_r"] - reference[machine]["mean_r"]) -
+               (reference[body]["mean_r"] - reference["baseline"]["mean_r"])) > 1e-10:
+            raise AssertionError("Independent device-route effects must add exactly in mean r")
+        for a, b, field in ((combined, machine, "machine_r"), (combined, body, "body_r")):
+            if abs(reference[a][field] - reference[b][field]) > 1e-10:
+                raise AssertionError("Cross-device route contamination")
     csv_write(output / "summary.csv", summary)
     lines = ["# B5-best：d6/body 配对结果", "", "同一B5-best预测；Heun16/K16，seed42，β=0.75。", "",
         "|组|Task1 r|机器r|体脂秤r|Task2 r|平均r|Δ平均r|", "|---|---:|---:|---:|---:|---:|---:|"]
     for r in summary:
         lines.append("|" + r["group"] + "|" + "|".join(f"{r[k]:.8f}" for k in (
             "task1_r", "machine_r", "body_r", "task2_r", "mean_r", "delta_mean_r")) + "|")
-    lines += ["", "body_only 对比 body_no_context 区分个人信息与通用修正收益；",
+    lines += ([""] + notes) if notes is not None else ["", "body_only 对比 body_no_context 区分个人信息与通用修正收益；",
         "再看 body_disabled 和全部预设 shuffled，不挑最好的打乱种子。",
         "both 对比 d6_only 是 body 对现有方案的额外贡献。两个设备分别路由，不串联处理同一条记录。"]
     (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
