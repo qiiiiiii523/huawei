@@ -230,3 +230,8 @@ tar --exclude='*.pt' --exclude='*.npz' --exclude='*.npy' \
 ```
 
 下载/home/qht/huawei/B5_control100_multiscale_reports.tar.gz即可，不需要发送原始缓存或模型权重。
+
+## 10. 三组已完成后：先做离线诊断
+
+诊断第0轮、B20、C20的分尺度误差和逐患者变化，见[诊断与并行复核操作](b5_control100_multiscale_diagnosis.md)。
+该入口只读取已有数组，不重新训练；患者成组bootstrap可同时完成，训练seed复核则需要独立实验配置。
