@@ -9,7 +9,7 @@ import numpy as np
 
 from baselines.B5_best.common import read, write, sha
 from .adapters import history_from_sample, _visible_digest
-from .body_features import BODY_PROTOCOL, relation_features
+from .body_features import BODY_PROTOCOL, relation_features, feature_encoding
 from .evaluate import load_baseline, pairs
 
 
@@ -24,6 +24,7 @@ def load_cache(path):
     manifest = read(path / "cache.json")
     if manifest.get("completed") is not True or manifest.get("protocol") != BODY_PROTOCOL:
         raise ValueError("Finish body_prepare before training; cache is incomplete")
+    feature_encoding(manifest)
     for row in manifest["records"]:
         if sha(path / row["file"]) != row.get("sha256"):
             raise ValueError("Frozen body cache changed: " + row["file"])

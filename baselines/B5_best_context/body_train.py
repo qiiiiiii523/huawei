@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from baselines.B5_best.common import write, sha
-from .body_features import BODY_PROTOCOL, encode_windows, restore_ii
+from .body_features import BODY_PROTOCOL, encode_windows, restore_ii, feature_encoding, LEGACY_ENCODING
 from .body_prepare import load_cache
 
 
@@ -38,6 +38,7 @@ def run(args):
     from .body_gate_features import (GATE_PROTOCOL, visible_record_features, fit_normalization, normalize_features)
     root, output = Path(args.cache).resolve(), Path(args.output).resolve()
     cache = load_cache(root)
+    encoding = feature_encoding(cache)
     if args.epochs < 1 or args.batch_size < 1 or args.learning_rate <= 0 or not 0 <= args.seed < 2**32:
         raise ValueError("Use positive epochs/batch-size/learning-rate and a uint32 training seed")
     if output.exists() and any(output.iterdir()) and not args.resume:
@@ -51,6 +52,8 @@ def run(args):
     gate_features, normalization = {}, None
     gated = args.record_gate is not None
     if gated:
+        if encoding != LEGACY_ENCODING:
+            raise ValueError("Record-gate C/G uses the original legacy cache; do not combine experiments")
         if args.group != "context" or not args.init_body_checkpoint:
             raise ValueError("Record C/G experiment requires group=context and --init-body-checkpoint")
         for row in rows["train"] + rows["validation"]:
@@ -117,6 +120,8 @@ def run(args):
         "loss": "window_PCC + 0.01 * normalized_II_residual_squared",
         "FM_frozen": True, "slow_CNN_frozen": True,
         "training_windows": len(data), "train_pairs": len(rows["train"]), "validation_pairs": len(rows["validation"])}
+    if encoding != LEGACY_ENCODING:
+        config["feature_encoding"] = encoding
     if gated:
         config.update(protocol=GATE_PROTOCOL, record_gate=args.record_gate,
             init_body_checkpoint_sha256=source_sha, initial_body_weights_sha256=source_state_sha,
@@ -161,7 +166,7 @@ def run(args):
             raise AssertionError("Zero-initialized II correction must exactly preserve B5-best")
         adapter = BodyAdapter.__new__(BodyAdapter)
         adapter.model, adapter.device, adapter.mode = model, device, "correct"
-        adapter.payload = {"group": args.group}
+        adapter.payload = {"group": args.group, "feature_encoding": encoding}
         first = arrays[rows["validation"][0]["file"]]
         restored, _, _ = adapter.predict_ii_features(first["anchor"], first["base_ii"],
             first["beat"], first["stats"], first["available"])
@@ -214,6 +219,8 @@ def run(args):
             "optimizer": optimizer.state_dict(), "loader_rng": generator.get_state(),
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None}
+        if encoding != LEGACY_ENCODING:
+            value["feature_encoding"] = encoding
         if gated:
             value.update(record_gate=args.record_gate, gate_normalization=normalization,
                 init_body_checkpoint_sha256=source_sha, initial_body_weights_sha256=source_state_sha)
@@ -231,6 +238,8 @@ def run(args):
                 or saved.get("cache_sha256") != config["cache_sha256"]
                 or saved.get("initial_weights_sha256") != initial_hash):
             raise ValueError("Resume checkpoint does not belong to this paired body run")
+        if feature_encoding(saved) != encoding:
+            raise ValueError("Resume checkpoint uses a different feature encoding")
         model.load_state_dict(saved["model"]); optimizer.load_state_dict(saved["optimizer"])
         generator.set_state(saved["loader_rng"]); torch.set_rng_state(saved["torch_rng"])
         if device.type == "cuda" and saved["cuda_rng"] is not None:

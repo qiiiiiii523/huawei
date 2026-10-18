@@ -8,7 +8,32 @@ from __future__ import annotations
 import numpy as np
 
 BODY_PROTOCOL = "B5-best-body-II-adapter-v1"
+LEGACY_ENCODING = "legacy_shared_i_v1"
+SHAPE_ENCODING = "shape_amplitude_v1"
+FEATURE_ENCODINGS = (LEGACY_ENCODING, SHAPE_ENCODING)
 BEFORE, AFTER, MAX_BEATS = 100, 200, 32
+
+
+def feature_encoding(metadata):
+    """Old caches/checkpoints retain their exact legacy interpretation."""
+    value = metadata.get("feature_encoding", LEGACY_ENCODING)
+    if value not in FEATURE_ENCODINGS:
+        raise ValueError("Unknown body feature encoding: " + str(value))
+    return value
+
+
+def shape_amplitude_stats(centered):
+    """21 correlations before clipping + 6 log RMS ratios relative to I."""
+    x = np.asarray(centered, np.float64)
+    rms = np.sqrt(np.mean(x ** 2, axis=1))
+    normalized = x / np.maximum(rms[:, None], 1e-4)
+    cov = normalized @ normalized.T / x.shape[1]
+    norm = np.sqrt(np.diag(cov))
+    den = np.outer(norm, norm)
+    corr = np.divide(cov, den, out=np.zeros_like(cov), where=den > 1e-12)
+    ratios = np.maximum(rms, 1e-4) / max(float(rms[0]), 1e-4)
+    return np.r_[np.clip(corr[np.triu_indices(6)], -1, 1),
+                 np.clip(np.log(ratios), -np.log(1e4), np.log(1e4))]
 
 
 def normalize_i(lead_i):
@@ -34,7 +59,9 @@ def clipping_summary(normalized_beats):
         "II_peak_before_clip": float(np.max(np.abs(x[:, 1])))}
 
 
-def relation_features(history, *, audit=None):
+def relation_features(history, *, audit=None, encoding=LEGACY_ENCODING):
+    if encoding not in FEATURE_ENCODINGS:
+        raise ValueError("Unknown body feature encoding: " + str(encoding))
     if audit is not None:
         audit.update(candidate_beats=0, selected_beats=0, I_beat_clipped_fraction=None,
             II_beat_clipped_fraction=None, I_peak_before_clip=None, II_peak_before_clip=None)
@@ -74,7 +101,13 @@ def relation_features(history, *, audit=None):
                     pair[lead, support[lead]] -= np.median(pair[lead, support[lead]])
                 scale = float(np.sqrt(np.mean(pair[0, support[0]] ** 2)))
                 if scale >= 1e-4 and np.isfinite(scale):
-                    normalized = pair / scale
+                    if encoding == SHAPE_ENCODING:
+                        # Separate lead scales protect II shape when I is much smaller.
+                        scales = np.sqrt(np.sum(pair.astype(float) ** 2 * support, axis=1)
+                                         / support.sum(axis=1))
+                        normalized = pair / np.maximum(scales[:, None], 1e-4)
+                    else:
+                        normalized = pair / scale
                     candidates.append(np.clip(normalized, -8, 8))
                     if audit is not None:
                         before_clip.append(normalized.copy())
@@ -85,6 +118,9 @@ def relation_features(history, *, audit=None):
         x = x - np.median(x, axis=1, keepdims=True)
         scale = float(np.sqrt(np.mean(x[0] ** 2)))
         if scale < 1e-4:
+            continue
+        if encoding == SHAPE_ENCODING:
+            vectors.append(shape_amplitude_stats(x))
             continue
         x = np.clip(x / scale, -8, 8)
         cov = x @ x.T / x.shape[1]
