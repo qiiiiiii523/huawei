@@ -25,6 +25,11 @@ class ScaleAblationTests(unittest.TestCase):
         self.assertEqual(new,{**source,'seed':43})
         self.assertEqual(source['seed'],42)
         self.assertEqual(SAMPLING['seed'],42)
+        low=paired_training_config(source,20,43,2e-5)
+        self.assertEqual(low,{**new,'learning_rate':2e-5})
+        self.assertEqual(source['learning_rate'],.0001)
+        for rate in (0.,-1.,float('nan'),float('inf')):
+            with self.assertRaises(ValueError): paired_training_config(source,20,43,rate)
         for seed in (-1,2**32,True):
             with self.assertRaises(ValueError): paired_training_config(source,20,seed)
 

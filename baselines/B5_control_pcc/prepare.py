@@ -17,11 +17,15 @@ ROOT = Path('/home/qht/huawei/results/B5-best-exp-SlowPCC')
 NON_FM_FIELDS = {'anchor', 'numeric', 'sex', 'field_mask', 'age_topcoded', 'target_uV', 'mask', 'slow_target'}
 
 
-def paired_training_config(original, epochs, seed):
+def paired_training_config(original, epochs, seed, learning_rate=None):
     if type(seed) is not int or not 0 <= seed < 2**32 or type(epochs) is not int or epochs < 1:
         raise ValueError('Need positive epochs and integer training seed in [0,2**32)')
     training = copy.deepcopy(original)
     training.update(epochs=epochs, seed=seed)
+    if learning_rate is not None:
+        if not np.isfinite(learning_rate) or learning_rate <= 0:
+            raise ValueError('Learning rate must be finite and positive')
+        training['learning_rate'] = float(learning_rate)
     if training['validate_every'] != 5:
         raise ValueError('Preserve validation every five epochs')
     return training
@@ -194,7 +198,8 @@ def prepare(args):
     print('Freezing multiscale quiet-label thresholds from TRAIN labels only', flush=True)
     ms_settings = multiscale_settings(new_run / 'cache', [b[k] for k in sorted(b)], ms_weight)
     audit = validation_audit(nm, new_run / 'cache', {e['subject_id'] for e in nm['train']})
-    training = paired_training_config(new['training'], args.epochs, args.training_seed)
+    training = paired_training_config(new['training'], args.epochs, args.training_seed,
+                                      getattr(args, 'learning_rate', None))
     output.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(new_run / 'shared/components.pt', output / 'components.pt')
     source_files = {}
@@ -236,6 +241,7 @@ def prepare(args):
               'validation_audit': audit, 'score_protocol': SCORE_PROTOCOL,
               'reference_main_correlation': reference['main_correlation'], 'groups': list(GROUPS),
               'training_seed': training['seed'], 'inference_seed': SAMPLING['seed'],
+              'learning_rate': training['learning_rate'],
               'enabled_bands_by_group': {g: list(BANDS_BY_GROUP[g]) for g in GROUPS},
               'multiscale_weight_by_group': {g: ms_weight if BANDS_BY_GROUP[g] else 0. for g in GROUPS},
               'multiscale_floor_source': ms_settings['floor_source']}
@@ -251,6 +257,8 @@ def main():
     p.add_argument('--reference-report', required=True)
     p.add_argument('--epochs', type=int, default=20)
     p.add_argument('--training-seed', type=int, default=43)
+    p.add_argument('--learning-rate', type=float, default=None,
+                   help='Override LR only for a NEW study; omitted preserves source training LR')
     p.add_argument('--multiscale-weight', type=float, default=.1)
     p.add_argument('--output', required=True)
     args = p.parse_args()
