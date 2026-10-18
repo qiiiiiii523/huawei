@@ -32,6 +32,9 @@ def run(study_path, group, output, device_name, resume=False):
     study_path, output = Path(study_path).resolve(), Path(output).resolve()
     study, bundle = load_study(study_path, deep=True)
     cfg = study["training"]
+    restart = study.get("stage2_restart")
+    if restart and group != "P":
+        raise ValueError("This refinement study reuses a P stage1 handoff only")
     device = device_from_name(device_name)
     seed_all(cfg["seed"], True)
     model = model_from_bundle(bundle, device)
@@ -67,7 +70,9 @@ def run(study_path, group, output, device_name, resume=False):
             "optimizer": None if optimizer is None else optimizer.state_dict(), "rng": pack_rng(),
             "samplers": None if samplers is None else {k: s.state() for k, s in samplers.items()},
             "best": best, "validation_score": score, "FM_state_sha256": bundle["fm_state_sha256"],
-            "initial_slow_state_sha256": bundle["slow_state_sha256"]}
+            "initial_slow_state_sha256": bundle["slow_state_sha256"],
+            **({"candidate_role": "matched_78_step_refinement_plus_common_initial",
+                "stage1_handoff_sha256": restart["sha256"]} if restart else {})}
 
     def validation(select):
         nonlocal best
@@ -112,7 +117,18 @@ def run(study_path, group, output, device_name, resume=False):
               "slow_state_sha256": state_sha(model.state_dict()), "FM_frozen": True,
               "score_protocol": study["score_protocol"], "initial_score": initial})
 
-    for next_stage in (1, 2):
+    if restart and (cp is None or cp["stage"] == 0):
+        source = torch.load(restart["checkpoint"], map_location="cpu", weights_only=True)
+        if (sha(restart["checkpoint"]) != restart["sha256"] or source.get("protocol") != PROTOCOL or
+                source.get("study_sha256") != restart["source_study_sha256"] or
+                source.get("stage") != 1 or source.get("step") != restart["source_step"] or
+                source.get("group") != "P" or source.get("training_seed", 42) != cfg["seed"] or
+                source.get("FM_state_sha256") != bundle["fm_state_sha256"] or
+                state_sha(source["model"]) != restart["slow_state_sha256"]):
+            raise ValueError("Stage1 handoff identity changed")
+        model.load_state_dict(source["model"], strict=True)
+
+    for next_stage in ((2,) if restart else (1, 2)):
         if cp is not None and cp["stage"] > next_stage:
             continue
         stage = next_stage
@@ -170,6 +186,7 @@ def run(study_path, group, output, device_name, resume=False):
         cp = None
     write(output / "completed.json", {"completed": True, "group": group, "best": best,
           "stage1_updates": cfg["stage1_updates"], "stage2_updates": cfg["stage2_updates"],
+          "stage1_reused": bool(restart),
           "FM_optimizer_updates": 0, "score_protocol": study["score_protocol"], "training_seed": cfg["seed"]})
 
 

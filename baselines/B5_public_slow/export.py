@@ -37,6 +37,9 @@ def export(study_path, checkpoint, output):
         source_updated_slow_stage=cp["stage"], source_updated_slow_step=cp["step"],
         slow_sha256=sha(checkpoint), original_slow_sha256=original["provenance"]["slow_sha256"],
         study_sha256=sha(study_path), FM_frozen=True, stable_reference=False)
+    if "stage2_restart" in study:
+        bundle["provenance"].update(stage1_handoff_sha256=study["stage2_restart"]["sha256"],
+            stage2_learning_rate=study["training"]["learning_rate"], selection_scope=study["selection"])
     validate_bundle(bundle)
     atomic_save(output, bundle)
     write(output.with_suffix(".json"), {"bundle_sha256": sha(output), "checkpoint_sha256": sha(checkpoint),
