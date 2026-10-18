@@ -171,6 +171,8 @@ def main():
             raise ValueError("Body checkpoint was trained on a different cache")
     if context.payload["initial_weights_sha256"] != control.payload["initial_weights_sha256"]:
         raise ValueError("Body pair did not start from identical weights")
+    if context.payload.get("training_seed", 42) != control.payload.get("training_seed", 42):
+        raise ValueError("Paired context/no-context adapters must use the same training seed")
     provider = HistoryProvider(args.config, loaded[1]["task2"])
     try:
         validation_rows = {r["pair_id"]: r for r in cache["records"] if r["split"] == "validation"}
@@ -183,6 +185,7 @@ def main():
         write(Path(args.output) / "body_checkpoints.json", {"context": str(Path(args.context_checkpoint).resolve()),
             "context_sha256": sha(args.context_checkpoint), "no_context": str(Path(args.no_context_checkpoint).resolve()),
             "no_context_sha256": sha(args.no_context_checkpoint), "cache": str(Path(args.cache).resolve()),
+            "training_seed": context.payload.get("training_seed", 42),
             "initial_weights_sha256": context.payload["initial_weights_sha256"], "summary": summary})
     finally:
         provider.close()

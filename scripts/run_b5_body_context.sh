@@ -7,6 +7,7 @@ run=
 baseline=/home/qht/huawei/results/B5-best-context/fir25_20261017_225742/base_inference
 gpu=1
 epochs=10
+seed=42
 resume=0
 config=
 while (($#)); do
@@ -17,11 +18,12 @@ while (($#)); do
     --config) config="$2"; shift 2 ;;
     --gpu) gpu="$2"; shift 2 ;;
     --epochs) epochs="$2"; shift 2 ;;
+    --seed) seed="$2"; shift 2 ;;
     --resume) resume=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[[ "$gpu" =~ ^[0-9]+$ && "$epochs" =~ ^[1-9][0-9]*$ ]] || exit 2
+[[ "$gpu" =~ ^[0-9]+$ && "$epochs" =~ ^[1-9][0-9]*$ && "$seed" =~ ^[0-9]+$ ]] || exit 2
 [[ -n "$run" ]] || run="$repository/results/B5-best-context/body_v1_$(date +%Y%m%d_%H%M%S)_$$"
 [[ -n "$config" ]] || config="$repository/results/B5/main_v2_score60_k16_public_finetune_meta_20261012_001711_2114239/run_config.yaml"
 test -f "$config"
@@ -47,7 +49,7 @@ if [[ ! -f "$run/preflight/preflight.json" ]]; then
   if [[ -d "$preflight" ]]; then preflight="$run/preflight_retry_$(date +%Y%m%d_%H%M%S)_$$"; fi
   python -u -m baselines.B5_best_context.body_train \
     --cache "$run/cache" --group context --output "$preflight" \
-    --epochs "$epochs" --check-only \
+    --epochs "$epochs" --seed "$seed" --check-only \
     2>&1 | tee -a "$run/preflight.log"
   if [[ "$preflight" != "$run/preflight" ]]; then
     cp "$preflight/preflight.json" "$run/preflight/preflight.json"
@@ -59,7 +61,7 @@ for group in no_context context; do
   if [[ "$resume" == 1 && -f "$run/$group/config.json" ]]; then train_extra+=(--resume); fi
   python -u -m baselines.B5_best_context.body_train \
     --cache "$run/cache" --group "$group" --output "$run/$group" \
-    --epochs "$epochs" --device cuda "${train_extra[@]}" \
+    --epochs "$epochs" --seed "$seed" --device cuda "${train_extra[@]}" \
     2>&1 | tee -a "$run/${group}.log"
 done
 phase=evaluation

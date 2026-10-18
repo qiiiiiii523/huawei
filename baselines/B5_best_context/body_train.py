@@ -34,11 +34,11 @@ def run(args):
     from torch.utils.data import Dataset, DataLoader
     from baselines.B5.runtime import device_from_name, seed_all
     from baselines.B5_best.common import state_sha
-    from .body_model import BodyIIAdapter
+    from .body_model import BodyIIAdapter, BodyAdapter
     root, output = Path(args.cache).resolve(), Path(args.output).resolve()
     cache = load_cache(root)
-    if args.epochs < 1 or args.batch_size < 1 or args.learning_rate <= 0:
-        raise ValueError("Use positive epochs/batch-size/learning-rate")
+    if args.epochs < 1 or args.batch_size < 1 or args.learning_rate <= 0 or not 0 <= args.seed < 2**32:
+        raise ValueError("Use positive epochs/batch-size/learning-rate and a uint32 training seed")
     if output.exists() and any(output.iterdir()) and not args.resume:
         raise FileExistsError("Use a new group output, or --resume; tee logs must be adjacent")
     rows = {s: [r for r in cache["records"] if r["split"] == s and r["I_II_eligible"]]
@@ -74,12 +74,12 @@ def run(args):
     data = Windows()
     if not len(data) or not rows["validation"]:
         raise ValueError("No eligible training windows or validation records")
-    seed_all(42, True)
+    seed_all(args.seed, True)
     device = device_from_name("cpu" if args.check_only else args.device)
     model = BodyIIAdapter().to(device)
     initial_hash = state_sha(model.state_dict())
     output.mkdir(parents=True, exist_ok=True)
-    config = {"protocol": BODY_PROTOCOL, "group": args.group, "seed": 42, "epochs": args.epochs,
+    config = {"protocol": BODY_PROTOCOL, "group": args.group, "seed": args.seed, "epochs": args.epochs,
         "batch_size": args.batch_size, "learning_rate": args.learning_rate,
         "cache_sha256": sha(root / "cache.json"), "initial_weights_sha256": initial_hash,
         "base_checkpoint_sha256": cache["frozen"]["base_checkpoint_sha256"],
@@ -99,6 +99,14 @@ def run(args):
             value = model(x[0], x[1], x[3], x[4], x[5])
         if not torch.equal(value, x[1]):
             raise AssertionError("Zero-initialized II correction must exactly preserve B5-best")
+        adapter = BodyAdapter.__new__(BodyAdapter)
+        adapter.model, adapter.device, adapter.mode = model, device, "correct"
+        adapter.payload = {"group": args.group}
+        first = arrays[rows["validation"][0]["file"]]
+        restored, _, _ = adapter.predict_ii_features(first["anchor"], first["base_ii"],
+            first["beat"], first["stats"], first["available"])
+        if not np.array_equal(restored, first["base_ii"]):
+            raise AssertionError("Visible-cache inference must preserve base II at zero initialization")
         # Exercise nonzero correction, gradients, and the hard residual bound on CPU.
         with torch.no_grad():
             model.head.bias.fill_(1.)
@@ -110,10 +118,10 @@ def run(args):
             raise AssertionError("Missing/invalid adapter gradient")
         write(output / "preflight.json", {**config, "ready": True, "training_started": False,
             "optimizer_updates": 0, "zero_init_exact": True, "residual_bound_checked": True,
-            "CPU_backward_checked": True})
+            "CPU_backward_checked": True, "visible_feature_inference_checked": True})
         print({"ready": True, "training_started": False, "initial_weights_sha256": initial_hash}, flush=True)
         return
-    generator = torch.Generator().manual_seed(42)
+    generator = torch.Generator().manual_seed(args.seed)
     loader = DataLoader(data, batch_size=args.batch_size, shuffle=True, generator=generator, num_workers=0)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=.01)
 
@@ -136,6 +144,7 @@ def run(args):
     start, updates, best, best_epoch = 0, 0, -float("inf"), 0
     def payload(epoch):
         return {"protocol": BODY_PROTOCOL, "model": model.state_dict(), "group": args.group,
+            "training_seed": args.seed,
             "epoch": epoch, "updates": updates, "best_validation_II_r": best, "best_epoch": best_epoch,
             "base_checkpoint_sha256": cache["frozen"]["base_checkpoint_sha256"],
             "sampling": cache["frozen"]["sampling"], "slow_beta": cache["frozen"]["slow_beta"],
@@ -151,6 +160,7 @@ def run(args):
     if args.resume and (output / "last.pt").exists():
         saved = torch.load(output / "last.pt", map_location="cpu", weights_only=False)
         if (saved.get("protocol") != BODY_PROTOCOL or saved.get("group") != args.group
+                or saved.get("training_seed", 42) != args.seed
                 or saved.get("cache_sha256") != config["cache_sha256"]
                 or saved.get("initial_weights_sha256") != initial_hash):
             raise ValueError("Resume checkpoint does not belong to this paired body run")
@@ -191,6 +201,7 @@ def run(args):
         write(output / f"validation/epoch_{epoch:03d}.json", {**row, "pairs": details})
         print(row, flush=True)
     write(output / "completed.json", {"completed": True, "group": args.group, "epochs": args.epochs,
+        "training_seed": args.seed,
         "best_epoch": best_epoch, "best_II_r": best, "FM_updates": 0, "slow_CNN_updates": 0,
         "adapter_updates": updates, "best_checkpoint_sha256": sha(output / "best.pt")})
 
@@ -203,6 +214,7 @@ def main():
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--learning-rate", type=float, default=2e-4)
+    p.add_argument("--seed", type=int, default=42, help="II adapter initialization/shuffle seed; B5-best inference noise stays seed42")
     p.add_argument("--device", default="cuda")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--check-only", action="store_true", help="CPU forward/backward only; no optimizer updates")

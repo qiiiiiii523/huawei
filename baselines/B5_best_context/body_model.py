@@ -57,18 +57,29 @@ class BodyAdapter:
         self.device, self.mode, self.cache = device, mode, {}
 
     @torch.no_grad()
+    def predict_ii_features(self, observed_i, predicted_ii, beat, stats, available):
+        """Target-free inference from the frozen visible feature cache, also used for plots."""
+        if np.asarray(beat).shape != (2, 300) or np.asarray(stats).shape != (27,):
+            raise ValueError("Body feature shapes must be [2,300] and [27]")
+        if not np.isfinite(beat).all() or not np.isfinite(stats).all():
+            raise ValueError("Body features must be finite")
+        enabled = bool(available) and self.mode == "correct" and self.payload["group"] == "context"
+        signal, base, scales = encode_windows(observed_i, predicted_ii)
+        args = [signal, base, np.repeat(beat[None], 12, axis=0),
+                np.repeat(stats[None], 12, axis=0), np.full(12, enabled, np.float32)]
+        output = self.model(*(torch.from_numpy(np.asarray(x, np.float32).copy()).to(self.device) for x in args))
+        result = restore_ii(predicted_ii, base, output.cpu().numpy(), scales)
+        return result, scales, enabled
+
+    @torch.no_grad()
     def __call__(self, prediction, observed_i, history):
         key = None if history is None else (history.record_id, _visible_digest(history))
         if key not in self.cache:
             self.cache[key] = relation_features(history)
         beat, stats, available = self.cache[key]
-        enabled = available and self.mode == "correct" and self.payload["group"] == "context"
-        signal, base, scales = encode_windows(observed_i, prediction[1])
-        args = [signal, base, np.repeat(beat[None], 12, axis=0),
-                np.repeat(stats[None], 12, axis=0), np.full(12, enabled, np.float32)]
-        output = self.model(*(torch.from_numpy(np.asarray(x, np.float32).copy()).to(self.device) for x in args))
+        corrected, scales, enabled = self.predict_ii_features(observed_i, prediction[1], beat, stats, available)
         result = prediction.copy()
-        result[1] = restore_ii(prediction[1], base, output.cpu().numpy(), scales)
+        result[1] = corrected
         delta = result[1].astype(np.float64) - prediction[1]
         return result, {"adapter": "body_II_" + self.payload["group"], "body_protocol": BODY_PROTOCOL,
             "body_context_used": bool(enabled), "body_mode": self.mode, "history_available": bool(available),
