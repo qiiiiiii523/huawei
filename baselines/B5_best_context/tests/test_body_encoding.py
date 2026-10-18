@@ -12,10 +12,10 @@ import numpy as np
 
 from baselines.B5_best.common import read, write, sha
 from baselines.B5_best_context.adapters import HistoryRecord, _visible_digest
-from baselines.B5_best_context.body_features import (BODY_PROTOCOL, LEGACY_ENCODING, SHAPE_ENCODING,
+from baselines.B5_best_context.body_features import (BODY_PROTOCOL, LEGACY_ENCODING, SHAPE_ENCODING, UNCLIPPED_ENCODING,
     relation_features, feature_encoding, shape_amplitude_stats)
 from baselines.B5_best_context.body_encoding_prepare import (ENCODING_STUDY, FIXED_ARRAYS,
-    check_cached_pair, run as prepare)
+    check_cached_pair, check_unclipped_pair, run as prepare)
 from baselines.B5_best_context.body_encoding_study import cases, check_training_pair
 from baselines.B5_best_context.body_study import run_study
 from . import test_context
@@ -96,9 +96,30 @@ class EncodingTests(unittest.TestCase):
         self.assertAlmostEqual(stats[22], np.log(1e4), places=6)
         self.assertTrue(np.all(np.abs(stats[:21]) <= 1))
 
+    def test_E0_retains_narrow_peaks_and_changes_only_template_clip(self):
+        raw = np.zeros((6, 10000))
+        for start in (0, 5000):
+            raw[:, start + np.arange(400, 4800, 500)] = np.arange(1, 7)[:, None] * 100
+        h = HistoryRecord("body_scale_d6", "visible_narrow_peaks", raw, np.ones_like(raw, bool))
+        a, b = {}, {}
+        with patch.dict("sys.modules", mock_signal()):
+            clipped = relation_features(h, encoding=SHAPE_ENCODING, audit=a)
+            uncut = relation_features(h, encoding=UNCLIPPED_ENCODING, audit=b)
+        self.assertEqual(clipped[2], uncut[2])
+        np.testing.assert_array_equal(clipped[1], uncut[1])
+        self.assertEqual(np.max(clipped[0]), 8)
+        self.assertGreater(np.max(uncut[0]), 8)
+        self.assertTrue(np.isfinite(uncut[0]).all())
+        np.testing.assert_allclose(uncut[0], b["_unclipped_template"], rtol=1e-7, atol=1e-6)
+        self.assertEqual(b["II_beat_clipped_fraction"], 0)
+        self.assertGreater(b["II_beat_exceeds_8_fraction"], 0)
+        self.assertFalse(b["template_clip_applied"])
+        self.assertTrue(a["template_clip_applied"])
+        self.assertEqual(a["selected_beats"], b["selected_beats"])
+
     def test_absent_or_masked_history_keeps_zero_features_and_same_availability(self):
         for h in (None, HistoryRecord("body_scale_d6", "invalid", np.zeros((6, 5000)), np.zeros((6, 5000), bool))):
-            for encoding in (LEGACY_ENCODING, SHAPE_ENCODING):
+            for encoding in (LEGACY_ENCODING, SHAPE_ENCODING, UNCLIPPED_ENCODING):
                 beat, stats, available = relation_features(h, encoding=encoding)
                 self.assertFalse(available or beat.any() or stats.any())
                 self.assertEqual(beat.shape, (2, 300)); self.assertEqual(stats.shape, (27,))
@@ -139,11 +160,25 @@ class EncodingCacheTests(unittest.TestCase):
                 (args.output / "preflight.json").unlink()  # Stop after cache commit, before report export.
                 args.resume = True
                 prepare(args)
+                e0_args = SimpleNamespace(cache=source, output=root / "uncut", config=config,
+                    resume=False, subjects=[], encoding=UNCLIPPED_ENCODING)
+                prepare(e0_args)
             self.assertEqual(sha(source / "cache.json"), original_sha)
             old, new = check_cached_pair(source, root / "new")
             self.assertEqual(len(new["records"]), len(manifest["records"]))
             self.assertEqual(feature_encoding(new), SHAPE_ENCODING)
             self.assertTrue(read(root / "new/preflight.json")["same_I_predictions_targets_QC_population"])
+            _, e0 = check_cached_pair(source, root / "uncut", expected_encoding=UNCLIPPED_ENCODING)
+            check_unclipped_pair(root / "new", root / "uncut")
+            e0_file = root / "uncut" / e0["records"][0]["file"]
+            with np.load(e0_file) as a:
+                bad = {k: a[k].copy() for k in a.files}
+            bad["stats"][1] += .1
+            np.savez_compressed(e0_file, **bad)
+            e0["records"][0]["sha256"] = sha(e0_file)
+            write(root / "uncut/cache.json", e0)
+            with self.assertRaisesRegex(ValueError, "template clipping: stats"):
+                check_unclipped_pair(root / "new", root / "uncut")
             row = new["records"][0]
             target = root / "new" / row["file"]
             with np.load(target) as a:
@@ -166,10 +201,20 @@ class EncodingCacheTests(unittest.TestCase):
                 check_training_pair(c, {**e, key: value}, "old", "new")
         with self.assertRaises(ValueError):
             check_training_pair(c, e, "old", "new", preflight=True)
+        e0 = {**e, "feature_encoding": UNCLIPPED_ENCODING, "cache_sha256": "uncut"}
+        check_training_pair(c, e0, "old", "uncut", expected_encoding=UNCLIPPED_ENCODING)
+        with self.assertRaises(ValueError):
+            check_training_pair(c, e0, "old", "uncut")
 
 
 class EncodingRouteTests(unittest.TestCase):
     def test_fourteen_groups_keep_task1_chest_and_d6_fixed(self):
+        self.check_routes(False)
+
+    def test_twenty_groups_keep_task1_chest_and_d6_fixed(self):
+        self.check_routes(True)
+
+    def check_routes(self, include_unclipped):
         class Fake:
             def __init__(self, gain):
                 self.gain, self.mode = gain, "correct"
@@ -179,16 +224,21 @@ class EncodingRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             test_context.StudyTests().baseline(root / "base")
-            old, new = Fake(.01), Fake(.02)
+            engines = {"O": Fake(.01), "E": Fake(.02)}
+            if include_unclipped:
+                engines["E0"] = Fake(.03)
             def provider(row):
                 return HistoryRecord(row["input_type"], row["subject_id"], history(.6).raw_uV,
                                      np.ones((6, 10000), bool))
             result = run_study(root / "base", root / "study", provider, None, None,
-                case_specs=cases(), adapter_map={"O": old, "E": new, "O_disabled": old, "E_disabled": new},
-                additive_routes=[(x + "_both", "d6_only", x + "_body") for x in ("O", "E")])
-            self.assertEqual(len(result), 14)
+                case_specs=cases(include_unclipped),
+                adapter_map={**engines, **{name + "_disabled": engine for name, engine in engines.items()}},
+                additive_routes=[(x + "_both", "d6_only", x + "_body") for x in engines])
+            self.assertEqual(len(result), 20 if include_unclipped else 14)
             values = {r["group"]: r for r in result}
             self.assertEqual(values["O_both"]["machine_r"], values["E_both"]["machine_r"])
+            if include_unclipped:
+                self.assertEqual(values["E0_both"]["machine_r"], values["E_both"]["machine_r"])
             self.assertTrue(all(r["task1_r"] == values["baseline"]["task1_r"] for r in result))
             self.assertTrue(read(root / "study/study.json")["device_additivity_checked"])
 

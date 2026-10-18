@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from baselines.B5_best.common import read, write, sha, csv_write
-from .body_features import (BODY_PROTOCOL, LEGACY_ENCODING, SHAPE_ENCODING,
+from .body_features import (BODY_PROTOCOL, LEGACY_ENCODING, SHAPE_ENCODING, UNCLIPPED_ENCODING,
                             feature_encoding, relation_features)
 from .body_prepare import load_cache, write_ledger
 from .adapters import history_from_sample, _visible_digest
@@ -19,7 +19,7 @@ FIXED_ARRAYS = ("anchor", "base_ii", "target_ii", "quality", "available")
 
 def finish_report(root, output, manifest):
     """Also repair a stop after the atomic ledger commit but before report export."""
-    check_cached_pair(root, output)
+    check_cached_pair(root, output, expected_encoding=feature_encoding(manifest))
     audits = [read(p) for p in sorted((output / "audit").glob("*.json"))]
     if len(audits) != 2 * len(manifest["records"]):
         raise ValueError("Prepared encoding cache is missing its paired clipping audit")
@@ -27,16 +27,17 @@ def finish_report(root, output, manifest):
     report = {"completed": True, "training_started": False, "B5_inference_executed": False,
         "same_I_predictions_targets_QC_population": True, "same_feature_dimensions": True,
         "source_cache_sha256": manifest["source_cache_sha256"],
-        "feature_encoding": SHAPE_ENCODING, "records": len(manifest["records"])}
+        "feature_encoding": feature_encoding(manifest), "records": len(manifest["records"])}
     write(output / "preflight.json", report)
     print(report, flush=True)
 
 
-def check_cached_pair(old_root, new_root):
+def check_cached_pair(old_root, new_root, *, expected_encoding=SHAPE_ENCODING):
     """Verify the experiment differs ONLY in historical beat/stat features."""
     old_root, new_root = Path(old_root), Path(new_root)
     old, new = load_cache(old_root), load_cache(new_root)
-    if feature_encoding(old) != LEGACY_ENCODING or feature_encoding(new) != SHAPE_ENCODING:
+    if (expected_encoding not in (SHAPE_ENCODING, UNCLIPPED_ENCODING)
+            or feature_encoding(old) != LEGACY_ENCODING or feature_encoding(new) != expected_encoding):
         raise ValueError("Expected legacy control and shape/amplitude experimental cache")
     if (old["frozen"] != new["frozen"] or new.get("source_cache_sha256") != sha(old_root / "cache.json")
             or new.get("encoding_study") != ENCODING_STUDY):
@@ -60,6 +61,26 @@ def check_cached_pair(old_root, new_root):
     return old, new
 
 
+def check_unclipped_pair(clipped_root, unclipped_root):
+    """E0 and E differ only in historical templates, never in the 27 statistics."""
+    clipped_root, unclipped_root = Path(clipped_root), Path(unclipped_root)
+    clipped, unclipped = load_cache(clipped_root), load_cache(unclipped_root)
+    if (feature_encoding(clipped) != SHAPE_ENCODING or feature_encoding(unclipped) != UNCLIPPED_ENCODING
+            or clipped["frozen"] != unclipped["frozen"]
+            or clipped.get("source_cache_sha256") != unclipped.get("source_cache_sha256")
+            or clipped.get("config_sha256") != unclipped.get("config_sha256")):
+        raise ValueError("E/E0 must share source data/config and shape/amplitude statistics")
+    left = {(r["split"], r["pair_id"]): r for r in clipped["records"]}
+    right = {(r["split"], r["pair_id"]): r for r in unclipped["records"]}
+    if set(left) != set(right):
+        raise ValueError("E/E0 populations differ")
+    for key, row in left.items():
+        with np.load(clipped_root / row["file"], allow_pickle=False) as a, np.load(unclipped_root / right[key]["file"], allow_pickle=False) as b:
+            for name in (*FIXED_ARRAYS, "stats"):
+                if a[name].dtype != b[name].dtype or not np.array_equal(a[name], b[name]):
+                    raise ValueError("E0 changed more than historical template clipping: " + name)
+
+
 def run(args):
     from baselines.B5.config import load_config
     from baselines.B5.data import common_config
@@ -69,9 +90,12 @@ def run(args):
     if output == root or root in output.parents or output in root.parents:
         raise ValueError("New feature cache must be separate from the source cache")
     source = load_cache(root)
+    encoding = getattr(args, "encoding", SHAPE_ENCODING)
+    if encoding not in (SHAPE_ENCODING, UNCLIPPED_ENCODING):
+        raise ValueError("Prepare E or E0 from the same original legacy cache")
     if feature_encoding(source) != LEGACY_ENCODING:
         raise ValueError("Use the original body_v1/cache as the legacy control")
-    expected = {"protocol": BODY_PROTOCOL, "feature_encoding": SHAPE_ENCODING,
+    expected = {"protocol": BODY_PROTOCOL, "feature_encoding": encoding,
         "encoding_study": ENCODING_STUDY, "source_cache": str(root),
         "source_cache_sha256": sha(root / "cache.json"), "config_sha256": sha(args.config),
         "frozen": source["frozen"]}
@@ -127,13 +151,13 @@ def run(args):
                     raise ValueError("Live I/target/QC differ from frozen source cache")
                 old_audit, new_audit = {}, {}
                 old_features = relation_features(history, audit=old_audit)
-                new_features = relation_features(history, audit=new_audit, encoding=SHAPE_ENCODING)
+                new_features = relation_features(history, audit=new_audit, encoding=encoding)
                 for name, value in zip(("beat", "stats", "available"), old_features):
                     if not np.array_equal(arrays[name], value):
                         raise ValueError("Legacy feature extraction failed to reproduce original cache")
                 if new_features[2] != bool(arrays["available"]):
                     raise ValueError("Encoding must not change history availability/QC")
-                for label, audit in (("O", old_audit), ("E", new_audit)):
+                for label, audit in (("O", old_audit), ("E0" if encoding == UNCLIPPED_ENCODING else "E", new_audit)):
                     uncut, clipped = audit.pop("_unclipped_template", None), audit.pop("_clipped_template", None)
                     write(output / "audit" / f"{split}_{record['pair_id']}_{label}.json",
                         {"split": split, "pair_id": record["pair_id"], "subject_id": record["subject_id"],
@@ -172,6 +196,7 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--cache", required=True, help="Existing original body_v1/cache, read-only")
     p.add_argument("--output", required=True)
+    p.add_argument("--encoding", choices=(SHAPE_ENCODING, UNCLIPPED_ENCODING), default=SHAPE_ENCODING)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--subjects", nargs="+", default=["HNU11135", "HNU11141", "HNU11119", "HNU11104"])
     run(p.parse_args())
