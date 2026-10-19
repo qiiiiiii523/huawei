@@ -1,0 +1,7 @@
+# Use a Windows Python 3.10/3.11 environment and the appropriate official PyTorch wheel.
+# torch is needed for both CPU and GPU inference; PyInstaller builds Windows EXE on Windows only.
+numpy>=1.24
+scipy>=1.10
+PyYAML>=6.0
+torch>=2.4
+pyinstaller>=6.0

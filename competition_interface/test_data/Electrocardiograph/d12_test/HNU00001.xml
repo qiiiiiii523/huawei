@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AnnotatedECG xmlns="urn:hl7-org:v3">
+  <component>
+    <series>
+      <code code="RHYTHM" />
+      <component>
+        <sequenceSet>
+          <component>
+            <sequence>
+              <code code="MDC_ECG_LEAD_I" />
+              <value>
+                <origin value="0" unit="uV" />
+                <scale value="0.5" unit="uV" />
+                <digits>2 4 6 8</digits>
+              </value>
+            </sequence>
+          </component>
+        </sequenceSet>
+      </component>
+    </series>
+  </component>
+</AnnotatedECG>

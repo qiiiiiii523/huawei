@@ -17,3 +17,8 @@ venv/
 results/
 reports/data_backups/
 metadata/userinfobean_utf8.csv
+release/
+dist/
+build/
+submission_error.log
+*_package.zip

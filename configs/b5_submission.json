@@ -1,0 +1,11 @@
+{
+  "protocol": "B5-final-official-submission-v1",
+  "device": "auto",
+  "batch_size": 8,
+  "base_checkpoint": "models/base.pt",
+  "body_checkpoint": "models/body.pt",
+  "d12_fs_fallback": null,
+  "d6_fs_fallback": null,
+  "scale_fs_fallback": null,
+  "max_history_seconds": 3600
+}

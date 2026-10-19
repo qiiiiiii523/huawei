@@ -1,0 +1,2 @@
+{"timeFrame": {"timestamp": 1700000000000}, "voltage": [{"value": 10.0, "unit": "uV"}, {"value": 20.0, "unit": "uV"}]}
+{"timeFrame": {"timestamp": 1700000000004}, "voltage": [{"value": 15.0, "unit": "uV"}, {"value": 5.0, "unit": "uV"}]}

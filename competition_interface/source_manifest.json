@@ -1,0 +1,10 @@
+{
+  "archive": "5081fe56649a480c8b2a4db3f114560b_赛题1 (1).zip",
+  "files": {
+    "input.py": "dd934c625703f3fd36268655b7deed25b936194b49000ea627a048f016e73309",
+    "output.py": "c870a2e4738cd677fbfcfbc5b5cf14ca346a9b618ca8135a12f876806abb0587",
+    "evaluate.py": "02ceb6c963bf72f42b24d515be6a60e203fa89b37a362712107e6ce630a0f1e2",
+    "preprocess.py": "701ff41676e405ac5481d69af7ea2e41aae785353c2186c0e0efeb168ed16456"
+  },
+  "archive_sha256": "6afa2126f6155988214e15e0acc6789439d5ba36f77b644535e35a2dd8c604db"
+}

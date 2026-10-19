@@ -1,0 +1,3 @@
+# Organizer originals contain CRCRLF. Preserve their exact published bytes.
+*.py -text whitespace=-trailing-space,-blank-at-eof
+test_data/** -text whitespace=-trailing-space,-blank-at-eof

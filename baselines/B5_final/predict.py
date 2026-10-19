@@ -34,6 +34,21 @@ class Predictor:
         return self.engine.predict_encoded(anchor_uV, demographics, record_key, task_id=task_id,
                                            input_type=input_type, history=history, batch_size=batch_size)
 
+    def predict_tasks(self, anchor_uV, metadata, record_key, *, machine_history=None, body_history=None, batch_size=8):
+        """Same current I/metadata/key: generate once, route three official tasks.
+
+        Reuses the existing evaluated base and ContextRouter without changing
+        any prediction formula; context is cross-time, never a current target.
+        """
+        base=self.engine.base.predict(anchor_uV,metadata,record_key,batch_size)
+        result={};statuses={}
+        for name,task,source,history in (
+            ('gen1','task1','watch_ecg',None),
+            ('gen6_scale','task2','body_scale_d6',body_history),
+            ('gen6_d6','task2','ecg_machine_d6',machine_history)):
+            result[name],statuses[name]=self.engine.router.apply(base,anchor_uV,task_id=task,input_type=source,history=history)
+        return result,statuses
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)

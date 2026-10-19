@@ -1,2 +1,6 @@
 *.sh text eol=lf
+competition_interface/input.py -text
+competition_interface/output.py -text
+competition_interface/evaluate.py -text
+competition_interface/preprocess.py -text
 baselines/B5_best_context/fir.py text eol=lf
