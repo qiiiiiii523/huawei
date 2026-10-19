@@ -10,6 +10,7 @@ import numpy as np
 from baselines.B5_best.common import write, sha
 from .body_features import BODY_PROTOCOL, encode_windows, restore_ii, feature_encoding, LEGACY_ENCODING
 from .body_prepare import load_cache
+from .body_history import history_policy
 
 
 def pearson(x, y):
@@ -39,6 +40,7 @@ def run(args):
     root, output = Path(args.cache).resolve(), Path(args.output).resolve()
     cache = load_cache(root)
     encoding = feature_encoding(cache)
+    policy = history_policy(cache)
     if args.epochs < 1 or args.batch_size < 1 or args.learning_rate <= 0 or not 0 <= args.seed < 2**32:
         raise ValueError("Use positive epochs/batch-size/learning-rate and a uint32 training seed")
     if output.exists() and any(output.iterdir()) and not args.resume:
@@ -122,6 +124,8 @@ def run(args):
         "training_windows": len(data), "train_pairs": len(rows["train"]), "validation_pairs": len(rows["validation"])}
     if encoding != LEGACY_ENCODING:
         config["feature_encoding"] = encoding
+    if "history_preprocessing" in cache:
+        config["history_preprocessing"] = policy
     if gated:
         config.update(protocol=GATE_PROTOCOL, record_gate=args.record_gate,
             init_body_checkpoint_sha256=source_sha, initial_body_weights_sha256=source_state_sha,
@@ -221,6 +225,8 @@ def run(args):
             "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None}
         if encoding != LEGACY_ENCODING:
             value["feature_encoding"] = encoding
+        if "history_preprocessing" in cache:
+            value["history_preprocessing"] = policy
         if gated:
             value.update(record_gate=args.record_gate, gate_normalization=normalization,
                 init_body_checkpoint_sha256=source_sha, initial_body_weights_sha256=source_state_sha)

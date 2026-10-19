@@ -8,6 +8,7 @@ from torch import nn
 from .body_features import (BODY_PROTOCOL, encode_windows, relation_features, restore_ii,
                             feature_encoding, LEGACY_ENCODING)
 from .adapters import _visible_digest
+from .body_history import history_policy, process_history
 
 
 class BodyIIAdapter(nn.Module):
@@ -35,6 +36,7 @@ def load_body_checkpoint(path, base_sha, device, expected_group=None):
     from .body_gate_features import GATE_PROTOCOL
     payload = torch.load(path, map_location="cpu", weights_only=False)
     encoding = feature_encoding(payload)
+    history_policy(payload)
     if (payload.get("protocol") not in (BODY_PROTOCOL, GATE_PROTOCOL) or payload.get("base_checkpoint_sha256") != base_sha
             or payload.get("sampling") != {"seed": 42, "solver": "heun", "steps": 16, "samples": 16}
             or payload.get("slow_beta") != .75
@@ -89,7 +91,8 @@ class BodyAdapter:
     def __call__(self, prediction, observed_i, history):
         key = None if history is None else (history.record_id, _visible_digest(history))
         if key not in self.cache:
-            self.cache[key] = relation_features(history, encoding=feature_encoding(self.payload))
+            processed = process_history(history, history_policy(self.payload))
+            self.cache[key] = relation_features(processed, encoding=feature_encoding(self.payload))
         beat, stats, available = self.cache[key]
         corrected, scales, enabled = self.predict_ii_features(observed_i, prediction[1], beat, stats, available)
         result = prediction.copy()
@@ -97,6 +100,7 @@ class BodyAdapter:
         delta = result[1].astype(np.float64) - prediction[1]
         status = {"adapter": "body_II_" + self.payload["group"], "body_protocol": self.payload["protocol"],
             "body_feature_encoding": feature_encoding(self.payload),
+            "body_history_preprocessing": history_policy(self.payload)["variant"],
             "body_context_used": bool(enabled), "body_mode": self.mode, "history_available": bool(available),
             "fallback": "none" if enabled else "learned_generic_II_correction",
             "body_checkpoint_epoch": self.payload["epoch"],
