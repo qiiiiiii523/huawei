@@ -1,4 +1,4 @@
-"""Scan five fixed alphas on one frozen legacy C checkpoint; no optimizer or FM generation."""
+"""Scan five fixed alphas on a frozen C or E checkpoint; no optimizer or FM generation."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ import numpy as np
 
 from baselines.B5_best.common import read, write, csv_write, sha
 from .adapters import _visible_digest
-from .body_features import LEGACY_ENCODING, feature_encoding
+from .body_features import BODY_PROTOCOL, LEGACY_ENCODING, SHAPE_ENCODING, feature_encoding, relation_features
 from .body_gate_features import GATE_PROTOCOL
 from .body_prepare import load_cache
 from .body_study import run_study
@@ -23,11 +23,26 @@ def table(path):
         return list(csv.DictReader(handle))
 
 
+def check_alpha_checkpoint(payload, cache, cache_sha, kind, expected_epoch):
+    encoding = feature_encoding(cache)
+    if kind == "C":
+        valid = (encoding == LEGACY_ENCODING and payload.get("protocol") == GATE_PROTOCOL
+                 and payload.get("record_gate") == "C")
+    elif kind == "E":
+        valid = (encoding == SHAPE_ENCODING and payload.get("protocol") == BODY_PROTOCOL
+                 and payload.get("record_gate") is None)
+    else:
+        valid = False
+    if (not valid or feature_encoding(payload) != encoding or payload.get("cache_sha256") != cache_sha
+            or payload.get("group") != "context" or payload.get("epoch") != expected_epoch):
+        raise ValueError("Alpha checkpoint kind/encoding/cache/expected epoch mismatch")
+
+
 def reference_check(records, reference, tolerance=1e-7):
     actual = {r["pair_id"]: r for r in records if r["alpha"] == 1.}
     expected = {r["pair_id"]: r for r in reference["pairs"]}
     if len(actual) != len([r for r in records if r["alpha"] == 1.]) or set(actual) != set(expected):
-        raise ValueError("C checkpoint validation and scan have different eligible II pairs")
+        raise ValueError("Checkpoint validation and scan have different eligible II pairs")
     maximum = 0.
     for pair_id, row in actual.items():
         other = expected[pair_id]
@@ -41,7 +56,7 @@ def reference_check(records, reference, tolerance=1e-7):
             maximum = max(maximum, abs(a - b))
     score = target_mean(list(actual.values()))
     if score is None or maximum > tolerance or abs(score - reference["validation_full120s_II_r"]) > tolerance:
-        raise ValueError("Alpha1 does not reproduce the selected C validation result")
+        raise ValueError("Alpha1 does not reproduce the selected checkpoint validation result")
     return {"reproduced": True, "alpha1_II_r": score,
         "reference_II_r": reference["validation_full120s_II_r"],
         "max_pair_r_difference": maximum, "tolerance": tolerance}
@@ -89,7 +104,7 @@ def summarize(output, cache, reference, summary):
             "declined_pairs_vs_alpha1": sum(r["delta_vs_alpha1"] is not None and r["delta_vs_alpha1"] < -1e-6 for r in valid),
             "undefined_II_pairs": sum(r["r_II"] is None for r in valid)})
     csv_write(output / "summary.csv", rows)
-    lines = ["# 固定body修正强度诊断", "", "同一C权重与旧编码；d6固定；不训练。", "",
+    lines = ["# 固定body修正强度诊断", "", "同一固定body权重及对应编码；d6固定；不训练。", "",
         "|alpha|体脂秤II r|体脂秤组r|Task2 r|平均r|相对alpha1|", "|---|---:|---:|---:|---:|---:|"]
     for row in rows:
         ii = "undefined" if row["body_II_r"] is None else f"{row['body_II_r']:.8f}"
@@ -161,8 +176,6 @@ def run(args):
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("Use an empty output directory; keep logs adjacent")
     cache = load_cache(args.cache)
-    if feature_encoding(cache) != LEGACY_ENCODING:
-        raise ValueError("Use original body_v1/cache, not the E/E0 encoded cache")
     frozen = cache["frozen"]
     loaded = load_baseline(frozen["baseline_evaluation"])
     if (loaded[2] != frozen["baseline_population"]
@@ -170,10 +183,8 @@ def run(args):
         raise ValueError("Base predictions/validation/QC changed since cache preparation")
     engine = BodyAdapter(checkpoint, frozen["base_checkpoint_sha256"], device_from_name(args.device), expected_group="context")
     payload = engine.payload
-    if (payload.get("protocol") != GATE_PROTOCOL or payload.get("record_gate") != "C"
-            or feature_encoding(payload) != LEGACY_ENCODING or payload.get("cache_sha256") != sha(Path(args.cache) / "cache.json")
-            or payload.get("epoch") != args.expected_epoch):
-        raise ValueError("Use the selected legacy C checkpoint at --expected-epoch (default26), never G/E/E0")
+    check_alpha_checkpoint(payload, cache, sha(Path(args.cache) / "cache.json"),
+                           args.checkpoint_kind, args.expected_epoch)
     reference_path = checkpoint.parent / "validation" / f"epoch_{payload['epoch']:03d}.json"
     reference = read(reference_path)
     if reference["epoch"] != payload["epoch"]:
@@ -191,6 +202,9 @@ def run(args):
             if _visible_digest(provider(row)) != record["history_visible_sha256"]:
                 raise ValueError("Visible body history changed")
             with np.load(Path(args.cache) / record["file"], allow_pickle=False) as arrays:
+                features = relation_features(provider(row), encoding=feature_encoding(cache))
+                if any(not np.array_equal(arrays[k], value) for k, value in zip(("beat", "stats", "available"), features)):
+                    raise ValueError("Live alpha inference encoding differs from its training cache")
                 for name, value in (("anchor", np.concatenate([loaded[1]["task2"]["target"][i, 0] for i in ids])),
                         ("base_ii", np.concatenate([loaded[1]["task2"]["prediction"][i, 1] for i in ids])),
                         ("target_ii", np.concatenate([loaded[1]["task2"]["target"][i, 1] for i in ids])),
@@ -199,13 +213,14 @@ def run(args):
                         raise ValueError("Body cache and baseline differ: " + name)
         summary = run_study(frozen["baseline_evaluation"], output, provider, None, None, loaded=loaded,
             case_specs=cases(), adapter_map=adapters, additive_routes=[],
-            notes=["固定C权重，只扫描五个alpha；所有组d6相同。", "不训练门控、不重新生成B5预测；oracle仅为诊断。"])
+            notes=["固定body权重及对应编码，只扫描五个alpha；所有组d6相同。", "不训练门控、不重新生成B5预测；oracle仅为诊断。"])
         summary, reproduction = summarize(output, cache, reference, summary)
         plots = render_examples(output, args.cache, cache, args.subjects, args.detail_start, args.detail_seconds) if not args.no_plots else {"skipped": True}
         write(output / "alpha_checkpoints.json", {"completed": True, "training_started": False,
             "optimizer_updates": 0, "FM_updates": 0, "slow_CNN_updates": 0, "d6_frozen": True,
             "B5_inference_executed": False, "gate_trained": False,
             "checkpoint": str(checkpoint), "checkpoint_sha256": sha(checkpoint), "selected_epoch": payload["epoch"],
+            "checkpoint_kind": args.checkpoint_kind,
             "feature_encoding": feature_encoding(payload), "cache": str(Path(args.cache).resolve()),
             "cache_sha256": sha(Path(args.cache) / "cache.json"), "config": str(Path(args.config).resolve()),
             "base_checkpoint_sha256": frozen["base_checkpoint_sha256"], "sampling": frozen["sampling"],
@@ -227,6 +242,7 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--cache", required=True)
     p.add_argument("--checkpoint", required=True)
+    p.add_argument("--checkpoint-kind", choices=("C", "E"), default="C", help="E requires its shape/amplitude cache; default keeps C26 behavior")
     p.add_argument("--expected-epoch", type=int, default=26)
     p.add_argument("--output", required=True)
     p.add_argument("--device", default="cuda")
