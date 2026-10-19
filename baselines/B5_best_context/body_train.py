@@ -53,6 +53,9 @@ def run(args):
             arrays[row["file"]] = {k: record[k].copy() for k in record.files}
     gate_features, normalization = {}, None
     gated = args.record_gate is not None
+    adapt_checkpoint = getattr(args, "adapt_body_checkpoint", None)
+    if adapt_checkpoint and (gated or args.init_body_checkpoint or args.group != "context"):
+        raise ValueError("Body adaptation is separate from record-gate/no-context experiments")
     if gated:
         if encoding != LEGACY_ENCODING:
             raise ValueError("Record-gate C/G uses the original legacy cache; do not combine experiments")
@@ -112,6 +115,18 @@ def run(args):
         source_sha, source_state_sha = sha(args.init_body_checkpoint), state_sha(source_model.state_dict())
     else:
         model = BodyIIAdapter().to(device)
+    adaptation = None
+    if adapt_checkpoint:
+        from .body_model import load_body_checkpoint
+        from .body_adapt_prepare import check_source
+        from .selected_study import SELECTED_B43_SHA256
+        if sha(adapt_checkpoint) != SELECTED_B43_SHA256:
+            raise ValueError("Initialize adaptation from selected B43 seed43 best15")
+        source_model, source_payload = load_body_checkpoint(adapt_checkpoint,
+            cache["body_adaptation"]["source_base_sha256"], device, expected_group="context")
+        adaptation = check_source(source_payload, cache)
+        model.load_state_dict(source_model.state_dict(), strict=True)
+        source_sha, source_state_sha = sha(adapt_checkpoint), state_sha(source_model.state_dict())
     initial_hash = state_sha(model.state_dict())
     output.mkdir(parents=True, exist_ok=True)
     config = {"protocol": BODY_PROTOCOL, "group": args.group, "seed": args.seed, "epochs": args.epochs,
@@ -126,6 +141,8 @@ def run(args):
         config["feature_encoding"] = encoding
     if "history_preprocessing" in cache:
         config["history_preprocessing"] = policy
+    if adaptation is not None:
+        config["body_adaptation"] = adaptation
     if gated:
         config.update(protocol=GATE_PROTOCOL, record_gate=args.record_gate,
             init_body_checkpoint_sha256=source_sha, initial_body_weights_sha256=source_state_sha,
@@ -138,6 +155,22 @@ def run(args):
         write(output / "config.json", config)
     if args.check_only:
         x = next(iter(DataLoader(data, batch_size=2, shuffle=False)))
+        if adaptation is not None:
+            with torch.no_grad():
+                value = model(x[0], x[1], x[3], x[4], x[5])
+                original = source_model(x[0], x[1], x[3], x[4], x[5])
+            if not torch.equal(value, original) or state_sha(model.state_dict()) != source_state_sha:
+                raise AssertionError("Adaptation initialization changed selected B43 output/weights")
+            value = model(x[0], x[1], x[3], x[4], x[5])
+            if (value-x[1]).abs().max().item() > .35001:
+                raise AssertionError("Loaded body residual bound violated")
+            (value-x[2]).square().mean().backward()
+            if model.head.bias.grad is None or not torch.isfinite(model.head.bias.grad).all():
+                raise AssertionError("Missing/nonfinite adaptation backward gradient")
+            write(output/"preflight.json", {**config,"ready":True,"training_started":False,"optimizer_updates":0,
+                "source_output_exactly_preserved":True,"CPU_backward_checked":True,"residual_bound_checked":True})
+            print({"ready":True,"body_adaptation":True,"optimizer_updates":0},flush=True)
+            return
         if gated:
             with torch.no_grad():
                 original = model.body(x[0], x[1], x[3], x[4], x[5])
@@ -227,6 +260,8 @@ def run(args):
             value["feature_encoding"] = encoding
         if "history_preprocessing" in cache:
             value["history_preprocessing"] = policy
+        if adaptation is not None:
+            value["body_adaptation"] = adaptation
         if gated:
             value.update(record_gate=args.record_gate, gate_normalization=normalization,
                 init_body_checkpoint_sha256=source_sha, initial_body_weights_sha256=source_state_sha)
@@ -246,6 +281,8 @@ def run(args):
             raise ValueError("Resume checkpoint does not belong to this paired body run")
         if feature_encoding(saved) != encoding:
             raise ValueError("Resume checkpoint uses a different feature encoding")
+        if saved.get("body_adaptation") != adaptation:
+            raise ValueError("Resume changed adaptation source/base/optimizer initialization")
         model.load_state_dict(saved["model"]); optimizer.load_state_dict(saved["optimizer"])
         generator.set_state(saved["loader_rng"]); torch.set_rng_state(saved["torch_rng"])
         if device.type == "cuda" and saved["cuda_rng"] is not None:
@@ -254,7 +291,11 @@ def run(args):
     else:
         if args.resume and (output / "validation").exists():
             raise ValueError("Resume needs last.pt after training has begun; do not restart over prior results")
-        best, _ = assess()  # Retain the unchanged epoch0 model if continuation is harmful.
+        best, initial_details = assess()  # Retain the unchanged epoch0 model if continuation is harmful.
+        if adaptation is not None:
+            write(output/"validation/epoch_000.json", {"epoch":0,"group":args.group,"updates":0,
+                "train_loss":None,"validation_full120s_II_r":best,"best_II_r":best,"best_epoch":0,
+                "pairs":initial_details,"source_checkpoint_sha256":source_sha})
         save_checkpoint("best.pt", 0)
         save_checkpoint("last.pt", 0)
     for epoch in range(start + 1, args.epochs + 1):
@@ -303,6 +344,7 @@ def main():
     p.add_argument("--seed", type=int, default=42, help="II adapter initialization/shuffle seed; B5-best inference noise stays seed42")
     p.add_argument("--record-gate", choices=("C", "G"), help="Optional paired continuation: C=fixed alpha1, G=learned record attenuation")
     p.add_argument("--init-body-checkpoint", help="Same existing context/best.pt for both C and G; never a B5 FM checkpoint")
+    p.add_argument("--adapt-body-checkpoint", help="Explicit selected B43-best15 warm start on a new-base B cache; resets optimizer and retains epoch0")
     p.add_argument("--device", default="cuda")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--check-only", action="store_true", help="CPU forward/backward only; no optimizer updates")
