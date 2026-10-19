@@ -15,6 +15,68 @@ from .evaluate import pairs
 
 PROTOCOL = "B5-P-body-O16-history-AB-v1"
 FIXED = ("anchor", "base_ii", "target_ii", "quality")
+OVERLAY_WAVE_ATOL_UV = 1e-3
+OVERLAY_WAVE_RTOL = 1e-6
+OVERLAY_FEATURE_ATOL = 2e-5
+OVERLAY_FEATURE_RTOL = 2e-5
+
+
+def numerical_comparison(actual, reference, *, atol, rtol):
+    """Bound cross-platform float32 roundoff; never align, center or rescale."""
+    x, y = np.asarray(actual), np.asarray(reference)
+    report = {"actual_shape": list(x.shape), "reference_shape": list(y.shape),
+              "atol": atol, "rtol": rtol, "exact": False, "within_tolerance": False}
+    if x.shape != y.shape or not np.isfinite(x).all() or not np.isfinite(y).all():
+        return report
+    difference = np.abs(x.astype(np.float64) - y.astype(np.float64))
+    allowed = atol + rtol * np.abs(y.astype(np.float64))
+    report.update(exact=bool(np.array_equal(x, y)),
+        within_tolerance=bool(np.all(difference <= allowed)),
+        max_abs_difference=float(difference.max()) if difference.size else 0.,
+        rms_difference=float(np.sqrt(np.mean(difference**2))) if difference.size else 0.,
+        outside_tolerance_points=int(np.sum(difference > allowed)), total_points=int(difference.size))
+    return report
+
+
+def verify_overlay_history(raw, filtered, overlay, report_path, identity):
+    report = {**identity, "raw_record_id": raw.record_id, "overlay_record_id": overlay.record_id,
+              "record_id_equal": raw.record_id == overlay.record_id,
+              "raw_overlay_mask_equal": bool(np.array_equal(raw.valid_mask, overlay.valid_mask)),
+              "runtime_overlay_mask_equal": bool(np.array_equal(filtered.valid_mask, overlay.valid_mask)),
+              "runtime_shape": list(np.shape(filtered.raw_uV)), "overlay_shape": list(np.shape(overlay.raw_uV))}
+    structural = (report["record_id_equal"] and report["raw_overlay_mask_equal"]
+                  and report["runtime_overlay_mask_equal"] and report["runtime_shape"] == report["overlay_shape"])
+    report["structural_match"] = structural
+    if structural and filtered.raw_uV is not None:
+        mask = filtered.valid_mask
+        report["waveform_uV"] = numerical_comparison(filtered.raw_uV[mask], overlay.raw_uV[mask],
+                                                    atol=OVERLAY_WAVE_ATOL_UV, rtol=OVERLAY_WAVE_RTOL)
+        report["per_lead_max_abs_uV"] = [
+            float(np.max(np.abs(filtered.raw_uV[i, mask[i]].astype(float) - overlay.raw_uV[i, mask[i]].astype(float))))
+            if mask[i].any() else 0. for i in range(6)]
+    elif structural:
+        report["waveform_uV"] = {"exact": True, "within_tolerance": True, "total_points": 0}
+    report["waveform_passed"] = bool(structural and report["waveform_uV"]["within_tolerance"])
+    write(report_path, report)
+    if not report["waveform_passed"]:
+        metrics = report.get("waveform_uV", {})
+        raise ValueError("Runtime B filter cannot reproduce uploaded overlay within numerical tolerance; "
+                         f"pair={identity['pair_id']}, subject={identity['subject_id']}; "
+                         f"structural_match={structural}, max_abs_uV={metrics.get('max_abs_difference')}, "
+                         f"outside_points={metrics.get('outside_tolerance_points')}; details={report_path}")
+    return report
+
+
+def verify_overlay_features(actual, reference, report, report_path):
+    report["features"] = {name: numerical_comparison(x, y, atol=OVERLAY_FEATURE_ATOL, rtol=OVERLAY_FEATURE_RTOL)
+                          for name, x, y in zip(("beat", "stats"), actual[:2], reference[:2])}
+    report["availability_equal"] = bool(actual[2]) == bool(reference[2])
+    report["features_passed"] = bool(report["availability_equal"] and
+                                     all(r["within_tolerance"] for r in report["features"].values()))
+    write(report_path, report)
+    if not report["features_passed"]:
+        raise ValueError("B O16 feature extraction differs beyond roundoff or availability changed; "
+                         f"pair={report['pair_id']}, subject={report['subject_id']}; details={report_path}")
 
 
 def check_pair(a_root, b_root):
@@ -90,6 +152,7 @@ def prepare(args):
     originals = {(r["split"], r["pair_id"]): r for r in source["records"]}
     existing = {name: {(r["split"], r["pair_id"]): r for r in m["records"]} for name, m in manifests.items()}
     visited = set()
+    overlay_checks = []
     for split in ("train", "validation"):
         ds_a = JointAnchorDataset(cfg, "task2", split)
         try:
@@ -125,14 +188,13 @@ def prepare(args):
                             raise ValueError("B altered field " + field)
                     b_overlay = history_from_sample(b_sample)
                     filtered = process_history(raw, B_POLICY)
-                    if (raw.record_id != b_overlay.record_id or not np.array_equal(raw.valid_mask, b_overlay.valid_mask)
-                            or not np.array_equal(filtered.valid_mask, b_overlay.valid_mask)
-                            or not np.array_equal(filtered.raw_uV[filtered.valid_mask], b_overlay.raw_uV[b_overlay.valid_mask])):
-                        raise ValueError("Runtime B filter does not reproduce uploaded overlay on valid points")
+                    report_path = output / "overlay_checks" / f"{split}_{row['pair_id']}.json"
+                    check = verify_overlay_history(raw, filtered, b_overlay, report_path,
+                        {"split": split, "pair_id": row["pair_id"], "subject_id": row["subject_id"]})
                     b_features = relation_features(filtered, encoding=BEAT16_ENCODING)
                     overlay_features = relation_features(b_overlay, encoding=BEAT16_ENCODING)
-                    if any(not np.array_equal(x, y) for x, y in zip(b_features, overlay_features)):
-                        raise ValueError("B inference/template features do not match B overlay")
+                    verify_overlay_features(b_features, overlay_features, check, report_path)
+                    overlay_checks.append(check)
                     features = {"A": relation_features(raw, encoding=BEAT16_ENCODING), "B": b_features}
                     for name in ("A", "B"):
                         root = output / (name + "_cache")
@@ -176,7 +238,12 @@ def prepare(args):
         "same_I_predictions_targets_QC_splits": True, "encoding": BEAT16_ENCODING,
         "records": len(changes), "availability_changes": sum(r["A_available"] != r["B_available"] for r in changes),
         "A_cache_sha256": sha(output / "A_cache/cache.json"), "B_cache_sha256": sha(output / "B_cache/cache.json"),
-        "B_overlay_runtime_features_exactly_matched": True}
+        "B_overlay_runtime_features_exactly_matched": all(all(r["exact"] for r in c["features"].values()) for c in overlay_checks),
+        "B_overlay_runtime_features_within_tolerance": True,
+        "overlay_wave_atol_uV": OVERLAY_WAVE_ATOL_UV, "overlay_wave_rtol": OVERLAY_WAVE_RTOL,
+        "overlay_feature_atol": OVERLAY_FEATURE_ATOL, "overlay_feature_rtol": OVERLAY_FEATURE_RTOL,
+        "overlay_nonexact_waveform_records": sum(not c["waveform_uV"]["exact"] for c in overlay_checks),
+        "B_training_features_source": "runtime shared process_history(raw, B_POLICY); overlay is independently checked"}
     write(output / "prepared.json", report)
     print(report, flush=True)
 
