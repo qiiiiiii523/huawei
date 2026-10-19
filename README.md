@@ -1,6 +1,8 @@
-# B5-best：当前稳定组合
+# B5-final：当前选定最佳组合
 
-当前分支的使用入口见 [docs/b5_best.md](docs/b5_best.md)。默认已升级为 **control100 FM快残差＋SlowPCC第20轮慢CNN**，β=0.75、Heun16/K16/seed42。完整推理已复现：Task1 r=0.702354、Task2 r=0.694077、平均r=0.698216。默认读取SHA固定的完整双模型包，无需重新训练；predict/validate可省略--checkpoint。只按两个任务平均r选模，RMSE不计分。下面保留公共底座的历史说明，不代表当前B5-best的评分入口。
+使用入口和服务器命令见 [docs/b5_final.md](docs/b5_final.md)。固定 **新FM-best45＋P慢CNN＋d6 FIR25＋body适配seed43-best3**，Heun16/K16、推理seed42、慢β=0.75、body α=1。统一配置为 `configs/b5_final.json`，单条预测使用 `python -m baselines.B5_final.predict`，四组评估使用 `bash scripts/run_b5_final.sh --gpu 1`。
+
+已有服务器报告：Task1 r=0.70812168、Task2 r=0.70690564、平均r=0.70751366。两份服务器权重按SHA256固定；本机只整理代码，不包含.pt文件，也未重新训练。原B5-best及实验入口保留历史默认值，**当前分支请使用B5_final入口**。下面保留公共底座的历史说明。
 
 # ECG-12 joint-anchor 公共主干
 

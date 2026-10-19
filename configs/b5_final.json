@@ -1,0 +1,43 @@
+{
+  "protocol": "B5-final-newFM45-P-d6-body43adapt3-v1",
+  "base": {
+    "path": "results/B5-best-exp-PublicFM/cross_P_20261019_185724_3338378/bundles/FM_P_best45__P.pt",
+    "sha256": "990f5d95312dba0ab3e4bde416ee15d3b464b902fc63601aab1f852d9881f6f8"
+  },
+  "body": {
+    "path": "results/B5-best-context/newFM_body_adapt_v1/adapt/best.pt",
+    "sha256": "ed8de0495b9d89a59f7b16b40ae6117b56af5c37ad7add11dabb08069b4a0f8e",
+    "training_seed": 43,
+    "additional_epoch": 3,
+    "feature_encoding": "legacy_beat16_stats8_v1",
+    "history_variant": "B_detrend_0p2Hz_then_window"
+  },
+  "sampling": {"seed": 42, "solver": "heun", "steps": 16, "samples": 16},
+  "slow_beta": 0.75,
+  "body_alpha": 1.0,
+  "machine_mode": "fir25",
+  "fir_strength": 0.25,
+  "validation_config": "results/B5/main_v2_score60_k16_public_finetune_meta_20261012_001711_2114239/run_config.yaml",
+  "baseline_evaluation": "results/B5-best-context/FM_P_best45_B43_v1/base_inference",
+  "reference": {
+    "source_report": "B5_newFM_body_adapt_reports.tar.gz/newFM_body_adapt_v1/study/body_adapt_study.json",
+    "task1_r": 0.7081216802135007,
+    "machine_r": 0.7084532309866792,
+    "body_r": 0.7053580410722479,
+    "task2_r": 0.7069056360294635,
+    "mean_r": 0.7075136581214821,
+    "tolerance": 0.0000001,
+    "population": {
+      "task1": {
+        "metadata_sha256": "6f59ee76fac8965e8503b658a5a98787ae114b07cf540cca9663c2311b2a27d9",
+        "target_sha256": "fce89c6047d796443f200ef1f793bdba4206da3d185d5e748ff084bc95ccfc73",
+        "QC_sha256": "70adfaa1cdcb0cba3edee2b9210025b2fbeb19fbf357aa70fecb54d05c22fddc"
+      },
+      "task2": {
+        "metadata_sha256": "ae4250e8f42b6eb27bbc4e05af75607eac89eb8b9bec1616ae13cc59fc056ed4",
+        "target_sha256": "95e904b26c28640c4d851b77a436e08411036208bdb6b988791cab945a3c99f1",
+        "QC_sha256": "357addb0cc0f450dd5107cb193853a249525d6c5311c40110231a1739d4b76e4"
+      }
+    }
+  }
+}
