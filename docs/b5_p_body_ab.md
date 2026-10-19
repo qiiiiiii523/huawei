@@ -51,6 +51,8 @@ C:\Users\Ashley\Desktop\HW\task2_body_scale_ablation
 
 如果实际放在别处，下面**每一步**都添加同一个`--overlay /实际目录/task2_body_scale_ablation`。原canonical metadata、QC或划分哈希如果不匹配，必须为当前数据重建B，不能修改manifest伪装匹配。
 
+Windows／Linux的CRLF/LF换行差异现在会进行双向精确哈希匹配，允许仅有换行格式变化的同一CSV。配对字段、行顺序、QC内容、BOM或波形数组变化仍拒绝。若旧版本在`canonical pair_manifest changed`停止，更新此修复后，用原`--step prepare`、原目录加`--resume`继续；已完成的P预测不会重新生成。若新错误包含`changed beyond CRLF/LF formatting`，说明不是仅换行问题，先核对实际配对，不能绕过检查。
+
 ## 3. 服务器更新代码
 
 本地提交推送`B5-best-context`后，在服务器对应工作树执行：

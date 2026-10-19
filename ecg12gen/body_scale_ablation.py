@@ -12,6 +12,7 @@ import numpy as np
 from .body_scale_detrend import FILTER_SPEC
 from .contracts import ContractError
 from .record_context import ContextWindows
+from .cache_metadata import metadata_sha256_matches
 
 OVERLAY_PROTOCOL = "independent-body-context-overlay-v1"
 OVERLAY_METADATA = "body_scale_context_window_metadata_B.csv"
@@ -52,11 +53,12 @@ class BodyScaleBContextStore:
         self.manifest = json.loads(path.read_text(encoding="utf-8"))
         if self.manifest.get("protocol") != OVERLAY_PROTOCOL or self.manifest.get("filter") != FILTER_SPEC:
             raise ContractError("Body B cache has an incompatible filter/cache protocol")
-        if sha256_file(directory / OVERLAY_METADATA) != self.manifest.get("overlay_files_sha256", {}).get(OVERLAY_METADATA):
+        if not metadata_sha256_matches(directory / OVERLAY_METADATA,
+                                        self.manifest.get("overlay_files_sha256", {}).get(OVERLAY_METADATA)):
             raise ContractError("Body B metadata changed after construction")
         for name, source in protected_paths(config).items():
-            if sha256_file(source) != self.manifest.get("canonical_metadata_sha256", {}).get(name):
-                raise ContractError(f"Stale B overlay: canonical {name} changed; rebuild B")
+            if not metadata_sha256_matches(source, self.manifest.get("canonical_metadata_sha256", {}).get(name)):
+                raise ContractError(f"Stale B overlay: canonical {name} changed beyond CRLF/LF formatting; rebuild B")
         filename = f"body_scale_{split}_context_B.npy"
         maskname = f"body_scale_{split}_context_valid_mask_B.npy"
         for name in (filename, maskname):
