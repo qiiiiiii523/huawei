@@ -1,3 +1,10 @@
+# B5-final-exp-slow120：120秒慢分支实验
+
+本分支从 B5-final 创建，新增 G0 / G50 / G120 配对实验。服务器运行：`bash scripts/run_b5_slow120.sh --gpu 1`。
+完整操作、输入权重、断点续训和结果判定见 [慢分支120秒实验说明](docs/b5_slow120.md)。原 FM、P 慢CNN、d6/body 权重保持固定，只训练新增慢修正支路。
+
+以下为 B5-final 及公共底座的历史说明。
+
 # B5-final：当前选定最佳组合
 
 主办方测试入口已接入：`python competition_main.py`，Windows构建后为 `B5Submit.exe`。逐人调用官方input/output接口，统一生成三个任务的39列CSV；模型、采样和context修正不变。服务器自测、权重搬迁和EXE打包步骤见 [官方测试与提交说明](docs/b5_official_submission.md)。官方4点样例仅支持 `--inspect-input`；完整推理必须有真实120秒I和两份选定.pt权重。
