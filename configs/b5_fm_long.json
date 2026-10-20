@@ -1,0 +1,17 @@
+{
+  "protocol": "B5-final-FM40-paired-v1",
+  "window_seconds": [10, 40],
+  "context": "disabled",
+  "slow_beta": 0.75,
+  "sampling": {"seed": 42, "solver": "heun", "steps": 16, "samples": 16},
+  "training": {
+    "seed": 42,
+    "updates": 390,
+    "validate_every": 78,
+    "records_per_update": 2,
+    "learning_rate": 0.00001,
+    "weight_decay": 0.01,
+    "ema_decay": 0.999,
+    "gradient_clip": 1.0
+  }
+}
