@@ -1,0 +1,22 @@
+{
+  "protocol": "B5-final-directfast-study-v1",
+  "source_commit": "9f3e9623cff398b6687969f19b556df50123cdfc",
+  "training": {
+    "epochs": 10,
+    "seed": 43,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "gradient_clip": 1.0,
+    "gradient_accumulation": 4,
+    "validate_every": 2,
+    "selection_route": "baseline"
+  },
+  "direct_loss": {
+    "huber_delta": 1.0,
+    "combo_pcc": 0.0
+  },
+  "slow_beta": 0.75,
+  "filter_width": 501,
+  "initialization": "selected_final_fm_ema",
+  "body_transfer": "explicit_frozen_body_transfer"
+}
