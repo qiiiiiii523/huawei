@@ -190,7 +190,7 @@ def prepare(args):
         write(out / "study.json", study)
         write(out / "preflight.json", {"ready": True, "training_started": False, "train_records": len(entries["train"]),
             "validation_pairs": len(entries["validation"]), "zero_init_max_abs_difference": 0.,
-            "same_initial_weights": True, "parameters_per_arm": sum(p.numel() for p in g50.parameters()),
+            "same_initial_weights": True, "parameters_per_arm": sum(p.numel() for p in local.parameters()),
             "sampling": SAMPLING, "reference": study["reference"]})
     finally:
         for ds in validation.values():
