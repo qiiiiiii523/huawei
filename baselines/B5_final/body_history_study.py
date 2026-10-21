@@ -207,7 +207,9 @@ def train(args):
     manifest, features, arrays = load_features(root)
     if out.exists():
         raise FileExistsError("Use new training output")
-    seed_all(42, True)
+    if not 0 <= args.seed < 2**32:
+        raise ValueError("Training seed must be a uint32")
+    seed_all(args.seed, True)
     device = device_from_name(args.device)
     model = BodyIIAdapter().to(device)
     initial = torch.load(manifest["initial_checkpoint"], map_location="cpu", weights_only=False)
@@ -231,8 +233,8 @@ def train(args):
                 np.float32(1 / counts[row["target_record_id"]]), scales[j]))
     tensors = [torch.from_numpy(np.stack([v[k] for v in values]).copy()) for k in range(10)]
     data = TensorDataset(*tensors)
-    loader = DataLoader(data, batch_size=16, shuffle=True, generator=torch.Generator().manual_seed(42), num_workers=0)
-    config = {"protocol": PROTOCOL, "representation": args.representation, "seed": 42,
+    loader = DataLoader(data, batch_size=16, shuffle=True, generator=torch.Generator().manual_seed(args.seed), num_workers=0)
+    config = {"protocol": PROTOCOL, "representation": args.representation, "seed": args.seed,
         "epochs": 10, "batch_size": 16, "learning_rate": 2e-4, "features_sha256": sha(root / "features.json"),
         "initial_checkpoint_sha256": manifest["initial_checkpoint_sha256"], "training_windows": len(data),
         "loss": "unchanged C3 five-limb QC PCC + .01 residual L2", "FM_updates": 0, "slow_updates": 0,
@@ -316,6 +318,7 @@ def main():
     tr.add_argument("--output", required=True)
     tr.add_argument("--representation", choices=("single", "multi", "no_history"), required=True)
     tr.add_argument("--device", default="cuda")
+    tr.add_argument("--seed", type=int, default=42, help="Training/shuffle seed only; frozen FM inference stays seed42")
     pipe = subs.add_parser("pipeline")
     pipe.add_argument("--c3-run", required=True)
     pipe.add_argument("--output", required=True)
