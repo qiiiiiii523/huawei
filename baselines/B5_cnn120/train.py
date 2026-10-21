@@ -28,7 +28,15 @@ def run(args):
     model.initialize_from_s50(load_bundle(study["base_checkpoint"])["slow"]["model"])
     if state_sha(model.state_dict()) != study["initial_weights_sha256"]:
         raise ValueError("Initializer differs from prepared matched arms")
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"])
+    # Freeze the established S50 backbone: this screening isolates the effect
+    # of the two newly added residual blocks and their receptive field.
+    for name, parameter in model.named_parameters():
+        parameter.requires_grad_(name.startswith("extra."))
+    optimizer = torch.optim.AdamW(
+        (parameter for parameter in model.parameters() if parameter.requires_grad),
+        lr=cfg["learning_rate"],
+        weight_decay=cfg["weight_decay"],
+    )
     generator = torch.Generator().manual_seed(cfg["seed"])
     loader = DataLoader(Records(root, study["train"]), batch_size=cfg["batch_records"], shuffle=True,
                         generator=generator, num_workers=0)
