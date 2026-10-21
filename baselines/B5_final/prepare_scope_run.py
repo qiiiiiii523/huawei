@@ -76,10 +76,10 @@ def main():
     assets = resolve_assets(root, checkpoint="models/base.pt", body_checkpoint="models/body.pt")
     checks = reference["provenance"]["slow_source_checks"]
     sources = {"demographics_csv": old / "huawei/data/userinfobean.csv",
-        "subject_split_csv": old / "huawei/metadata/subject_split.csv",
-        "device_interpretation_qc_csv": old / "huawei/metadata/device_interpretation_qc.csv",
-        "task1_pair_manifest": old / "huawei/metadata/pair_manifest_task1.csv",
-        "task2_pair_manifest": old / "huawei/metadata/pair_manifest_task2.csv",
+        "subject_split_csv": root / "metadata/subject_split.csv",
+        "device_interpretation_qc_csv": root / "metadata/device_interpretation_qc.csv",
+        "task1_pair_manifest": root / "metadata/pair_manifest_task1.csv",
+        "task2_pair_manifest": root / "metadata/pair_manifest_task2.csv",
         "task2_window_metadata": old / "task2_record_context_v3/task2_window_metadata.csv",
         "task2_validation_target": old / "task2_record_context_v3/task2_validation_target.npy"}
     for key, source in sources.items():
