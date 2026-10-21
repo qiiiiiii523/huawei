@@ -1,3 +1,11 @@
+# B5-final-exp-cnn120：整段CNN120感受野实验
+
+本分支从 `B5-final@9f3e962` 创建，比较整段120秒CNN的局部控制L120与长程CNN C120。它不复用G120注意力修正支路。服务器入口：`bash scripts/run_b5_cnn120.sh --gpu 0`。
+
+完整设计和判定标准见 [CNN120实验说明](docs/b5_cnn120.md)。
+
+以下为 B5-final 及公共底座的历史说明。
+
 # B5-final：当前选定最佳组合
 
 主办方测试入口已接入：`python competition_main.py`，Windows构建后为 `B5Submit.exe`。逐人调用官方input/output接口，统一生成三个任务的39列CSV；模型、采样和context修正不变。服务器自测、权重搬迁和EXE打包步骤见 [官方测试与提交说明](docs/b5_official_submission.md)。官方4点样例仅支持 `--inspect-input`；完整推理必须有真实120秒I和两份选定.pt权重。
