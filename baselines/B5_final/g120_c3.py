@@ -397,7 +397,8 @@ def train(args):
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=.01)
         best, best_epoch, updates = initial["mean_r"], 0, 0
         history = [{"epoch": 0, "updates": 0, "train_loss": None, **initial,
-                    "best_epoch": 0, "best_mean_r": best}]
+                    "best_epoch": 0, "best_mean_r": best,
+                    "delta_mean_r_vs_epoch0": 0.}]
 
         def save(name, epoch):
             path = out / name
