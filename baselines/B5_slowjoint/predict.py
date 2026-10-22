@@ -77,7 +77,8 @@ def main():
     np.save(output / "prediction_uV.npy", result, allow_pickle=False)
     write(output / "inference.json", dict(protocol=PROTOCOL, checkpoint_sha256=sha(a.checkpoint),
         shape=list(result.shape), unit="uV", sampling=SAMPLING, slow_beta=.75, context=status,
-        target_used_at_inference=False, prepared_data_required=False, group=engine.payload["group"]))
+        target_used_at_inference=False, prepared_data_required=False, group=engine.payload["group"],
+        fusion_mode=engine.payload.get("fusion_mode", "add")))
 
 
 if __name__ == "__main__":

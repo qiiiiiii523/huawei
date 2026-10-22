@@ -65,12 +65,15 @@ def load_study(root, verify_records=True):
     return d
 
 
-def initial_model(root, study, device):
+def initial_model(root, study, device, fusion_mode="add"):
     cp = torch.load(Path(root) / "initializer.pt", map_location="cpu", weights_only=True)
     if cp.get("protocol") != PROTOCOL or state_sha(cp["model"]) != study["initial_weights_sha256"]:
         raise ValueError("Initializer protocol/state mismatch")
-    model = JointSlow(study["model"], study["training"]["window_batch"])
-    model.load_state_dict(cp["model"], strict=True)
+    model = JointSlow(study["model"], study["training"]["window_batch"], fusion_mode=fusion_mode)
+    incompatible = model.load_state_dict(cp["model"], strict=False)
+    expected_missing = {k for k in model.state_dict() if k.startswith("fusion.")}
+    if set(incompatible.missing_keys) != expected_missing or incompatible.unexpected_keys:
+        raise ValueError("Initializer may add zero FiLM only; old weights must load completely")
     return model.to(device)
 
 
@@ -79,7 +82,7 @@ def load_model(path, study, study_path, device):
     if (cp.get("protocol") != PROTOCOL or cp.get("study_sha256") != sha(study_path)
             or cp.get("source_g120_sha256") != study["source_g120_sha256"]):
         raise ValueError("Checkpoint belongs to another joint study")
-    model = JointSlow(study["model"], study["training"]["window_batch"])
+    model = JointSlow(study["model"], study["training"]["window_batch"], fusion_mode=cp.get("fusion_mode", "add"))
     model.load_state_dict(cp["model"], strict=True)
     return model.to(device), cp
 

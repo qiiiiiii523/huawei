@@ -122,7 +122,7 @@ class ResumeTests(unittest.TestCase):
             def args(name, resume=None):
                 return argparse.Namespace(run=str(shared), output=str(root / name), group="P", device="cpu", resume=resume)
 
-            with patch.object(train, "load_study", return_value=study), patch.object(train, "initial_model", side_effect=lambda *_: TinyJoint()), \
+            with patch.object(train, "load_study", return_value=study), patch.object(train, "initial_model", side_effect=lambda *_, **__: TinyJoint()), \
                  patch.object(train, "load_model", side_effect=load), patch.object(train, "Evaluator", FakeEvaluator):
                 train.run(args("full"))
                 real_save = train.atomic_save

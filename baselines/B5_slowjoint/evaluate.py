@@ -158,6 +158,7 @@ def main():
         from baselines.B5_best.common import read
         value = read(report)
         value.update(checkpoint_sha256=sha(args.checkpoint), checkpoint_stage=cp["stage"],
+                     fusion_mode=cp.get("fusion_mode", "add"),
                      study_sha256=sha(Path(args.run) / "study.json"))
         write(report, value)
     finally:

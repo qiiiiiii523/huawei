@@ -10,7 +10,7 @@ from baselines.B5_best.bundle import load_bundle
 from baselines.B5_best.common import read, write, sha, state_sha
 from baselines.B5_slow120.common import load_study as load_source, load_correction
 from . import PROTOCOL
-from .common import code_sha
+from .common import code_sha, initial_model
 from .model import JointSlow
 from .evaluate import Evaluator
 
@@ -60,16 +60,28 @@ def prepare(a):
     finally:
         evaluator.close()
     differences = {k: row[k] - study["reference"][k] for k in ("task1_r", "task2_r", "machine_r", "body_r", "mean_r")}
-    matched = all(abs(v) < 2e-6 for v in differences.values())
+    # Before optimizers are started, prove that MID can actually reproduce the
+    # measured full-context source, not just a random synthetic shape check.
+    mid = initial_model(out, study, device, fusion_mode="mid").eval()
+    evaluator = Evaluator(out, study, device)
+    try:
+        mid_row = evaluator.evaluate(mid, out / "initial_mid_evaluation", "INITIAL_MID", 0)
+    finally:
+        evaluator.close()
+    mid_differences = {k: mid_row[k] - row[k] for k in differences}
+    matched = all(abs(v) < 2e-6 for v in differences.values()) and all(abs(v) < 2e-6 for v in mid_differences.values())
     write(out / "preflight.json", dict(ready=matched, training_started=False, optimizer_updates=0,
           source_g120_epoch=cp["epoch"], initial_score=row, source_score=study["reference"],
           score_differences=differences, tolerance=2e-6, same_initial_weights=True,
+          mid_initial_score=mid_row, mid_vs_add_differences=mid_differences,
+          fusion_parameters=sum(p.numel() for p in mid.fusion.parameters()),
+          fusion_after_block=6, modes=["add", "mid"],
           CNN_parameters=sum(p.numel() for p in model.local.parameters()),
           G120_parameters=sum(p.numel() for p in model.global_model.parameters()),
           FM_fixed=True, context_fixed=True, slow_beta=.75,
           public_available=bool(public), original_cache_copied=False))
     if not matched:
-        raise ValueError("Initial joint forward does not reproduce the source G120; inspect preflight.json")
+        raise ValueError("Initial ADD/MID does not reproduce the source G120; inspect preflight.json")
     write(out / "study.json", study)
     print({"ready": True, "training_started": False, "reference_mean_r": row["mean_r"],
            "H_available": True, "P_available": bool(public), "shared": str(out)}, flush=True)

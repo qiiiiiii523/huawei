@@ -10,7 +10,7 @@ from baselines.B5.runtime import seed_all, device_from_name
 from baselines.B5_best.common import read, write, sha, state_sha
 from . import PROTOCOL, GROUPS
 from .common import load_study, initial_model, load_model, Records
-from .model import global_inputs
+from .model import global_inputs, FUSION_MODES
 from .losses import objective
 from .evaluate import Evaluator
 
@@ -20,10 +20,12 @@ def model_inputs(batch):
 
 
 def optimizer_for(model, cfg):
-    return torch.optim.AdamW([
+    groups = [
         {"params": model.local.parameters(), "lr": cfg["cnn_learning_rate"]},
-        {"params": model.global_model.parameters(), "lr": cfg["global_learning_rate"]}],
-        weight_decay=cfg["weight_decay"])
+        {"params": model.global_model.parameters(), "lr": cfg["global_learning_rate"]}]
+    if getattr(model, "fusion", None) is not None:
+        groups.append({"params": model.fusion.parameters(), "lr": cfg["global_learning_rate"]})
+    return torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
 
 
 @torch.no_grad()
@@ -46,7 +48,8 @@ def run(a):
     if a.group == "P" and not study.get("public"):
         raise ValueError("P requires a completed real120 public cache")
     seed_all(cfg["seed"], True)
-    model = initial_model(root, study, device)
+    mode = getattr(a, "fusion_mode", "add")
+    model = initial_model(root, study, device, fusion_mode=mode)
     scales = torch.tensor(study["scale_uV"], device=device)
     stage, epoch, counts = "initial", 0, {"public": 0, "huawei": 0}
     best_r, best_row, best_location = None, None, None
@@ -58,7 +61,7 @@ def run(a):
         if Path(a.resume).resolve() != output / "last.pt":
             raise ValueError("Resume this arm's own last.pt")
         model, resumed = load_model(a.resume, study, root / "study.json", device)
-        if resumed["group"] != a.group or resumed["output_dir"] != str(output):
+        if resumed["group"] != a.group or resumed["output_dir"] != str(output) or resumed.get("fusion_mode", "add") != mode:
             raise ValueError("Wrong group/output for resume")
         selected_model, selected = load_model(output / "best_r.pt", study, root / "study.json", device)
         del selected_model
@@ -87,7 +90,7 @@ def run(a):
                 batch_size=cfg["batch_records"], shuffle=False, num_workers=0)
 
         def payload(validation=None):
-            return dict(protocol=PROTOCOL, group=a.group, study_sha256=sha(root / "study.json"),
+            return dict(protocol=PROTOCOL, group=a.group, fusion_mode=mode, study_sha256=sha(root / "study.json"),
                 source_g120_sha256=study["source_g120_sha256"], output_dir=str(output), stage=stage, epoch=epoch,
                 updates=dict(counts), model={k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
                 optimizer=opt.state_dict() if opt else None, rng=pack_rng(),
@@ -117,6 +120,8 @@ def run(a):
                 raise ValueError("Epoch0 no longer reproduces source G120")
             write(output / "initialization.json", dict(group=a.group, initial_weights_sha256=state_sha(model.state_dict()),
                 source_g120_sha256=study["source_g120_sha256"], source_epoch=study["source_g120_epoch"],
+                fusion_mode=mode, fusion_after_block=6 if mode == "mid" else None,
+                fusion_parameters=sum(p.numel() for p in model.fusion.parameters()) if getattr(model, "fusion", None) is not None else 0,
                 trainable_CNN=True, trainable_G120=True, FM_fixed=True, context_fixed=True,
                 training=cfg, epoch_zero_candidate=True, baseline=baseline))
             atomic_save(output / "last.pt", payload(baseline))
@@ -169,7 +174,7 @@ def run(a):
                             diagnostic = public_diagnostic(model, public_val, scales, device)
                         finally:
                             restore_rng(rng)
-                history = dict(stage=phase, epoch=epoch, updates=dict(counts),
+                history = dict(stage=phase, epoch=epoch, fusion_mode=mode, updates=dict(counts),
                     train={k: v / count for k, v in totals.items()}, validation=row, public_validation=diagnostic,
                     best_r=best_r, best_location=best_location, seconds=time.perf_counter() - started)
                 atomic_save(output / "last.pt", payload(row))
@@ -179,7 +184,7 @@ def run(a):
                     f.write(json.dumps(history, allow_nan=False) + "\n")
                 print(history, flush=True)
             resumed = None
-        write(output / "completed.json", dict(completed=True, protocol=PROTOCOL, group=a.group,
+        write(output / "completed.json", dict(completed=True, protocol=PROTOCOL, group=a.group, fusion_mode=mode,
             huawei_epochs=cfg["epochs"], public_epochs=cfg["public_epochs"] if a.group == "P" else 0,
             updates=counts, best_r=best_r, best_location=best_location, best=best_row,
             selection="full120 fixed-context mean_r", FM_optimizer_updates=0, context_optimizer_updates=0))
@@ -191,6 +196,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run", required=True)
     p.add_argument("--group", choices=GROUPS, required=True)
+    p.add_argument("--fusion-mode", choices=FUSION_MODES, default="add")
     p.add_argument("--output", required=True)
     p.add_argument("--resume")
     p.add_argument("--device", default="cuda")
