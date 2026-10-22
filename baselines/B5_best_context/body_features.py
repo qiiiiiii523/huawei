@@ -61,7 +61,10 @@ def clipping_summary(normalized_beats):
         "II_peak_before_clip": float(np.max(np.abs(x[:, 1])))}
 
 
-def relation_features(history, *, audit=None, encoding=LEGACY_ENCODING):
+def relation_features(history, *, audit=None, encoding=LEGACY_ENCODING, beat_bank=None):
+    # Optional visible-only export for multi-template studies; default output unchanged.
+    if beat_bank is not None:
+        beat_bank["beats"] = np.empty((0, 2, 300), np.float32)
     if encoding not in FEATURE_ENCODINGS:
         raise ValueError("Unknown body feature encoding: " + str(encoding))
     if audit is not None:
@@ -140,6 +143,8 @@ def relation_features(history, *, audit=None, encoding=LEGACY_ENCODING):
             audit["candidate_beats"] = len(candidates)
         return empty
     chosen = np.linspace(0, len(candidates) - 1, min(MAX_BEATS, len(candidates)), dtype=int)
+    if beat_bank is not None:
+        beat_bank["beats"] = np.stack([candidates[i] for i in chosen]).astype(np.float32)
     beat = np.median(np.stack([candidates[i] for i in chosen]), axis=0)
     beat -= np.median(beat, axis=1, keepdims=True)
     if audit is not None:
