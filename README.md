@@ -1,8 +1,8 @@
-# B5-final-exp-cnn120：整段CNN120感受野实验
+# B5-final-exp-cnn120-res：零初始化CNN120残差实验
 
-本分支从 `B5-final@9f3e962` 创建，比较整段120秒CNN的局部控制L120与长程CNN C120。它不复用G120注意力修正支路。服务器入口：`bash scripts/run_b5_cnn120.sh --gpu 0`。
+本分支保留已完成的整段替换负实验 `baselines/B5_cnn120`，新增修正版 `baselines/B5_cnn120_res`：原 Final 完全固定，只增加零初始化的120秒 CNN 残差支路，并比较局部控制 L120 与长程 C120。它不复用 G120 注意力支路。服务器入口：`bash scripts/run_b5_cnn120_res.sh --gpu 1`。
 
-完整设计和判定标准见 [CNN120实验说明](docs/b5_cnn120.md)。
+完整设计和判定标准见 [CNN120残差实验说明](docs/b5_cnn120_res.md)；旧替换实验见 [CNN120-v1说明](docs/b5_cnn120.md)。
 
 以下为 B5-final 及公共底座的历史说明。
 
