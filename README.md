@@ -1,3 +1,10 @@
+# B5-final-exp-slowrate：G120采样率对照
+
+本分支新增完整120秒、2.5 / 5 / 10 Hz注意力慢修正对照。复用原slow120的只读FM/P缓存，三组使用相同参数、初始化和更新预算，物理时间位置编码一致。入口为 `bash scripts/run_b5_slowrate.sh --source-shared /原slow120/run/shared --gpu 1`。
+实验含义、服务器tmux启动、断点续训和结果判断见 [采样率实验说明](docs/b5_slowrate.md)。本地仅实现并测试代码，未启动服务器训练。
+
+以下保留原slow120及Final说明。
+
 # B5-final-exp-slow120：120秒慢分支实验
 
 本分支从 B5-final 创建，新增 G0 / G50 / G120 配对实验。服务器运行：`bash scripts/run_b5_slow120.sh --gpu 1`。
