@@ -22,6 +22,8 @@ class AuroraRegressionTest(unittest.TestCase):
     def test_vector_identities_are_applied_in_raw_uv(self):
         lead_i, lead_ii = torch.randn(2, 1, 32), torch.randn(2, 1, 32)
         limb = derive_limb_leads(lead_i, lead_ii, self.scale)
+        self.assertTrue(torch.equal(limb[:, :1], lead_i))
+        self.assertTrue(torch.equal(limb[:, 1:2], lead_ii))
         raw = limb * self.scale[:6].reshape(1, 6, 1)
         self.assertTrue(torch.allclose(raw[:, 2], raw[:, 1] - raw[:, 0]))
         self.assertTrue(torch.allclose(raw[:, 3], -(raw[:, 0] + raw[:, 1]) / 2))

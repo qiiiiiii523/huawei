@@ -109,8 +109,17 @@ def derive_limb_leads(anchor_i: torch.Tensor, lead_ii: torch.Tensor,
     avr_uv = -(lead_i_uv + lead_ii_uv) / 2
     avl_uv = (lead_i_uv - lead_iii_uv) / 2
     avf_uv = (lead_ii_uv + lead_iii_uv) / 2
-    raw = torch.cat((lead_i_uv, lead_ii_uv, lead_iii_uv, avr_uv, avl_uv, avf_uv), dim=1)
-    return raw / scale[:6].reshape(1, 6, 1)
+    # Preserve the two supplied normalized leads exactly. Multiplying and then
+    # dividing them by their scale can introduce a harmless rounding delta,
+    # but Lead I is an observed anchor and must remain bit-identical.
+    return torch.cat((
+        anchor_i,
+        lead_ii,
+        lead_iii_uv / scale[2],
+        avr_uv / scale[3],
+        avl_uv / scale[4],
+        avf_uv / scale[5],
+    ), dim=1)
 
 
 @dataclass
