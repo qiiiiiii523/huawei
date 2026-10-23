@@ -92,7 +92,8 @@ I原样保留，将拼好的七条波形还原μV后恢复四条派生输出。�
 
 - `model.py`、`flow.py`、`losses.py`、`leads.py`：独立模型与目标。
 - `prepare.py`、`data.py`：公开自动索引/显式QC配对索引、缓存、真实窗口、训练期scale。
-- `train.py`、`checkpoint.py`：随机初始化、B7阶段初始化、EMA、验证选模、精确恢复。
+- `train.py`、`checkpoint.py`：随机初始化、B7-T阶段初始化、EMA、验证选模、精确恢复。
+- `pipeline.py`：同步最新B7的准备及P→(A，Q→B)自动并行调度、失败处理、恢复和统一结果汇总；默认输出results/B7-T/auto_seed42。
 - `inference.py`、`evaluate.py`、`package.py`：只读可见条件的生成、完整记录评分、独立包。
 - `configs/b7_public10.json`、`b7_public40.json`、`b7_huawei40.json`：首轮预算和loss/采样配置。
 - `tests/test_b7.py`、`test_transformer.py`、`test_huawei_index.py`：原B7行为、架构和元数据桥接检查。

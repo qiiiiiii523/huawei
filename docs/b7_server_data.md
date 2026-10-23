@@ -1,8 +1,41 @@
-> B7-T继续使用完全相同的数据协议与转换入口，已有B7缓存可直接通过manifest路径复用，无需因替换Transformer而重新切分或修改QC。下面目录为原B7服务器示例；T训练在B7-T代码工作树中启动，使用单独的results/B7-T输出目录，不复用U7权重。
+# B7-T服务器准备与自动调度
 
-# B7服务器数据准备
+服务器已知路径：代码`/home/qht/huawei_B7_T`，数据`/home/qht/huawei/data`，旧元数据`/home/qht/huawei/metadata`，环境`BioFlow`。代码目录`/home/qht/huawei_B7_T`是建议的新T工作树路径，启动前需存在并切到B7-T分支。自动调度段启动真实训练，后续手动prepare段只准备数据。
 
-服务器已知路径：代码`/home/qht/huawei_B7`，数据`/home/qht/huawei/data`，旧元数据`/home/qht/huawei/metadata`，环境`BioFlow`。下面只准备数据，不启动训练。
+## 推荐：一次启动准备与全部训练
+
+取得本分支B7-T代码后，不必逐条执行下方prepare。在服务器复制执行下面整段。它会启动真实训练，默认同一张GPU 0最多并行两个训练进程；单个准备进程与训练可重叠。使用独立的`auto_seed42/data`缓存，不读取其他目录的半成品。
+
+```bash
+conda activate BioFlow
+cd /home/qht/huawei_B7_T
+mkdir -p results/B7-T/auto_seed42
+tmux new-session -d -s B7_T_auto "cd /home/qht/huawei_B7_T && '$(command -v python)' -u -m baselines.B7.pipeline --data-root /home/qht/huawei/data --metadata /home/qht/huawei/metadata --ptb-root /home/qht/huawei/data/PTB-Diagnostic --output results/B7-T/auto_seed42 --gpu-p 0 --gpu-a 0 --gpu-b 0 > results/B7-T/auto_seed42/pipeline.log 2>&1"
+```
+
+启动器使用当前BioFlow的Python绝对路径，不依赖tmux旧服务的conda环境。tmux会话已存在时命令拒绝重复启动。总控还对同一输出目录加进程锁，避免多个调度器同时写同一权重。
+
+流程：索引及公开缓存准备→P；公开缓存完成后也准备PTB和华为缓存；P与对应数据均完成后启动A/Q；Q成功后启动B，无需等A。失败仅阻止后代依赖，独立路线继续。每个训练正常返回且有正确completed.json及可加载最佳权重才启动后继，不以best文件出现作为完成信号。
+
+```bash
+# 查看总控进度；Ctrl+C仅退出查看日志
+tail -f /home/qht/huawei_B7_T/results/B7-T/auto_seed42/pipeline.log
+
+# 查看训练细节（P/A/Q/B）
+tail -f /home/qht/huawei_B7_T/results/B7-T/auto_seed42/logs/P.log
+```
+
+所有产物在`results/B7-T/auto_seed42`：`data`是缓存；`P/A/Q/B`各自保存best_r.pt、best.pt、last.pt及训练历史；`logs`是逐任务日志；`pipeline_status.json`记录任务完成、失败和依赖阻塞状态。
+
+`pipeline_status.json`的`training_results`统一汇总已成功阶段的最佳验证r、最佳/最后权重绝对路径及完成步数。训练完成判定还会核对completed、last和best的分数及身份一致性，并严格加载最佳模型；不会仅检查best文件存在。P/Q的r来自各自公开验证集，A/B来自同一华为验证口径，只有A/B用于路线效果比较。
+
+两个GPU时将`--gpu-b 0`改为`--gpu-b 1`；同卡并行显存不足时加`--max-train 1`。GPU编号须是分配给你的GPU；本脚本不会自动估算显存。仅查看依赖与命令、不创建缓存或训练，可在Python pipeline命令末尾加`--dry-run`。
+
+断线不需重启；总控结束或服务器重启后，重新执行同一段启动命令即可检查已完成任务并恢复有last.pt的中断训练。代码、配置、元数据与原始数据应保持不变；完成训练还会检查prepared数据hash。准备数据中途失败的半成品缓存、没有last.pt的训练目录会报错并保留，需先看日志解决问题，再使用新的`--output`目录重新开始，不自动删除。训练恢复从最近保存的验证checkpoint继续，不保证从中断的那一步继续。不是无条件自动重试或服务器开机自启动。
+
+## 复用B7数据与模型区别
+
+数据协议没有改变，现有B7 manifest及其冻结scale可以通过绝对路径交给单阶段train入口复用。自动pipeline默认在自身output/data里新建专用缓存；它不会自动导入其他run的缓存或权重。T不接受U7 checkpoint，必须重新从随机T训练P，后续为T的A/Q/B。
 
 ## 输入口径
 
@@ -18,7 +51,7 @@
 
 ```bash
 conda activate BioFlow
-cd /home/qht/huawei_B7
+cd /home/qht/huawei_B7_T
 python -m unittest discover -s baselines/B7/tests -v
 
 # 1. 公开短窗缓存；这一步只准备数据、拟合训练集scale，不训练。
@@ -56,4 +89,4 @@ python -m baselines.B7.prepare \
 - `results/B7/data_ptb40/manifest.json`：PTBDB真实长记录，40秒训练只选长度足够的记录，不把短记录拼接变长。
 - `results/B7/data_huawei/manifest.json`：完整120秒记录，训练取40秒窗口、验证中央核心拼接120秒。
 
-第2步和第3～4步可以在第1步成功后并行；公开P训练也只依赖第1步。后续训练依赖图仍为P结束后启动A与Q，Q结束后启动B。该文档没有实现训练调度器；不得把已有best文件出现当成前一训练阶段已完成。
+公开P训练只依赖第1步。后续训练依赖图仍为P结束后启动A与Q，Q结束后启动B。上面的pipeline入口已经实现这些准备与训练依赖，不需要人工等待。

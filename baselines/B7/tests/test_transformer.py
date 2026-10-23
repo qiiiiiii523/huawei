@@ -3,6 +3,7 @@ from dataclasses import asdict
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 from torch import nn
@@ -104,6 +105,34 @@ class TransformerTests(unittest.TestCase):
         gradient = torch.autograd.grad(output[0, 0, 10000], anchor)[0]
         self.assertTrue(torch.isfinite(gradient).all())
         self.assertGreater(float(gradient[:, :, :100].abs().sum()), 1e-8)
+        # Removing global blocks removes this remote path; local windows alone
+        # must not accidentally connect the record ends through cyclic padding.
+        with patch.object(model, 'bottleneck', nn.ModuleList()):
+            local = model(torch.randn(1, 7, 20000), torch.tensor([.5]), anchor)
+            local_gradient = torch.autograd.grad(local[0, 0, 10000], anchor)[0]
+        self.assertEqual(float(local_gradient[:, :, :100].abs().sum()), 0.)
+
+    def test_batch_partition_does_not_mix_patients_or_padding_windows(self):
+        torch.manual_seed(16)
+        model = B7Transformer(small_config()).eval()
+        anchor, state = torch.randn(2, 1, 5000), torch.randn(2, 7, 5000)
+        time = torch.tensor([.2, .8])
+        with torch.no_grad():
+            together = model(state, time, anchor)
+            separate = torch.cat([model(state[i:i+1], time[i:i+1], anchor[i:i+1]) for i in range(2)])
+        torch.testing.assert_close(together, separate, rtol=1e-5, atol=1e-6)
+
+    def test_opposite_sample_changes_inside_one_patch_do_not_collapse_to_a_mean(self):
+        torch.manual_seed(17)
+        model = B7Transformer(small_config()).eval()
+        anchor, state = torch.randn(1, 1, 5000), torch.randn(1, 7, 5000)
+        changed = anchor.clone()
+        changed[:, :, 2500] += .5
+        changed[:, :, 2501] -= .5
+        with torch.no_grad():
+            a = model(state, torch.tensor([.5]), anchor)
+            b = model(state, torch.tensor([.5]), changed)
+        self.assertGreater(float((a[:, :, 2500:2510] - b[:, :, 2500:2510]).abs().max()), 1e-4)
 
     def test_flow_time_and_demographics_condition_the_velocity(self):
         torch.manual_seed(14)

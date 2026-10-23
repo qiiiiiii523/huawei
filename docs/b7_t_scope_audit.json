@@ -190,5 +190,21 @@
     "MetadataEncoder": "AST identical to source B7"
   },
   "training_algorithm_unchanged_after_model_symbol_and_provenance_normalization": true,
-  "noise_key_protocol_unchanged": true
+  "noise_key_protocol_unchanged": true,
+  "reviewed_against_latest_b7_commit": "b9f257e14e7b7b3cabcfce183cebb698eb711f9f",
+  "pipeline": {
+    "source_commit": "b9f257e14e7b7b3cabcfce183cebb698eb711f9f",
+    "logic_identical_except_default_output_root": true,
+    "default_output": "results/B7-T/auto_seed42",
+    "sha256_lf": "c72993a4ce547a77908cf2955fbf1f1b977c319eb86ea977084d196f360cc702",
+    "tests_identical_except_model_class": true
+  },
+  "review_tests": {
+    "total": 52,
+    "core": 24,
+    "huawei_index": 5,
+    "pipeline": 8,
+    "transformer": 15,
+    "passed": true
+  }
 }
