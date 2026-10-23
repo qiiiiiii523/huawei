@@ -1,6 +1,8 @@
-# B7-U7：独立随机初始化的七通道条件Flow Matching
+# B7-T：一维多尺度Transformer条件Flow Matching
 
-2026-10-24：已实现U7模型、loss、七维flow、数据准备、训练/恢复、记录推理、验证和独立打包。**不继承B5权重**，不导入B5模型。不传初始化参数即从零训练；后续仅支持B7阶段权重。
+2026-10-24。从B7@1615b21创建独立B7-T分支，原U7保留在B7分支。本分支只替换骨干：20毫秒联合patch→局部平移窗口Transformer→全局瓶颈→跳连解码→完整七通道速度。三尺度128/256/384，12块，参数15,063,342。没有Conv1d骨干，没有独立I编码器。
+
+包名仍为`baselines.B7`，配置名仍为`configs/b7_*.json`。不传初始化参数即从零训练T，后续只接受同架构B7-T checkpoint；B5/U7权重明确拒绝。B7缓存和冻结scale可以复用，结果写入`results/B7-T/`，不覆盖原U7结果。数据、loss、采样、评分及优化预算与B7相同。
 
 ## 实现合同
 
@@ -19,7 +21,7 @@
 
 ```powershell
 python -m baselines.B7.prepare --public-source public10 --root 'C:/Users/Ashley/Desktop/HW/Data' --output results/B7/data_public10
-python -m baselines.B7.train --manifest results/B7/data_public10/manifest.json --config configs/b7_public10.json --output results/B7/public10_seed42 --device cuda
+python -m baselines.B7.train --manifest results/B7/data_public10/manifest.json --config configs/b7_public10.json --output results/B7-T/public10_seed42 --device cuda
 ```
 
 第一条会读取较多原始文件并写新缓存。默认公开QC只保证有限数据，不替代已审计的信号质量筛选；有既定QC/split时用显式index。不会改写原始数据或将不同患者10秒拼成40秒。
@@ -34,15 +36,15 @@ B后做：从同一P进行PTBDB40秒，再华为40秒。PTBDB按WFDB头的文件
 
 ```powershell
 python -m baselines.B7.prepare --public-source ptbdb --root 'C:/Users/Ashley/Desktop/HW/Data/PTB_db' --scale-manifest results/B7/data_public10/manifest.json --output results/B7/data_ptb40
-python -m baselines.B7.train --manifest results/B7/data_ptb40/manifest.json --config configs/b7_public40.json --init-checkpoint results/B7/public10_seed42/best_r.pt --output results/B7/public40_seed42 --device cuda
+python -m baselines.B7.train --manifest results/B7/data_ptb40/manifest.json --config configs/b7_public40.json --init-checkpoint results/B7-T/public10_seed42/best_r.pt --output results/B7-T/public40_seed42 --device cuda
 ```
 
 华为缓存必须来自既定患者划分、可靠I与逐导联QC，不能自动将全部原始文件当训练集。准备入口支持显式index：
 
 ```powershell
 python -m baselines.B7.prepare --index huawei_index.json --scale-manifest results/B7/data_public10/manifest.json --output results/B7/data_huawei
-python -m baselines.B7.train --manifest results/B7/data_huawei/manifest.json --config configs/b7_huawei40.json --init-checkpoint results/B7/public10_seed42/best_r.pt --output results/B7/huawei_A_seed42 --device cuda
-python -m baselines.B7.train --manifest results/B7/data_huawei/manifest.json --config configs/b7_huawei40.json --init-checkpoint results/B7/public40_seed42/best_r.pt --output results/B7/huawei_B_seed42 --device cuda
+python -m baselines.B7.train --manifest results/B7/data_huawei/manifest.json --config configs/b7_huawei40.json --init-checkpoint results/B7-T/public10_seed42/best_r.pt --output results/B7-T/huawei_A_seed42 --device cuda
+python -m baselines.B7.train --manifest results/B7/data_huawei/manifest.json --config configs/b7_huawei40.json --init-checkpoint results/B7-T/public40_seed42/best_r.pt --output results/B7-T/huawei_B_seed42 --device cuda
 ```
 
 配置给出首轮起始预算(公开10秒10000更新，后续各1000更新)，未通过真实训练优化。新阶段新目录；同阶段恢复在原命令加`--resume`并移除`--init-checkpoint`。源码/预算/数据变化时拒绝精确resume。best_r含initial候选。
@@ -76,9 +78,9 @@ XML读取最长完整12导联并重采样；华为取前120秒，同步配对的
 ## 验证、导出与推理
 
 ```powershell
-python -m baselines.B7.evaluate --manifest results/B7/data_huawei/manifest.json --checkpoint results/B7/huawei_A_seed42/best_r.pt --output results/B7/huawei_A_evaluation.json --device cuda
-python -m baselines.B7.package --checkpoint results/B7/huawei_A_seed42/best_r.pt --output results/B7/B7_U7_inference.pt
-python -m baselines.B7.inference --checkpoint results/B7/B7_U7_inference.pt --anchor current_I_uV_500Hz.npy --record-key stable_record1 --output results/B7/prediction.npy --device cuda
+python -m baselines.B7.evaluate --manifest results/B7/data_huawei/manifest.json --checkpoint results/B7-T/huawei_A_seed42/best_r.pt --output results/B7-T/huawei_A_evaluation.json --device cuda
+python -m baselines.B7.package --checkpoint results/B7-T/huawei_A_seed42/best_r.pt --output results/B7-T/B7_T_inference.pt
+python -m baselines.B7.inference --checkpoint results/B7-T/B7_T_inference.pt --anchor current_I_uV_500Hz.npy --record-key stable_record1 --output results/B7-T/prediction.npy --device cuda
 ```
 
 推理只接受可见I与可选人口学，不接受隐藏目标；输出[12,T]、单位μV，T必须是完整10秒的整数倍。正式华为为60000点。公开验证只使用实际完整10秒块；不足一个块的尾部不补成标签。训练窗口仍可从完整真实长度随机抽取。
@@ -86,9 +88,11 @@ python -m baselines.B7.inference --checkpoint results/B7/B7_U7_inference.pt --an
 ## 检查与范围
 
 ```powershell
-python -m unittest baselines.B7.tests.test_b7 -v
+python -m unittest discover -s baselines/B7/tests -v
 ```
 
-24项测试通过：实际40秒形状、I直连/不加噪、中央PCC与整窗MAE、II计权、完整120秒Heun16/K16控制流、公式和拼接、mask、B5拒绝、严格导出、合成优化/恢复，以及与原公共评分器的不同QC/重复配对一致性。真实文件读取另抽查华为XML、PTB-XL、Chapman(含JS01052)及PTBDB。尚未训练真实模型或报告真实性能；UT7/T7仍仅方案。详见[验证记录](../../docs/b7_validation.md)。
+42项测试通过：原B7的24项核心行为、5项华为桥接检查，以及13项Transformer检查（全采样分片、局部边界、全局长程依赖、变长/补齐、输出顺序、条件注入及U7权重拒绝）。额外使用正式15M参数模型完成40秒合成CPU反向传播和AdamW更新，全部参数梯度有限。完整120秒Heun16/K16的控制流沿用轻量速度场检查，不表示已完成正式网络GPU全量验证。
+
+本分支已实现T；原U7仅保留在B7分支，UT7仍未实现。尚未进行真实训练或GPU验证，不保证T优于U7。详见[当前验证记录](../../docs/b7_t_validation.md)。
 
 文档：[完整方案](../../docs/b7_plan.md)、[逐层结构](../../docs/b7_architecture.md)、[从零初始化](../../docs/b7_initialization.md)。

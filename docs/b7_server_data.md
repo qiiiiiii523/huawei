@@ -1,3 +1,5 @@
+> B7-T继续使用完全相同的数据协议与转换入口，已有B7缓存可直接通过manifest路径复用，无需因替换Transformer而重新切分或修改QC。下面目录为原B7服务器示例；T训练在B7-T代码工作树中启动，使用单独的results/B7-T输出目录，不复用U7权重。
+
 # B7服务器数据准备
 
 服务器已知路径：代码`/home/qht/huawei_B7`，数据`/home/qht/huawei/data`，旧元数据`/home/qht/huawei/metadata`，环境`BioFlow`。下面只准备数据，不启动训练。

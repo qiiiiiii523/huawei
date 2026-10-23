@@ -21,14 +21,15 @@ from baselines.B7.flow import integrate, keyed_noise, sample
 from baselines.B7.inference import predict_record
 from baselines.B7.leads import compose_d12
 from baselines.B7.losses import flow_loss, reconstruction_losses
-from baselines.B7.model import B7UNet
+from baselines.B7.model import B7Transformer
 from baselines.B7.package import export
 from baselines.B7.prepare import prepare, read_wfdb
 from baselines.B7 import train as trainer
 
 
 def small_config():
-    return ModelConfig(channels=(8, 16, 32), time_dim=8, metadata_dim=8, dilations=(1,))
+    return ModelConfig(embed_dims=(16, 32, 48), heads=(2, 4, 6), depths=(2, 2, 2),
+                       window_size=16, time_dim=8, metadata_dim=8, mlp_ratio=2)
 
 
 class RecordingVelocity(nn.Module):
@@ -48,7 +49,7 @@ def payload(model, sampling=None):
             "ema": model.state_dict(), "scales_uV": [100.] * 12,
             "sampling": asdict(sampling or SamplingConfig(steps=1, samples=1)),
             "loss": asdict(LossConfig()), "stage": "public10", "update": 0, "best_r": 0.,
-            "initialization": {"kind": "random_B7", "B5_weights_used": False}}
+            "initialization": {"kind": "random_B7T", "B5_weights_used": False}}
 
 
 def make_manifest(root):
@@ -74,12 +75,12 @@ class B7Tests(unittest.TestCase):
 
     def test_default40_shape_direct_raw_I_and_seven_output(self):
         torch.manual_seed(3)
-        model = B7UNet().eval()
+        model = B7Transformer().eval()
         anchor = torch.linspace(-2, 2, 20000).reshape(1, 1, -1)
         original = anchor.clone()
         state = torch.randn(1, 7, 20000)
         observed = []
-        hook = model.stem.register_forward_pre_hook(lambda m, args: observed.append(args[0].clone()))
+        hook = model.patch_embed.register_forward_pre_hook(lambda m, args: observed.append(args[0].clone()))
         with torch.no_grad():
             prediction = model(state, torch.tensor([.5]), anchor)
         hook.remove()
@@ -90,7 +91,7 @@ class B7Tests(unittest.TestCase):
         self.assertFalse(any("anchor_" in k or "condition_enc" in k for k in model.state_dict()))
 
     def test_same_network_supports_short_window(self):
-        model = B7UNet(small_config()).eval()
+        model = B7Transformer(small_config()).eval()
         with torch.no_grad():
             self.assertEqual(model(torch.randn(2, 7, 5000), torch.tensor([0., 1.]), torch.randn(2, 1, 5000)).shape,
                              (2, 7, 5000))
@@ -149,14 +150,14 @@ class B7Tests(unittest.TestCase):
         self.assertTrue(torch.isfinite(parts["pcc"]))
 
     def test_flow_backward_uses7_and_no_target_I(self):
-        model = B7UNet(small_config())
+        model = B7Transformer(small_config())
         q = torch.randn(1, 1, 5000)
         original = q.clone()
         batch = {"anchor": q, "target": torch.randn(1, 7, 5000), "lead_mask": torch.ones(1, 7, dtype=torch.bool)}
         loss, parts = flow_loss(model, batch)
         loss.backward()
         self.assertTrue(torch.isfinite(loss))
-        self.assertTrue(torch.isfinite(model.stem.weight.grad).all())
+        self.assertTrue(torch.isfinite(model.patch_embed.projection.weight.grad).all())
         self.assertTrue(torch.equal(q, original))
         self.assertEqual(set(parts), {"fm", "mae", "pcc", "mae_ii", "mae_chest", "pcc_valid_leads"})
 
@@ -187,7 +188,7 @@ class B7Tests(unittest.TestCase):
             torch.save({"architecture_id": "B5-U"}, root / "old.pt")
             with self.assertRaisesRegex(ValueError, "B5"):
                 load_checkpoint(root / "old.pt")
-            model = B7UNet(small_config()).eval()
+            model = B7Transformer(small_config()).eval()
             save_checkpoint(root / "b7.pt", payload(model))
             export(root / "b7.pt", root / "inference.pt")
             value = load_checkpoint(root / "inference.pt")
@@ -242,8 +243,9 @@ class B7Tests(unittest.TestCase):
                 self.assertTrue(torch.equal(best["ema"][key], best_r["ema"][key]))
             history = [json.loads(line) for line in (root / "full/history.jsonl").read_text().splitlines()]
             self.assertAlmostEqual(history[-1]["train"]["window_r"], 1 - history[-1]["train"]["pcc"])
-            self.assertEqual(a["initialization"]["kind"], "random_B7")
+            self.assertEqual(a["initialization"]["kind"], "random_B7T")
             self.assertFalse(a["initialization"]["B5_weights_used"])
+            self.assertFalse(a["initialization"]["B7_U7_weights_used"])
             self.assertEqual(a["best_r"], b["best_r"])
             for key in a["model"]:
                 self.assertTrue(torch.equal(a["model"][key], b["model"][key]), key)
@@ -379,7 +381,7 @@ class B7Tests(unittest.TestCase):
 
     def test_40s_backward_and_packaged_prediction_agree(self):
         torch.manual_seed(7)
-        model = B7UNet(small_config())
+        model = B7Transformer(small_config())
         q = torch.sin(torch.arange(20000) / 40)[None, None]
         target = q.repeat(1, 7, 1) + torch.arange(7)[None, :, None] / 10
         batch = {"anchor": q, "target": target, "lead_mask": torch.ones(1, 7, dtype=torch.bool)}

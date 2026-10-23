@@ -1,0 +1,194 @@
+{
+  "date": "2026-10-24",
+  "base_commit": "1615b2180b37ddc1b8f7d281ccb2059bff09a1d4",
+  "branch": "B7-T",
+  "scope": "architecture, model config/checkpoint wiring, tests and documentation",
+  "unchanged_protocol_files": {
+    "baselines/B7/data.py": {
+      "identical_to_source": true,
+      "sha256_lf": "9d4cdd9b587d89661a5af3ca6bcda9b3b50b712104d7e3c4c3f0ff8101835d02"
+    },
+    "baselines/B7/prepare.py": {
+      "identical_to_source": true,
+      "sha256_lf": "106311064e261e77e52081b2d6d0e4dfe0e74a556549e8678b9fb10ff09051a4"
+    },
+    "baselines/B7/huawei_index.py": {
+      "identical_to_source": true,
+      "sha256_lf": "4732ecf540790cd5cfd6608dfbf7706a3f4fb0080f93c945ef4f3d8e5718cf60"
+    },
+    "baselines/B7/flow.py": {
+      "identical_to_source": true,
+      "sha256_lf": "751957ad8d52f35790ad8648b4a39965b369a5f6299c0719bc8da51a2187dabc"
+    },
+    "baselines/B7/losses.py": {
+      "identical_to_source": true,
+      "sha256_lf": "c7e5a6da1e61ecadfc7f5778cadfc83c1e19b96e2f6624bb1825e2678dcda6b0"
+    },
+    "baselines/B7/leads.py": {
+      "identical_to_source": true,
+      "sha256_lf": "db68139c18d55f2ee47034dd0e9195bd22dd9ffae340c63f93934fc9328d2fd4"
+    },
+    "baselines/B7/inference.py": {
+      "identical_to_source": true,
+      "sha256_lf": "9ba7cf3b7fa1c3a98f3f61a0109ee2e7e921b40d428ef522884f1c86c02f3c85"
+    },
+    "baselines/B7/evaluate.py": {
+      "identical_to_source": true,
+      "sha256_lf": "efbe42c2a6e8da7a6d92d2a4b12491dc8f423d162fb80fbc6f372c70337f3105"
+    },
+    "baselines/B7/package.py": {
+      "identical_to_source": true,
+      "sha256_lf": "0063e2f75e6cd816f48fe882277463e49f5d9c7f72e045366fa0ba0c1981b9f8"
+    },
+    "baselines/B7/requirements.txt": {
+      "identical_to_source": true,
+      "sha256_lf": "b3b0b9be13bc484765de4ab03126d8f5dd6f0ae0d6abb42ff63d9e88ddeeac8f"
+    },
+    "ecg12gen/evaluate.py": {
+      "identical_to_source": true,
+      "sha256_lf": "f5c623d3df8c9e11ea146d52570cf960bd1c9de4a6e7b0f3637636400f7dc396"
+    },
+    "metadata/d12_strict_pretrain_index.csv": {
+      "identical_to_source": true,
+      "sha256_lf": "d5d37a6a386e49dfce133c1ceda39dad6f066054d4ef26e1638ba5ccfc88bcd5"
+    },
+    "metadata/data_refresh_audit.json": {
+      "identical_to_source": true,
+      "sha256_lf": "58e9d140fbdd750d794ab081c4120e0a4687123175b97f5a0fc4f7874c10544f"
+    },
+    "metadata/device_interpretation_qc.csv": {
+      "identical_to_source": true,
+      "sha256_lf": "20efe22456164a5fdcd329716052f0a15121f2fcd608b5ffa77f2bc028f067b5"
+    },
+    "metadata/field_mapping.md": {
+      "identical_to_source": true,
+      "sha256_lf": "9a6e8c5f4b4d033f316ffe64170ea40fcd7a1a61cf6857a9800533953876acf9"
+    },
+    "metadata/id_mapping_review.csv": {
+      "identical_to_source": true,
+      "sha256_lf": "da3d358cb752ad397f983392f09fd8b3749e4403d5fce517c8f0200cea12a13a"
+    },
+    "metadata/pair_manifest_task1.csv": {
+      "identical_to_source": true,
+      "sha256_lf": "63a6f2715cc07523aadbd7ad419e0a3229bec1cc79cbdd7b33cd7e4cab425f84"
+    },
+    "metadata/pair_manifest_task2.csv": {
+      "identical_to_source": true,
+      "sha256_lf": "2fa0d01ce41fe13aeaf9d9a0276cb51f75374be086f3ade76be219ab72221a49"
+    },
+    "metadata/raw_record_manifest.csv": {
+      "identical_to_source": true,
+      "sha256_lf": "851f011a3cee624e7d60f5268fdc6d43976e8609c34365b2ed2267b1d6b55dc8"
+    },
+    "metadata/subject_split.csv": {
+      "identical_to_source": true,
+      "sha256_lf": "bdc5d28f46fc77d0c3ab8021835de61ef238faa4440f2601f36f3ec5e73588ca"
+    }
+  },
+  "configs": {
+    "configs/b7_huawei40.json": {
+      "all_non_model_settings_identical": true,
+      "settings": {
+        "stage": "huawei40",
+        "loss": {
+          "mae_weight": 1.0,
+          "pcc_weight": 0.1,
+          "ii_weight": 5.0,
+          "target_variance_floor": 1e-08
+        },
+        "sampling": {
+          "sample_rate": 500,
+          "window_seconds": 40,
+          "core_seconds": 10,
+          "solver": "heun",
+          "steps": 16,
+          "samples": 16,
+          "seed": 42
+        },
+        "training": {
+          "seed": 42,
+          "updates": 1000,
+          "validate_every": 100,
+          "batch_size": 1,
+          "learning_rate": 1e-05,
+          "weight_decay": 0.01,
+          "ema_decay": 0.999,
+          "gradient_clip": 1.0,
+          "boundary_probability": 0.15
+        }
+      }
+    },
+    "configs/b7_public10.json": {
+      "all_non_model_settings_identical": true,
+      "settings": {
+        "stage": "public10",
+        "loss": {
+          "mae_weight": 1.0,
+          "pcc_weight": 0.1,
+          "ii_weight": 5.0,
+          "target_variance_floor": 1e-08
+        },
+        "sampling": {
+          "sample_rate": 500,
+          "window_seconds": 10,
+          "core_seconds": 10,
+          "solver": "heun",
+          "steps": 16,
+          "samples": 16,
+          "seed": 42
+        },
+        "training": {
+          "seed": 42,
+          "updates": 10000,
+          "validate_every": 500,
+          "batch_size": 4,
+          "learning_rate": 0.0001,
+          "weight_decay": 0.01,
+          "ema_decay": 0.999,
+          "gradient_clip": 1.0,
+          "boundary_probability": 0.0
+        }
+      }
+    },
+    "configs/b7_public40.json": {
+      "all_non_model_settings_identical": true,
+      "settings": {
+        "stage": "public40",
+        "loss": {
+          "mae_weight": 1.0,
+          "pcc_weight": 0.1,
+          "ii_weight": 5.0,
+          "target_variance_floor": 1e-08
+        },
+        "sampling": {
+          "sample_rate": 500,
+          "window_seconds": 40,
+          "core_seconds": 10,
+          "solver": "heun",
+          "steps": 16,
+          "samples": 16,
+          "seed": 42
+        },
+        "training": {
+          "seed": 42,
+          "updates": 1000,
+          "validate_every": 100,
+          "batch_size": 1,
+          "learning_rate": 1e-05,
+          "weight_decay": 0.01,
+          "ema_decay": 0.999,
+          "gradient_clip": 1.0,
+          "boundary_probability": 0.15
+        }
+      }
+    }
+  },
+  "unchanged_condition_and_protocol_classes": {
+    "LossConfig": "AST identical to source B7",
+    "SamplingConfig": "AST identical to source B7",
+    "TimeEmbedding": "AST identical to source B7",
+    "MetadataEncoder": "AST identical to source B7"
+  },
+  "training_algorithm_unchanged_after_model_symbol_and_provenance_normalization": true,
+  "noise_key_protocol_unchanged": true
+}

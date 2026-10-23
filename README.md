@@ -1,8 +1,10 @@
-# B7：干净I直连的七通道条件Flow Matching
+# B7-T：干净I直连的七通道时序Transformer Flow Matching
 
-本分支已实现独立B7-U7模型、训练、数据准备、推理和打包入口。按用户最新要求，B7从随机参数开始，不继承或转换B5权重；后续阶段仅接受B7自己的checkpoint。尚未在真实数据上预训练或微调，没有B7性能结论。当前仓库中的B5运行命令仍对应旧模型。
+本分支从`B7@1615b21`构建，只把U7速度场换为一维多尺度Transformer。完整I直连且不加噪，七通道生成、40秒窗口/中央10秒PCC、整窗MAE、II权重5、Heun16/K16与原评分口径保持不变。原B7分支仍为U7。
 
-请先阅读[B7运行说明](baselines/B7/README.md)、[完整方案](docs/b7_plan.md)、[逐层结构](docs/b7_architecture.md)和[独立初始化决策](docs/b7_initialization.md)。
+训练/数据/推理模块名沿用`baselines.B7`，本分支`configs/b7_*.json`使用Transformer配置。T从随机参数重新公开预训练，不能加载B5/U7权重；已准备的B7数据manifest和冻结scale可以复用，训练输出放`results/B7-T/`。尚未进行真实训练或GPU验证。
+
+请阅读[运行说明](baselines/B7/README.md)、[逐层结构](docs/b7_architecture.md)、[实验方案](docs/b7_plan.md)、[初始化规则](docs/b7_initialization.md)及[当前验证记录](docs/b7_t_validation.md)。
 
 ## 以下为继承的B5-final背景及公共底座说明
 

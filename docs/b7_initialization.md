@@ -1,13 +1,13 @@
-# B7独立初始化：不继承B5
+# B7-T初始化：独立随机训练
 
-2026-10-24用户决定：取消B5权重迁移。该决定替代先前所有“默认部分迁移B5”的方案。
+2026-10-24。当前分支从B7提交`1615b21`创建，骨干由U7替换为时序Transformer。
 
-- `B7UNet`由B7自己的`ModelConfig`直接构建，首阶段使用固定seed的随机初始化。
-- 无B5模型、配置、权重或迁移模块的导入，不需要原B5的.pt文件。
-- `train.py`不传`--init-checkpoint`即为随机初始化；每个run记录`kind=random_B7`及`B5_weights_used=false`。
-- 后续公开长窗、华为适配可以使用`--init-checkpoint`，但只接受架构ID为`B7-U7-raw-I-v1`、相同配置和scale的B7 checkpoint。B5包会明确报错，不部分加载。
-- `--resume`只用于同一个B7 run的`last.pt`，校验源码、配置、预算、manifest及记录文件SHA，并恢复优化器、EMA和RNG。
-- 新B7阶段从上一阶段的EMA开始，优化器/最佳记录重新建立；保留本阶段initial，允许第0步胜出。
-- scale从B7公开训练划分拟合，不读取B5的scale；后续阶段通过`--scale-manifest`使用同一份冻结scale。
+- `B7Transformer`按本分支`ModelConfig`构建；首阶段不传`--init-checkpoint`，固定seed随机初始化。
+- 不迁移B5或B7-U7权重；checkpoint架构ID为`B7-T-temporal-transformer-v1`，旧U7/B5在加载时明确拒绝，不使用strict=False凑合加载。
+- 初始化记录`kind=random_B7T`、`B5_weights_used=false`、`B7_U7_weights_used=false`。
+- 后续阶段只接受相同架构、配置和冻结scale的B7-T checkpoint，使用上一阶段EMA重新建立优化器与best记录。
+- `--resume`仍只用于同一个run的`last.pt`，核对源码、配置/预算、manifest及记录SHA并恢复优化器、EMA和RNG。U7的训练目录不能用于T的resume。
+- 原B7的原始波形缓存、患者split、QC和scale协议完全保留，因此符合协议的数据manifest可以复用。权重与数据缓存是两件事。
+- 实验顺序仍是两个短窗公开集联合训练P_T，再分叉为华为A_T及PTBDB长窗Q_T，Q_T后再华为B_T。新架构不从原U7的P开始。
 
-U7仍选用三尺度一维U-Net骨干。这是架构选择，不是继承旧参数。UT7、纯Transformer T7目前仍是方案候选，尚未实现，不能作为可运行模型宣传。
+默认运行输出请放`results/B7-T/`，与U7的`results/B7/`区分。命令模块与配置文件名沿用`baselines.B7`及`configs/b7_*.json`，本分支的配置已全部指向Transformer。完整结构见[架构说明](b7_architecture.md)。

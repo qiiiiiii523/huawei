@@ -1,6 +1,6 @@
-# B7-U7当前方案：独立训练，不继承B5
+# B7-T当前方案：只替换Transformer架构
 
-日期：2026-10-24。版本v4。用户最新决定取消B5权重迁移；本文件替代v1～v3的默认迁移方案。U7已实现并完成CPU合成行为检查，尚未在真实ECG上训练。UT7/T7仍是后续架构候选。
+日期：2026-10-24。版本T1。从B7@1615b21创建独立分支；本分支使用一维多尺度时序Transformer，原B7分支保留U7。数据、损失、窗口、采样、优化预算和评分口径全部沿用B7。尚未执行真实训练。
 
 ## 1. 模型要求与实现
 
@@ -19,7 +19,7 @@
 | 采样 | Heun16、K16份波形逐点平均、seed42、EMA |
 | 拼接选模 | 中央10秒步长10秒拼完整120秒，按最终11导联指标选best_r |
 
-U7使用64/128/256三尺度一维U-Net，共12残差块，瓶颈dilation1/2/4/8。时间128维嵌入与人口学128维FiLM保留。直接I指主干入口为完整波形，不保证后续卷积特征绝对无信息损失。逐层尺寸见[b7_architecture.md](b7_architecture.md)。
+T使用128/256/384三尺度时序Transformer，共12个块，细层/中层采用64-token局部平移窗口，粗层采用全局注意力。10点(20毫秒)共享patch完整接收I与七条状态，输出逐点恢复七通道速度；没有独立I编码分支或卷积骨干。时间与人口学编码接口保留，通过自适应LayerNorm注入。逐层尺寸见[b7_architecture.md](b7_architecture.md)。
 
 ## 2. Flow与Loss
 
@@ -57,19 +57,18 @@ aVF = II-I/2
 
 ## 4. 数据与阶段顺序
 
-1. 从随机B7开始：PTB-XL+Chapman真实10秒公开预训练，得到P；不把短记录重复、拉伸或跨患者拼长。
-2. U7-A先做：从P直接华为真实40秒适配。
-3. U7-B后做：同一P先PTBDB真实40秒，再同预算华为40秒。B不从A的华为best开始。
-4. 选定数据路线后，另行实现UT7，与同起点U7继续训练做匹配比较。
-5. 预算允许时另行实现纯Transformer T7，重新公开预训练。当前不提供UT7/T7运行入口。
+1. 从随机B7-T开始：PTB-XL+Chapman真实10秒联合预训练，得到P_T；不重复、拉伸或跨患者拼长。
+2. T-A路线：从P_T直接华为真实40秒适配。
+3. T-B路线：同一P_T先PTBDB真实40秒得到Q_T，再同预算华为40秒。B_T不从A_T的华为best开始。
+4. P_T成功结束后A_T和Q_T可并行；B_T只依赖Q_T成功结束。不直接使用U7的P/Q/A/B权重。
 
-所有阶段只允许B7自己的checkpoint作为下一阶段初始化，新建优化器与best账本。同run的last可精确resume，核对源码、配置/预算、manifest和实际记录SHA。参数初始化细节见[b7_initialization.md](b7_initialization.md)。
+所有阶段只允许相同配置的B7-T checkpoint作为下一阶段初始化，新建优化器与best账本。同run的last可精确resume，核对源码、配置/预算、manifest和实际记录SHA。数据缓存可复用，原U7训练权重不兼容。参数初始化见[b7_initialization.md](b7_initialization.md)。
 
 所有患者先划分再切窗。PTB-XL使用官方patient/fold，Chapman/PTBDB按source+patient固定hash划分；有既定数据治理时用显式index覆盖。公共默认QC只检查有限数据，华为必须提供既定可靠I/逐导联QC。不能把训练集重新叫作验证集，也不能将同一患者的不同记录划到不同集合。
 
 公开训练scale由B7训练划分拟合，各导联训练记录P95-P5范围的中位数、下限100μV，anchor与d12-I共享尺度。后续`--scale-manifest`冻结这份B7 scale。没有B5 scale依赖。
 
-准备工具支持.hea、完整d12.xml、原始μV NPZ。支持两个短窗集一起准备。可见手表I等需先完成真实时间对齐，传入`anchor_uV`，不得用目标I冒充设备输入。XML默认选最长完整12导联，华为截取前120秒；有其他物理起点时先构造正确配对NPZ。
+准备工具支持.hea、完整d12.xml、原始μV NPZ。华为`huawei_index.py`沿用原B7明确的`same_record_target_I`：同步d12的I为输入，原手表/d6仅用于保留配对分组，不作为同步波形输入。患者划分与QC不变。详见[b7_server_data.md](b7_server_data.md)；不宣称已完成其他设备I的部署评估。
 
 ## 5. 真实数据读取核查与更正
 
@@ -96,6 +95,6 @@ I原样保留，将拼好的七条波形还原μV后恢复四条派生输出。�
 - `train.py`、`checkpoint.py`：随机初始化、B7阶段初始化、EMA、验证选模、精确恢复。
 - `inference.py`、`evaluate.py`、`package.py`：只读可见条件的生成、完整记录评分、独立包。
 - `configs/b7_public10.json`、`b7_public40.json`、`b7_huawei40.json`：首轮预算和loss/采样配置。
-- `tests/test_b7.py`：关键行为与合成训练恢复测试。
+- `tests/test_b7.py`、`test_transformer.py`、`test_huawei_index.py`：原B7行为、架构和元数据桥接检查。
 
-可复制的命令、index字段与依赖见[运行说明](../baselines/B7/README.md)。测试中临时小网络、K1/一步采样仅用于CPU功能检查，正式配置仍为64/128/256、Heun16/K16。没有新增真实模型成绩，未执行真实公开预训练或华为微调。
+可复制的命令、index字段与依赖见[运行说明](../baselines/B7/README.md)。测试中临时小网络、K1/一步采样仅用于CPU功能检查，正式Transformer配置为128/256/384、12个注意力块、Heun16/K16。没有新增真实模型成绩，未执行真实公开预训练或华为微调。

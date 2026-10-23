@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-24",
+  "scope": "one synthetic CPU optimization step; not an ECG performance benchmark",
+  "architecture_id": "B7-T-temporal-transformer-v1",
+  "model": {
+    "patch_size": 10,
+    "embed_dims": [
+      128,
+      256,
+      384
+    ],
+    "heads": [
+      4,
+      8,
+      12
+    ],
+    "depths": [
+      2,
+      2,
+      4
+    ],
+    "window_size": 64,
+    "mlp_ratio": 4,
+    "time_dim": 128,
+    "metadata_dim": 128
+  },
+  "parameter_count": 15063342,
+  "torch": "2.14.1+cpu",
+  "device": "cpu",
+  "threads": 2,
+  "batch_size": 1,
+  "samples": 20000,
+  "loss": 3.250603199005127,
+  "parts": {
+    "mae": 0.8505650758743286,
+    "pcc": 0.63970947265625,
+    "pcc_valid_leads": 7.0,
+    "mae_ii": 0.8556134700775146,
+    "mae_chest": 0.8463581204414368,
+    "fm": 2.3360671997070312
+  },
+  "all_parameter_gradients_finite": true,
+  "global_attention_gradient_nonzero": true,
+  "I_unchanged": true,
+  "all_parameters_finite_after_AdamW": true,
+  "elapsed_seconds": 0.625
+}

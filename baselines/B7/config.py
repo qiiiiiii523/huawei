@@ -9,18 +9,28 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ModelConfig:
-    channels: tuple[int, int, int] = (64, 128, 256)
+    patch_size: int = 10
+    embed_dims: tuple[int, int, int] = (128, 256, 384)
+    heads: tuple[int, int, int] = (4, 8, 12)
+    depths: tuple[int, int, int] = (2, 2, 4)
+    window_size: int = 64
+    mlp_ratio: int = 4
     time_dim: int = 128
     metadata_dim: int = 128
-    dilations: tuple[int, ...] = (1, 2, 4, 8)
 
     def __post_init__(self):
-        if len(self.channels) != 3 or any(c < 4 for c in self.channels):
-            raise ValueError("Three channel widths >=4 required")
+        dimensions = (*self.embed_dims, *self.heads, *self.depths, self.patch_size,
+                      self.window_size, self.mlp_ratio, self.time_dim, self.metadata_dim)
+        if any(type(v) is not int or v < 1 for v in dimensions):
+            raise ValueError("Transformer dimensions must be positive integers")
+        if len(self.embed_dims) != 3 or len(self.heads) != 3 or len(self.depths) != 3:
+            raise ValueError("Three Transformer scales required")
+        if any(d < 4 or d % 2 or d % h for d, h in zip(self.embed_dims, self.heads)):
+            raise ValueError("Even embedding widths divisible by attention heads required")
+        if self.window_size < 2 or any(d < 2 or d % 2 for d in self.depths[:2]):
+            raise ValueError("Local stages need pairs of regular/shifted windows")
         if self.time_dim < 4 or self.time_dim % 2 or self.metadata_dim < 4:
             raise ValueError("Invalid condition dimensions")
-        if not self.dilations or any(d < 1 for d in self.dilations):
-            raise ValueError("Invalid dilations")
 
     def to_dict(self):
         return asdict(self)
@@ -28,7 +38,7 @@ class ModelConfig:
     @classmethod
     def from_dict(cls, value):
         value = dict(value)
-        for key in ("channels", "dilations"):
+        for key in ("embed_dims", "heads", "depths"):
             if key in value:
                 value[key] = tuple(value[key])
         return cls(**value)

@@ -1,4 +1,4 @@
-"""Raw-I concatenation U-Net. Only seven unknown channels have a velocity."""
+"""B7-T: raw-I, multiscale 1-D Transformer velocity field; no CNN backbone."""
 from __future__ import annotations
 
 import math
@@ -49,53 +49,151 @@ class MetadataEncoder(nn.Module):
         return self.mlp(torch.cat((numeric, self.sex_embedding(sex), valid.to(numeric.dtype), topcoded), dim=-1))
 
 
-class ResidualBlock(nn.Module):
-    def __init__(self, channels, time_dim, metadata_dim, dilation=1):
+def temporal_positions(length, dimension, reference):
+    """Length-independent sinusoidal positions, shared by 10s and 40s runs."""
+    frequencies = torch.exp(-math.log(10000.) * torch.arange(
+        dimension // 2, device=reference.device, dtype=torch.float32) / max(1, dimension // 2 - 1))
+    phase = torch.arange(length, device=reference.device, dtype=torch.float32)[:, None] * frequencies[None]
+    return torch.cat((phase.sin(), phase.cos()), -1).to(reference.dtype)[None]
+
+
+class PatchEmbedding(nn.Module):
+    """Jointly flatten every raw sample of I+state; never pool/encode I separately."""
+    def __init__(self, patch_size, dimension):
         super().__init__()
-        groups = math.gcd(channels, 8)
-        self.norm1, self.norm2 = nn.GroupNorm(groups, channels), nn.GroupNorm(groups, channels)
-        self.conv1 = nn.Conv1d(channels, channels, 3, padding=dilation, dilation=dilation)
-        self.conv2 = nn.Conv1d(channels, channels, 3, padding=dilation, dilation=dilation)
-        self.time = nn.Linear(time_dim, channels)
-        self.film = nn.Linear(metadata_dim, channels * 2)
-        nn.init.zeros_(self.film.weight)
-        nn.init.zeros_(self.film.bias)
+        self.patch_size = patch_size
+        self.projection = nn.Linear(8 * patch_size, dimension)
 
-    def forward(self, h, time, metadata):
-        x = self.conv1(F.silu(self.norm1(h))) + self.time(time)[:, :, None]
-        gamma, beta = self.film(metadata).chunk(2, dim=-1)
-        x = self.norm2(x) * (1 + gamma[:, :, None]) + beta[:, :, None]
-        return h + self.conv2(F.silu(x))
+    def forward(self, waveform):
+        pad = (-waveform.shape[-1]) % self.patch_size
+        if pad:
+            waveform = F.pad(waveform, (0, pad), mode="replicate")
+        b, _, length = waveform.shape
+        patches = waveform.transpose(1, 2).reshape(b, length // self.patch_size, 8 * self.patch_size)
+        return self.projection(patches)
 
 
-class B7UNet(nn.Module):
+class SelfAttention(nn.Module):
+    def __init__(self, dimension, heads, window_size=None):
+        super().__init__()
+        self.heads = heads
+        self.scale = (dimension // heads) ** -.5
+        self.qkv = nn.Linear(dimension, dimension * 3)
+        self.projection = nn.Linear(dimension, dimension)
+        self.window_size = window_size
+        if window_size is not None:
+            self.relative_bias = nn.Parameter(torch.zeros(2 * window_size - 1, heads))
+            positions = torch.arange(window_size)
+            self.register_buffer("relative_index", positions[:, None] - positions[None] + window_size - 1,
+                                 persistent=False)
+            nn.init.trunc_normal_(self.relative_bias, std=.02)
+
+    def forward(self, tokens, valid):
+        b, n, dimension = tokens.shape
+        q, k, v = self.qkv(tokens).reshape(b, n, 3, self.heads, dimension // self.heads).permute(2, 0, 3, 1, 4)
+        logits = (q * self.scale) @ k.transpose(-2, -1)
+        if self.window_size is not None:
+            if n != self.window_size:
+                raise ValueError("Local attention expects one padded window")
+            logits = logits + self.relative_bias[self.relative_index].permute(2, 0, 1)[None]
+        logits = logits.masked_fill(~valid[:, None, None, :], torch.finfo(logits.dtype).min)
+        weights = logits.float().softmax(-1).to(logits.dtype)
+        # Explicitly zero keys, including the all-padding-window case.
+        weights = weights.masked_fill(~valid[:, None, None, :], 0.)
+        values = (weights @ v).transpose(1, 2).reshape(b, n, dimension)
+        return self.projection(values).masked_fill(~valid[:, :, None], 0.)
+
+
+class TemporalBlock(nn.Module):
+    def __init__(self, dimension, heads, condition_dim, mlp_ratio, window_size=None, shift=0):
+        super().__init__()
+        self.window_size, self.shift = window_size, shift
+        self.norm1 = nn.LayerNorm(dimension, elementwise_affine=False)
+        self.norm2 = nn.LayerNorm(dimension, elementwise_affine=False)
+        self.modulation = nn.Sequential(nn.SiLU(), nn.Linear(condition_dim, dimension * 4))
+        self.attention = SelfAttention(dimension, heads, window_size)
+        self.mlp = nn.Sequential(nn.Linear(dimension, dimension * mlp_ratio), nn.GELU(),
+                                 nn.Linear(dimension * mlp_ratio, dimension))
+
+    def attend(self, tokens, valid):
+        if self.window_size is None:
+            return self.attention(tokens, valid)
+        b, n, dimension = tokens.shape
+        width, left = self.window_size, self.shift
+        right = (-(n + left)) % width
+        # Non-cyclic shifted windows: the ECG end never wraps around to its start.
+        padded = F.pad(tokens, (0, 0, left, right))
+        mask = F.pad(valid, (left, right), value=False)
+        windows = padded.reshape(-1, width, dimension)
+        attended = self.attention(windows, mask.reshape(-1, width))
+        return attended.reshape(b, n + left + right, dimension)[:, left:left + n]
+
+    def forward(self, tokens, valid, condition):
+        shift_a, scale_a, shift_m, scale_m = self.modulation(condition).chunk(4, -1)
+        normalized = self.norm1(tokens) * (1 + scale_a[:, None]) + shift_a[:, None]
+        tokens = tokens + self.attend(normalized.masked_fill(~valid[:, :, None], 0.), valid)
+        normalized = self.norm2(tokens) * (1 + scale_m[:, None]) + shift_m[:, None]
+        tokens = tokens + self.mlp(normalized)
+        return tokens.masked_fill(~valid[:, :, None], 0.)
+
+
+class PatchMerging(nn.Module):
+    def __init__(self, dimension, output_dimension):
+        super().__init__()
+        self.norm = nn.LayerNorm(dimension * 2)
+        self.projection = nn.Linear(dimension * 2, output_dimension)
+
+    def forward(self, tokens, valid):
+        tokens = tokens.masked_fill(~valid[:, :, None], 0.)
+        if tokens.shape[1] % 2:
+            tokens, valid = F.pad(tokens, (0, 0, 0, 1)), F.pad(valid, (0, 1), value=False)
+        b, n, dimension = tokens.shape
+        merged_valid = valid[:, 0::2] | valid[:, 1::2]
+        merged = self.projection(self.norm(tokens.reshape(b, n // 2, dimension * 2)))
+        return merged.masked_fill(~merged_valid[:, :, None], 0.), merged_valid
+
+
+class PatchExpanding(nn.Module):
+    def __init__(self, dimension, output_dimension):
+        super().__init__()
+        self.projection = nn.Linear(dimension, output_dimension * 2)
+        self.fusion = nn.Linear(output_dimension * 2, output_dimension)
+
+    def forward(self, tokens, skip, valid):
+        expanded = self.projection(tokens).reshape(len(tokens), -1, skip.shape[-1])[:, :skip.shape[1]]
+        return self.fusion(torch.cat((expanded, skip), -1)).masked_fill(~valid[:, :, None], 0.)
+
+
+class B7Transformer(nn.Module):
     def __init__(self, config: ModelConfig | None = None):
         super().__init__()
         self.config = config or ModelConfig()
-        c0, c1, c2 = self.config.channels
+        c0, c1, c2 = self.config.embed_dims
         self.time_embedding = TimeEmbedding(self.config.time_dim)
         self.metadata_encoder = MetadataEncoder(self.config.metadata_dim)
-        block = lambda c, d=1: ResidualBlock(c, self.config.time_dim, self.config.metadata_dim, d)
-        # No separate I encoder/head. The original samples are channel zero.
-        self.stem = nn.Conv1d(8, c0, 7, padding=3)
-        self.encode0 = nn.ModuleList([block(c0), block(c0)])
-        self.down1 = nn.Conv1d(c0, c1, 4, stride=2, padding=1)
-        self.encode1 = nn.ModuleList([block(c1), block(c1)])
-        self.down2 = nn.Conv1d(c1, c2, 4, stride=2, padding=1)
-        self.bottleneck = nn.ModuleList([block(c2, d) for d in self.config.dilations])
-        self.up1 = nn.Conv1d(c2, c1, 3, padding=1)
-        self.merge1 = nn.Conv1d(c1 * 2, c1, 1)
-        self.decode1 = nn.ModuleList([block(c1), block(c1)])
-        self.up0 = nn.Conv1d(c1, c0, 3, padding=1)
-        self.merge0 = nn.Conv1d(c0 * 2, c0, 1)
-        self.decode0 = nn.ModuleList([block(c0), block(c0)])
-        self.output = nn.Conv1d(c0, 7, 1)
+        self.patch_embed = PatchEmbedding(self.config.patch_size, c0)
+
+        def blocks(level, global_attention=False):
+            return nn.ModuleList([TemporalBlock(
+                self.config.embed_dims[level], self.config.heads[level],
+                self.config.time_dim + self.config.metadata_dim, self.config.mlp_ratio,
+                None if global_attention else self.config.window_size,
+                0 if global_attention or i % 2 == 0 else self.config.window_size // 2)
+                for i in range(self.config.depths[level])])
+
+        self.encode0, self.encode1 = blocks(0), blocks(1)
+        self.down1, self.down2 = PatchMerging(c0, c1), PatchMerging(c1, c2)
+        self.bottleneck = blocks(2, global_attention=True)
+        self.up1, self.up0 = PatchExpanding(c2, c1), PatchExpanding(c1, c0)
+        self.decode1, self.decode0 = blocks(1), blocks(0)
+        self.output_norm = nn.LayerNorm(c0)
+        self.output = nn.Linear(c0, 7 * self.config.patch_size)
 
     @staticmethod
-    def _blocks(blocks, h, time, metadata):
+    def _blocks(blocks, tokens, valid, condition):
         for block in blocks:
-            h = block(h, time, metadata)
-        return h
+            tokens = block(tokens, valid, condition)
+        return tokens
 
     def forward(self, state, time, anchor, metadata=None):
         if state.ndim != 3 or state.shape[1] != 7 or state.shape[-1] < 8:
@@ -106,14 +204,17 @@ class B7UNet(nn.Module):
             raise ValueError("Nonfinite inputs")
         if torch.any((time < 0) | (time > 1)):
             raise ValueError("Flow time must be in [0,1]")
-        te = self.time_embedding(time)
-        me = self.metadata_encoder(anchor, metadata)
-        h = self.stem(torch.cat((anchor, state), dim=1))
-        s0 = self._blocks(self.encode0, h, te, me)
-        s1 = self._blocks(self.encode1, self.down1(s0), te, me)
-        h = self._blocks(self.bottleneck, self.down2(s1), te, me)
-        h = self.up1(F.interpolate(h, size=s1.shape[-1], mode="nearest"))
-        h = self._blocks(self.decode1, self.merge1(torch.cat((h, s1), dim=1)), te, me)
-        h = self.up0(F.interpolate(h, size=s0.shape[-1], mode="nearest"))
-        h = self._blocks(self.decode0, self.merge0(torch.cat((h, s0), dim=1)), te, me)
-        return self.output(h)
+        condition = torch.cat((self.time_embedding(time), self.metadata_encoder(anchor, metadata)), -1)
+        tokens = self.patch_embed(torch.cat((anchor, state), dim=1))
+        tokens = tokens + temporal_positions(tokens.shape[1], tokens.shape[2], tokens)
+        valid0 = torch.ones(tokens.shape[:2], dtype=torch.bool, device=tokens.device)
+        s0 = self._blocks(self.encode0, tokens, valid0, condition)
+        tokens, valid1 = self.down1(s0, valid0)
+        s1 = self._blocks(self.encode1, tokens, valid1, condition)
+        tokens, valid2 = self.down2(s1, valid1)
+        tokens = self._blocks(self.bottleneck, tokens, valid2, condition)
+        tokens = self._blocks(self.decode1, self.up1(tokens, s1, valid1), valid1, condition)
+        tokens = self._blocks(self.decode0, self.up0(tokens, s0, valid0), valid0, condition)
+        patches = self.output(self.output_norm(tokens))
+        waveform = patches.reshape(len(state), -1, 7).transpose(1, 2)
+        return waveform[:, :, :state.shape[-1]].contiguous()

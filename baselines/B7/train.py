@@ -1,4 +1,4 @@
-"""B7 training from random initialization; later stages accept B7 checkpoints only."""
+"""B7-T training from scratch; later stages accept matching B7-T checkpoints only."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,7 @@ from .config import LossConfig, ModelConfig, SamplingConfig, read_json
 from .data import WindowDataset, read_manifest
 from .evaluate import SCORE_PROTOCOL, evaluate
 from .losses import flow_loss
-from .model import B7UNet
+from .model import B7Transformer
 
 
 def code_sha():
@@ -101,8 +101,8 @@ def train(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(tr["seed"])
     torch.use_deterministic_algorithms(True)
-    model = B7UNet(mc).to(device)
-    initialization = {"kind": "random_B7", "seed": tr["seed"], "B5_weights_used": False}
+    model = B7Transformer(mc).to(device)
+    initialization = {"kind": "random_B7T", "seed": tr["seed"], "B5_weights_used": False, "B7_U7_weights_used": False}
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["learning_rate"], weight_decay=tr["weight_decay"])
     ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
     step, best = 0, -float("inf")
@@ -115,8 +115,8 @@ def train(args):
             raise ValueError("B7 stage initialization must preserve architecture and frozen scales")
         model.load_state_dict(source["ema"], strict=True)
         ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
-        initialization = {"kind": "previous_B7_stage", "sha256": file_sha256(args.init_checkpoint),
-                          "lineage": source["initialization"], "B5_weights_used": False}
+        initialization = {"kind": "previous_B7T_stage", "sha256": file_sha256(args.init_checkpoint),
+                          "lineage": source["initialization"], "B5_weights_used": False, "B7_U7_weights_used": False}
     if args.resume:
         old = load_checkpoint(output / "last.pt")
         if old.get("identity") != identity:
@@ -188,7 +188,7 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--device", default="cpu")
-    p.add_argument("--init-checkpoint", help="Optional B7 checkpoint for a later stage; B5 is rejected")
+    p.add_argument("--init-checkpoint", help="Optional B7-T checkpoint for a later stage; B5/B7-U7 are rejected")
     p.add_argument("--resume", action="store_true")
     train(p.parse_args())
 

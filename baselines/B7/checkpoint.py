@@ -11,7 +11,7 @@ import torch
 from . import ARCHITECTURE_ID, CHECKPOINT_VERSION, GENERATED_LEADS
 from .config import ModelConfig
 from .leads import validate_scales
-from .model import B7UNet
+from .model import B7Transformer
 
 
 def file_sha256(path):
@@ -35,7 +35,7 @@ def load_checkpoint(path):
     if (not isinstance(value, dict) or value.get("architecture_id") != ARCHITECTURE_ID
             or value.get("format_version") != CHECKPOINT_VERSION
             or tuple(value.get("generated_leads", ())) != GENERATED_LEADS):
-        raise ValueError("Expected a B7-U7 checkpoint. B5 weights/migration are not supported.")
+        raise ValueError("Expected a B7-T checkpoint. B5 and B7-U7 weights/migration are not supported.")
     ModelConfig.from_dict(value["model_config"])
     validate_scales(value["scales_uV"])
     return value
@@ -43,8 +43,8 @@ def load_checkpoint(path):
 
 def model_from_checkpoint(value, device="cpu"):
     if value.get("architecture_id") != ARCHITECTURE_ID:
-        raise ValueError("Only B7 architecture is supported")
-    model = B7UNet(ModelConfig.from_dict(value["model_config"]))
+        raise ValueError("Only B7-T architecture is supported")
+    model = B7Transformer(ModelConfig.from_dict(value["model_config"]))
     model.load_state_dict(value["ema"], strict=True)
     return model.to(device).eval()
 
