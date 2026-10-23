@@ -98,5 +98,7 @@ class Records(Dataset):
         with np.load(safe_file(self.root, self.entries[index]["file"]), allow_pickle=False) as z:
             data = {k: np.asarray(z[k]).copy() for k in z.files if k != "anchor_uV"}
             if "anchor" not in data:
-                data["anchor"] = z["anchor_uV"].reshape(1, 6000, 10).mean(-1).astype(np.float32) / self.scale_i
+                data["anchor"] = (z["anchor_uV"].reshape(1, 6000, 10).mean(-1).astype(np.float32)
+                                  / np.float32(self.scale_i)).astype(np.float32, copy=False)
+            data["anchor"] = np.asarray(data["anchor"], np.float32)
         return {k: torch.from_numpy(v) for k, v in data.items()}

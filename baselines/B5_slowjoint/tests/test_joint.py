@@ -15,6 +15,7 @@ from baselines.B5_slowjoint.model import JointSlow, visible_batch
 from baselines.B5_slowjoint.losses import objective
 from baselines.B5_slowjoint.public import pack_record, patient_split
 from baselines.B5_slowjoint import train
+from baselines.B5_slowjoint.common import Records
 
 
 def fixture():
@@ -30,6 +31,28 @@ class JointTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
+
+    def test_float64_scale_keeps_visible_and_dataset_anchor_float32(self):
+        data = fixture()
+        scale = np.asarray([100.], dtype=np.float64)[0]
+        expected = data["anchor_uV"].reshape(1, 6000, 10).mean(-1) / np.float32(scale)
+        batch = visible_batch(data, "cpu", scale)
+        self.assertEqual(batch["anchor"].dtype, torch.float32)
+        np.testing.assert_array_equal(batch["anchor"][0].numpy(), expected)
+        model = JointSlow(dict(channels=8, heads=2, layers=1), window_batch=3).eval()
+        with torch.no_grad():
+            self.assertEqual(model(**batch).dtype, torch.float32)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            np.savez(root / "raw.npz", **data)
+            normalized = dict(data, anchor=expected.astype(np.float64))
+            normalized.pop("anchor_uV")
+            np.savez(root / "normalized.npz", **normalized)
+            records = Records(root, [{"file": "raw.npz"}, {"file": "normalized.npz"}], scale)
+            for index in range(2):
+                record = records[index]
+                self.assertEqual(record["anchor"].dtype, torch.float32)
+                np.testing.assert_array_equal(record["anchor"].numpy(), expected)
 
     def test_original_inference_crop_and_both_gradients(self):
         data = fixture()

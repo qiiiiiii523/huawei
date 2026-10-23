@@ -116,6 +116,7 @@ def visible_batch(data, device, scale_i):
     if "anchor" in data:
         anchor = np.asarray(data["anchor"], np.float32)
     else:
-        anchor = np.asarray(data["anchor_uV"], np.float32).reshape(1, 6000, 10).mean(-1) / scale_i
+        anchor = (np.asarray(data["anchor_uV"], np.float32).reshape(1, 6000, 10).mean(-1)
+                  / np.float32(scale_i)).astype(np.float32, copy=False)
     fields = {k: np.asarray(data[k]) for k in ("global_i", "local_i", *FIELDS)}
     return {k: torch.from_numpy(np.asarray(v)[None].copy()).to(device) for k, v in {"anchor": anchor, **fields}.items()}
