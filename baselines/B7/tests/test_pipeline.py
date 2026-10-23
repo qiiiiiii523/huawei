@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from baselines.B7.pipeline import Job, command_for, plan, run, validate_artifact
+from baselines.B7.pipeline import Job, command_for, plan, preparation_only_retry_allowed, run, validate_artifact
 
 
 class PipelineTests(unittest.TestCase):
@@ -33,6 +33,29 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("--resume", command)
             self.assertNotIn("--init-checkpoint", command)
             self.assertEqual((directory / "last.pt").read_bytes(), b"saved")
+
+    def test_retry_plan_marks_only_preparation_and_preserves_training_dependencies(self):
+        args = self.args(Path('/example'))
+        args.retry_preparation = True
+        jobs = {job.name: job for job in plan(args)}
+        for job in jobs.values():
+            self.assertEqual('--resume' in job.arguments, job.module == 'prepare')
+        self.assertEqual(jobs['A'].dependencies, ('P', 'prepare_huawei'))
+        self.assertEqual(jobs['B'].dependencies, ('Q', 'prepare_huawei'))
+        self.assertIn('--init-checkpoint', jobs['A'].arguments)
+        self.assertIn('--init-checkpoint', jobs['B'].arguments)
+
+    def test_preparation_retry_is_blocked_by_any_training_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args = self.args(Path(temp))
+            args.retry_preparation = True
+            args.output.mkdir()
+            self.assertTrue(preparation_only_retry_allowed(args))
+            for stage in ('P', 'A', 'Q', 'B'):
+                directory = args.output / stage
+                directory.mkdir()
+                self.assertFalse(preparation_only_retry_allowed(args), stage)
+                directory.rmdir()
 
     def test_partial_prepare_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as temp:

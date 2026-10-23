@@ -31,11 +31,33 @@ tail -f /home/qht/huawei_B7_T/results/B7-T/auto_seed42/logs/P.log
 
 两个GPU时将`--gpu-b 0`改为`--gpu-b 1`；同卡并行显存不足时加`--max-train 1`。GPU编号须是分配给你的GPU；本脚本不会自动估算显存。仅查看依赖与命令、不创建缓存或训练，可在Python pipeline命令末尾加`--dry-run`。
 
-断线不需重启；总控结束或服务器重启后，重新执行同一段启动命令即可检查已完成任务并恢复有last.pt的中断训练。代码、配置、元数据与原始数据应保持不变；完成训练还会检查prepared数据hash。准备数据中途失败的半成品缓存、没有last.pt的训练目录会报错并保留，需先看日志解决问题，再使用新的`--output`目录重新开始，不自动删除。训练恢复从最近保存的验证checkpoint继续，不保证从中断的那一步继续。不是无条件自动重试或服务器开机自启动。
+断线不需重启；总控结束或服务器重启后，重新执行同一段启动命令即可检查已完成任务并恢复有last.pt的中断训练。代码、配置、元数据与原始数据应保持不变；完成训练还会检查prepared数据hash。准备数据中途失败的半成品缓存默认报错并保留；训练尚未开始时可按下节显式核验恢复，否则检查日志并使用新output。没有last.pt的训练目录仍报错保留，不自动删除。训练恢复从最近保存的验证checkpoint继续，不保证从中断的那一步继续。不是无条件自动重试或服务器开机自启动。
 
 ## 复用B7数据与模型区别
 
 数据协议没有改变，现有B7 manifest及其冻结scale可以通过绝对路径交给单阶段train入口复用。自动pipeline默认在自身output/data里新建专用缓存；它不会自动导入其他run的缓存或权重。T不接受U7 checkpoint，必须重新从随机T训练P，后续为T的A/Q/B。
+
+## 数据准备中断后的核验恢复
+
+已同步B7@0113fbc：Chapman的JS23074等头文件可能把第一条信号描述粘在记录首行。读取器在内存中拆开，仍校验12导联完整性、初值和checksum，不改原始文件。B7-T已对本地真实JS23074读取通过。
+
+如果仅数据准备失败、该output下没有P/A/Q/B训练目录，且准备缓存尚未生成完整manifest，更新修复后可保留半成品，在原pipeline命令加`--retry-preparation`。例如在B7-T工作树、BioFlow环境执行：
+
+```bash
+python -u -m baselines.B7.pipeline \
+  --data-root /home/qht/huawei/data \
+  --metadata /home/qht/huawei/metadata \
+  --ptb-root /home/qht/huawei/data/PTB-Diagnostic \
+  --output results/B7-T/auto_seed42 \
+  --gpu-p 0 --gpu-a 0 --gpu-b 0 \
+  --retry-preparation
+```
+
+仍可把这条命令放在上述tmux启动命令中。不要同时启动两个相同output的调度器。
+
+此选项向三个prepare任务传递`--resume`：每条原始记录重新解码，全部NPZ数组的名称、形状和内容须一致；一致的缓存保留字节及mtime，缺少的记录继续写，不一致就报错。每250条报告进度；核验仍需要时间。必要时备份旧pipeline_spec后才采用修复版本；原始文件、元数据、患者划分与QC必须保持原样。
+
+它不是跨版本训练恢复开关：只要P/A/Q/B任一训练目录存在，就拒绝使用；已生成完整manifest的缓存也不能经该选项跨版本直接采信。开始训练后的普通恢复须去掉该选项、保持原训练代码/配置一致；代码变更时不能绕过训练身份校验。新运行直接使用正常启动命令即可，不需要加该选项。
 
 ## 输入口径
 

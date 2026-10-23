@@ -15,7 +15,7 @@
 
 ## 环境与首阶段
 
-自动调度入口已同步源B7@b9f257e：`python -m baselines.B7.pipeline --data-root /home/qht/huawei/data --metadata /home/qht/huawei/metadata --ptb-root /home/qht/huawei/data/PTB-Diagnostic`。默认输出`results/B7-T/auto_seed42`，支持P结束后并行A/Q、Q结束后立即B、失败阻断依赖、断点恢复及分数/权重路径汇总。完整启动命令见[服务器说明](../../docs/b7_server_data.md)。这是可运行入口，尚未在服务器启动真实T训练。
+自动调度入口及数据准备恢复已同步源B7@0113fbc：`python -m baselines.B7.pipeline --data-root /home/qht/huawei/data --metadata /home/qht/huawei/metadata --ptb-root /home/qht/huawei/data/PTB-Diagnostic`。默认输出`results/B7-T/auto_seed42`，支持P结束后并行A/Q、Q结束后立即B、失败阻断依赖、断点恢复及分数/权重路径汇总。支持Chapman粘行头及训练开始前显式`--retry-preparation`：逐条对照原始数据核验并继续部分缓存。完整启动命令见[服务器说明](../../docs/b7_server_data.md)。这是可运行入口，尚未在服务器启动真实T训练。
 
 从仓库根目录运行。依赖：`python -m pip install -r baselines/B7/requirements.txt`。下面命令只有显式调用train才训练；本轮未执行真实ECG训练。
 
@@ -93,7 +93,7 @@ python -m baselines.B7.inference --checkpoint results/B7-T/B7_T_inference.pt --a
 python -m unittest discover -s baselines/B7/tests -v
 ```
 
-52项测试通过：原B7的24项核心行为、5项华为桥接检查、8项自动调度检查，以及15项Transformer检查（全采样分片、局部边界、全局长程依赖、变长/补齐、输出顺序、条件注入及U7权重拒绝）。额外使用正式15M参数模型完成40秒合成CPU反向传播和AdamW更新，全部参数梯度有限。完整120秒Heun16/K16的控制流沿用轻量速度场检查，不表示已完成正式网络GPU全量验证。
+58项测试通过：原B7的24项核心行为、5项华为桥接检查、10项自动调度检查、4项数据准备恢复检查，以及15项Transformer检查（全采样分片、局部边界、全局长程依赖、变长/补齐、输出顺序、条件注入及U7权重拒绝）。额外使用正式15M参数模型完成40秒合成CPU反向传播和AdamW更新，全部参数梯度有限。完整120秒Heun16/K16的控制流沿用轻量速度场检查，不表示已完成正式网络GPU全量验证。
 
 本分支已实现T；原U7仅保留在B7分支，UT7仍未实现。尚未进行真实训练或GPU验证，不保证T优于U7。详见[当前验证记录](../../docs/b7_t_validation.md)。
 
