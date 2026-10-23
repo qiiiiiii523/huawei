@@ -4,3 +4,9 @@ competition_interface/output.py -text
 competition_interface/evaluate.py -text
 competition_interface/preprocess.py -text
 baselines/B5_best_context/fir.py text eol=lf
+# Preserve the legacy V6 source-byte provenance on Windows and Linux checkouts.
+baselines/context_d6_v2/model.py -text
+baselines/context_d6_v3.py -text
+baselines/context_d6_v4.py -text
+baselines/context_d6_v5.py -text
+baselines/context_d6_v6.py -text

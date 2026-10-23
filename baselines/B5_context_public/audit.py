@@ -3,7 +3,6 @@ import argparse
 import csv
 import hashlib
 import json
-from collections import Counter
 from pathlib import Path
 from . import PROTOCOL
 
@@ -26,24 +25,33 @@ def partition(subjects):
 
 
 def inspect_header(path, root, minimum):
-    lines = [x.strip() for x in path.read_text(encoding="utf-8-sig").splitlines() if x.strip() and not x.startswith("#")]
+    lines = [x.strip() for x in path.read_text(encoding="utf-8-sig").splitlines()
+             if x.strip() and not x.lstrip().startswith("#")]
     first = lines[0].split()
     channels, fs, samples = int(first[1]), float(first[2]), int(first[3])
     signals = [s.split() for s in lines[1:1 + channels]]
-    if len(signals) != channels or fs != 1000 or samples < minimum * fs:
+    if (first[0] != path.stem or channels < 12 or len(signals) != channels or fs != 1000
+            or samples < minimum * fs or any(len(s) < 9 for s in signals)):
         raise ValueError("Incomplete header, non-1000Hz source, or shorter than minimum")
     names = [s[-1].lower() for s in signals]
     if any(names.count(lead) != 1 for lead in LEADS):
         raise ValueError("Missing/ambiguous canonical lead")
     sources = [path]
     for filename in sorted({s[0] for s in signals}):
+        file_signals = [s for s in signals if s[0] == filename]
+        if any(s[1] != "16" for s in file_signals):
+            raise ValueError("Only the PTB documented plain format16 layout is audited")
         p = (path.parent / filename).resolve()
         if not p.is_relative_to(root) or not p.is_file() or p.stat().st_size == 0:
             raise ValueError("Missing/empty/outside-root waveform")
+        if p.stat().st_size != samples * len(file_signals) * 2:
+            raise ValueError("Waveform byte length disagrees with format16 header")
         sources.append(p)
+    canonical_files = sorted({s[0] for s in signals if s[-1].lower() in LEADS})
     return dict(record_id=path.relative_to(root).with_suffix("").as_posix(), subject_id=path.parent.name,
                 seconds=samples / fs, header_sha256=sha(path),
-                sources=[str(p.relative_to(root).as_posix()) for p in sources])
+                sources=[str(p.relative_to(root).as_posix()) for p in sources],
+                canonical_sources=[(path.parent / name).relative_to(root).as_posix() for name in canonical_files])
 
 
 def make_pairs(records, split):
@@ -62,6 +70,10 @@ def make_pairs(records, split):
 
 def audit(root, output, minimum=10):
     root, output = Path(root).resolve(), Path(output).resolve()
+    if not isinstance(minimum, (float, int)) or not 0 < minimum < float("inf"):
+        raise ValueError("minimum must be finite and positive")
+    if output.is_relative_to(root):
+        raise ValueError("Audit output must be outside the read-only source root")
     if output.exists():
         raise FileExistsError("Choose a new audit output; source data are read-only")
     headers = sorted(root.glob("patient*/*.hea"))
@@ -74,8 +86,10 @@ def audit(root, output, minimum=10):
             row = inspect_header(path, root, minimum)
             digest = hashlib.sha256()
             for name in row["sources"]:
-                fingerprint = fingerprints.setdefault(name, sha(root / name))
-                if not name.endswith(".hea"):
+                if name not in fingerprints:
+                    fingerprints[name] = sha(root / name)
+                fingerprint = fingerprints[name]
+                if name in row["canonical_sources"]:
                     digest.update(fingerprint.encode())
             key = digest.hexdigest()
             if key in seen:
@@ -88,9 +102,10 @@ def audit(root, output, minimum=10):
     counts = {s: dict(patients=len({p["subject_id"] for p in pairs if p["split"] == s}),
                        targets=sum(p["split"] == s for p in pairs)) for s in ("train", "validation")}
     output.mkdir(parents=True)
-    if pairs:
-        with (output / "candidate_pairs.csv").open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(pairs[0])); w.writeheader(); w.writerows(pairs)
+    with (output / "candidate_pairs.csv").open("w", encoding="utf-8", newline="") as f:
+        fields = ["subject_id", "split", "target_record_id", "history_record_id", "target_seconds",
+                  "history_seconds", "target_weight", "history_policy"]
+        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(pairs)
     report = dict(protocol=PROTOCOL, completed=True, source_root=str(root), headers=len(headers),
         eligible_headers=len(records), counts=counts, rejected=rejected, records=records,
         patient_split=split, sources_sha256=fingerprints, training_started=False, training_ready=False,
