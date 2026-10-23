@@ -1744,7 +1744,7 @@
     },
     "PTB_db": {
       "sampled_records": 16,
-      "reader_note": "Local headers declare 15 but actual .dat stores first 12 standard leads. Read n_samples x 12, verify initial values and complete checksums for all 12 leads. Do not overwrite raw files. Naive 15-channel parsing is invalid.",
+      "reader_note": "Correction 2026-10-24: valid WFDB multi-file record, NOT malformed header. Standard12 stored in .dat; Frank3 stored in .xyz. Read by per-signal filename/channel mapping. Standard12 initial values and complete checksums verified. Raw files unchanged.",
       "summary_record_medians": {
         "III": {
           "mae_uV": 0.4469500000000013,
@@ -2394,8 +2394,11 @@
     "all_inferred_payload_channels_from_declared_samples_and_bytes": 12,
     "first12_initial_and_checksum_verified_records": 548,
     "raw_modified": false,
-    "warning": "Earlier header-only length audit does not establish direct WFDB loader compatibility; repaired cache reader required.",
+    "warning": "Earlier inference that a 15-channel header with a 12-channel .dat implied malformed data was incorrect: .hea maps Frank3 to a separate .xyz file.",
     "full_inventory_checked": 548,
-    "verification_errors": []
-  }
+    "verification_errors": [],
+    "layout_interpretation": "valid_WFDB_multifile_standard12_dat_plus_Frank3_xyz",
+    "header_repair_needed": false
+  },
+  "correction_date": "2026-10-24"
 }

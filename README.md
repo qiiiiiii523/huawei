@@ -1,8 +1,8 @@
 # B7：干净I直连的七通道条件Flow Matching
 
-本分支当前只保存B7设计与数据核查资料，未实现B7模型、权重迁移或训练入口。首轮B7-U7默认以B5兼容参数作部分迁移初始化；当前仓库中的B5运行命令仍对应旧模型。
+本分支已实现独立B7-U7模型、训练、数据准备、推理和打包入口。按用户最新要求，B7从随机参数开始，不继承或转换B5权重；后续阶段仅接受B7自己的checkpoint。尚未在真实数据上预训练或微调，没有B7性能结论。当前仓库中的B5运行命令仍对应旧模型。
 
-请先阅读[B7说明与实验顺序](baselines/B7/README.md)、[完整方案](docs/b7_plan.md)、[逐层结构](docs/b7_architecture.md)和[权重迁移决策](docs/b7_migration.md)。
+请先阅读[B7运行说明](baselines/B7/README.md)、[完整方案](docs/b7_plan.md)、[逐层结构](docs/b7_architecture.md)和[独立初始化决策](docs/b7_initialization.md)。
 
 ## 以下为继承的B5-final背景及公共底座说明
 
