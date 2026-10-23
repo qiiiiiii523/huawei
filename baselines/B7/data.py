@@ -21,7 +21,7 @@ def read_manifest(path):
     validate_scales(data["scales_uV"])
     if not data.get("records"):
         raise ValueError("Empty manifest")
-    seen, splits = set(), {}
+    seen, splits, targets = set(), {}, {}
     for row in data["records"]:
         required = ("record_id", "subject_id", "target_record_id", "source", "group", "path", "split", "input_reliable")
         if any(key not in row for key in required) or row["split"] not in ("train", "validation", "test"):
@@ -35,6 +35,11 @@ def read_manifest(path):
         if subject in splits and splits[subject] != row["split"]:
             raise ValueError("Patient leakage across splits")
         splits[subject] = row["split"]
+        target = row["target_record_id"]
+        owner = (subject, row["split"])
+        if target in targets and targets[target] != owner:
+            raise ValueError("Physical target leakage or inconsistent patient identity")
+        targets[target] = owner
         f = Path(row["path"])
         row["resolved_path"] = str((path.parent / f).resolve() if not f.is_absolute() else f.resolve())
     return data

@@ -6,6 +6,7 @@ import copy
 from dataclasses import asdict
 import hashlib
 import json
+import os
 from pathlib import Path
 import random
 import time
@@ -18,7 +19,7 @@ from . import ARCHITECTURE_ID, CHECKPOINT_VERSION, GENERATED_LEADS
 from .checkpoint import file_sha256, load_checkpoint, pack_rng, restore_rng, save_checkpoint
 from .config import LossConfig, ModelConfig, SamplingConfig, read_json
 from .data import WindowDataset, read_manifest
-from .evaluate import evaluate
+from .evaluate import SCORE_PROTOCOL, evaluate
 from .losses import flow_loss
 from .model import B7UNet
 
@@ -92,6 +93,7 @@ def train(args):
         raise FileExistsError("New stage needs a new output directory")
     if not any(r["split"] == "validation" for r in manifest["records"]):
         raise ValueError("Validation records required")
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     device = torch.device(args.device)
     random.seed(tr["seed"])
     np.random.seed(tr["seed"])
@@ -132,6 +134,7 @@ def train(args):
         return {"architecture_id": ARCHITECTURE_ID, "format_version": CHECKPOINT_VERSION,
                 "generated_leads": GENERATED_LEADS, "model_config": mc.to_dict(), "loss": asdict(lc),
                 "sampling": asdict(sc), "scales_uV": manifest["scales_uV"], "stage": cfg["stage"],
+                "score_protocol": SCORE_PROTOCOL,
                 "model": model.state_dict(), "ema": ema, "optimizer": optimizer.state_dict(),
                 "update": step, "best_r": best, "identity": identity, "rng": pack_rng(),
                 "initialization": initialization}
@@ -144,7 +147,9 @@ def train(args):
         won = metrics["r"] > best
         if won:
             best = metrics["r"]
-            save_checkpoint(output / "best_r.pt", payload())
+            best_payload = payload()
+            save_checkpoint(output / "best_r.pt", best_payload)
+            save_checkpoint(output / "best.pt", best_payload)
         save_checkpoint(output / "last.pt", payload())
         report = {"update": step, "validation": metrics, "train": training_parts, "new_best": won}
         with (output / "history.jsonl").open("a", encoding="utf-8") as h:
@@ -170,7 +175,9 @@ def train(args):
             for k, value in model.state_dict().items():
                 ema[k].mul_(tr["ema_decay"]).add_(value, alpha=1 - tr["ema_decay"])
         if step % tr["validate_every"] == 0 or step == tr["updates"]:
-            validate({k: float(v.detach()) for k, v in {"total": loss, **parts}.items()})
+            logged = {k: float(v.detach()) for k, v in {"total": loss, **parts}.items()}
+            logged["window_r"] = 1 - logged["pcc"] if logged["pcc_valid_leads"] else None
+            validate(logged)
     (output / "completed.json").write_text(json.dumps({"completed": True, "update": step,
         "best_r": best, "elapsed_seconds_this_invocation": time.monotonic() - started}), encoding="utf-8")
 

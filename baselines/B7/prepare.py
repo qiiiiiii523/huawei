@@ -198,7 +198,7 @@ def prepare(args):
     if not rows:
         raise ValueError("No input records")
     # Validate metadata and patient isolation before creating any output.
-    splits, ids = {}, set()
+    splits, ids, targets = {}, set(), {}
     for row in rows:
         required = ("record_id", "target_record_id", "subject_id", "source", "group", "path", "split", "input_reliable")
         if any(k not in row for k in required) or row["split"] not in ("train", "validation", "test"):
@@ -210,8 +210,17 @@ def prepare(args):
         if subject in splits and splits[subject] != row["split"]:
             raise ValueError("Patient leakage")
         splits[subject] = row["split"]
+        target = row["target_record_id"]
+        owner = (subject, row["split"])
+        if target in targets and targets[target] != owner:
+            raise ValueError("Physical target leakage or inconsistent patient identity")
+        targets[target] = owner
         if row["group"] in ("task1", "machine", "body") and "lead_mask" not in row:
             raise ValueError("Huawei index requires the established explicit12 QC mask")
+        if "lead_mask" in row:
+            qc = np.asarray(row["lead_mask"])
+            if qc.shape != (12,) or not np.isin(qc, [0, 1]).all():
+                raise ValueError("lead_mask must contain exactly12 boolean/0-1 values")
     output.mkdir(parents=True)
     (output / "records").mkdir()
     prepared = []
@@ -220,6 +229,8 @@ def prepare(args):
         raw_path = Path(row["path"])
         raw_path = (base / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
         anchor, target, fs, repair = read_raw(raw_path)
+        if not math.isfinite(fs) or fs <= 0:
+            raise ValueError("Sampling rate must be finite and positive")
         if target.ndim != 2 or target.shape[0] != 12 or anchor.shape != (1, target.shape[-1]):
             raise ValueError("Invalid raw signal shapes")
         mask = np.asarray(row.pop("lead_mask", np.isfinite(target).all(1)), dtype=bool)

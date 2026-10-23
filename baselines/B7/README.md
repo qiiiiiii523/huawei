@@ -45,6 +45,8 @@ python -m baselines.B7.train --manifest results/B7/data_huawei/manifest.json --c
 
 配置给出首轮起始预算(公开10秒10000更新，后续各1000更新)，未通过真实训练优化。新阶段新目录；同阶段恢复在原命令加`--resume`并移除`--init-checkpoint`。源码/预算/数据变化时拒绝精确resume。best_r含initial候选。
 
+`best.pt`与`best_r.pt`是相同的验证r最佳候选，两者均保存EMA；不按训练窗口r或总loss选best。日志中的`train.window_r`仅作训练监测。最终评分逐导联先平均同目标配对、再平均目标、最后平均11导联，保持原公共评分口径；未定义Pearson沿用原规则处理。
+
 ## 显式index合同
 
 JSON顶层为记录列表，每条有下列字段：
@@ -85,6 +87,6 @@ python -m baselines.B7.inference --checkpoint results/B7/B7_U7_inference.pt --an
 python -m unittest baselines.B7.tests.test_b7 -v
 ```
 
-已检查实际40秒形状、I直连/不加噪、中央PCC与整窗MAE、II计权、K16、公式和拼接、mask、B5拒绝、严格导出及合成优化/恢复。真实文件读取另抽查华为XML、PTB-XL、Chapman(含JS01052)及PTBDB。尚未训练真实模型或报告真实性能；UT7/T7仍仅方案。
+24项测试通过：实际40秒形状、I直连/不加噪、中央PCC与整窗MAE、II计权、完整120秒Heun16/K16控制流、公式和拼接、mask、B5拒绝、严格导出、合成优化/恢复，以及与原公共评分器的不同QC/重复配对一致性。真实文件读取另抽查华为XML、PTB-XL、Chapman(含JS01052)及PTBDB。尚未训练真实模型或报告真实性能；UT7/T7仍仅方案。详见[验证记录](../../docs/b7_validation.md)。
 
 文档：[完整方案](../../docs/b7_plan.md)、[逐层结构](../../docs/b7_architecture.md)、[从零初始化](../../docs/b7_initialization.md)。

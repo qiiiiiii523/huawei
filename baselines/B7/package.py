@@ -15,6 +15,7 @@ def export(source, destination):
     keep = ("architecture_id", "format_version", "generated_leads", "model_config", "loss", "sampling",
             "scales_uV", "stage", "ema", "initialization", "update", "best_r")
     payload = {k: value[k] for k in keep}
+    payload["score_protocol"] = value.get("score_protocol", "unspecified")
     payload["source_sha256"] = file_sha256(source)
     payload["target_used_at_inference"] = False
     save_checkpoint(destination, payload)

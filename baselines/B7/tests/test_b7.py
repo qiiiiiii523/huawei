@@ -234,17 +234,110 @@ class B7Tests(unittest.TestCase):
             args.resume = True
             trainer.train(args)
             a, b = load_checkpoint(root / "full/last.pt"), load_checkpoint(root / "interrupted/last.pt")
+            best = load_checkpoint(root / "full/best.pt")
+            best_r = load_checkpoint(root / "full/best_r.pt")
+            self.assertEqual(best["best_r"], best_r["best_r"])
+            self.assertEqual(best["update"], best_r["update"])
+            for key in best["ema"]:
+                self.assertTrue(torch.equal(best["ema"][key], best_r["ema"][key]))
+            history = [json.loads(line) for line in (root / "full/history.jsonl").read_text().splitlines()]
+            self.assertAlmostEqual(history[-1]["train"]["window_r"], 1 - history[-1]["train"]["pcc"])
             self.assertEqual(a["initialization"]["kind"], "random_B7")
             self.assertFalse(a["initialization"]["B5_weights_used"])
             self.assertEqual(a["best_r"], b["best_r"])
             for key in a["model"]:
                 self.assertTrue(torch.equal(a["model"][key], b["model"][key]), key)
 
-    def test_evaluation_counts_constant_predictions_and_group_weights(self):
-        self.assertEqual(pearson(np.ones(10), np.arange(10)), 0.)
-        rows = [{"group": g, "target_record_id": "a", "r": score} for g, score in
+    def test_evaluation_matches_undefined_rule_and_group_weights(self):
+        self.assertTrue(np.isnan(pearson(np.ones(10), np.arange(10))))
+        rows = [{"group": g, "target_record_id": "a", "r": score,
+                 "leads": {str(j): {"r": score} for j in range(1, 12)}} for g, score in
                 (("task1", .8), ("machine", .4), ("body", .2))]
         self.assertAlmostEqual(aggregate(rows, "huawei40")["r"], .55)
+
+    def test_QC_lead_macro_is_not_pair_available_lead_macro(self):
+        rows = [
+            {"group": "public", "target_record_id": "a", "leads": {str(j): {"r": 1.} for j in range(1, 12)}},
+            {"group": "public", "target_record_id": "b", "leads": {"1": {"r": 0.}}}
+        ]
+        self.assertAlmostEqual(aggregate(rows, "public10")["r"], 10.5 / 11)
+
+    def test_QC_score_matches_existing_scorer_with_repeated_pairs(self):
+        from ecg12gen.evaluate import evaluate_record_predictions
+        rng = np.random.default_rng(8)
+        time = np.arange(60000) / 500
+        a = np.stack([np.sin(time * (j + 2)) for j in range(12)])
+        b = np.stack([np.cos(time * (j + 3)) for j in range(12)])
+        qc_a, qc_b = np.ones(12, dtype=bool), np.ones(12, dtype=bool)
+        qc_b[2:6] = False
+        predictions, targets, qualities, metadata, rows = [], [], [], [], []
+        for i, (target_id, y, qc) in enumerate((("a", a, qc_a), ("a", a, qc_a), ("b", b, qc_b))):
+            p = y + (i + 1) * .3 * rng.normal(size=y.shape)
+            leads = {str(j): {"r": pearson(p[j], y[j])} for j in range(1, 12) if qc[j]}
+            rows.append({"group": "public", "target_record_id": target_id, "leads": leads})
+            for k in range(12):
+                predictions.append(p[:, k*5000:(k+1)*5000])
+                targets.append(y[:, k*5000:(k+1)*5000])
+                qualities.append(qc)
+                metadata.append({"pair_id": f"pair{i}", "target_record_id": target_id,
+                                 "subject_id": target_id, "start_sample_500hz": str(k * 5000),
+                                 "expected_window_count": "12"})
+        existing, _ = evaluate_record_predictions(np.stack(predictions), np.stack(targets), "task1", metadata,
+                                                   target_quality_mask=np.stack(qualities))
+        self.assertAlmostEqual(aggregate(rows, "public10")["r"], existing["r_missing11"], places=12)
+
+    def test_same_target_cannot_cross_patient_or_split(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = make_manifest(Path(d))
+            manifest = json.loads(path.read_text())
+            manifest['records'][1]['target_record_id'] = 'train'
+            path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, 'Physical target'):
+                read_manifest(path)
+
+    def test_prepare_rejects_nonbinary_QC_before_writing_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            path = make_manifest(root)
+            index = json.loads(path.read_text())['records']
+            index[0]['lead_mask'] = [0.5] * 12
+            ip = root/'bad_index.json'
+            ip.write_text(json.dumps(index))
+            args = Namespace(index=str(ip), output=str(root/'out'), public_source=None, root=None, scale_manifest=None)
+            with self.assertRaisesRegex(ValueError, 'boolean/0-1'):
+                prepare(args)
+            self.assertFalse((root/'out').exists())
+
+    def test_undefined_eval_pair_uses_established_skip_within_target_rule(self):
+        rows = [
+            {'group':'public', 'target_record_id':'a', 'leads':{str(j):{'r':None} for j in range(1,12)}},
+            {'group':'public', 'target_record_id':'a', 'leads':{str(j):{'r':0.7} for j in range(1,12)}}
+        ]
+        self.assertAlmostEqual(aggregate(rows, 'public10')['r'], 0.7)
+        with self.assertRaisesRegex(ValueError, 'No defined QC-eligible'):
+            aggregate(rows[:1], 'public10')
+
+    def test_full120_Heun16_K16_has_expected_calls_and_only7_states(self):
+        class Counter(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.marker = nn.Parameter(torch.tensor(0.))
+                self.calls = 0
+                self.q = None
+
+            def forward(self, state, time, anchor, metadata=None):
+                if self.calls % 512 == 0:
+                    self.q = anchor.clone()
+                if state.shape != (1,7,20000) or not torch.equal(anchor,self.q):
+                    raise AssertionError('I changed or seven-channel40s state violated')
+                self.calls += 1
+                return torch.zeros_like(state)
+        model = Counter().eval()
+        q = torch.sin(torch.arange(60000)/23)[None]
+        output = predict_record(model, q, [100.]*12, 'full_K16', config=SamplingConfig())
+        self.assertEqual(model.calls, 12 * 16 * 16 * 2)
+        self.assertTrue(torch.equal(output[:1],q))
+        self.assertEqual(output.shape,(12,60000))
 
     def test_prepare_uses_train_only_scale_and_freezes_for_next_stage(self):
         with tempfile.TemporaryDirectory() as d:
