@@ -14,6 +14,7 @@ from baselines.B5_slow120.model import visible_inputs, inputs
 from baselines.B5_slowlead.model import JointSlow, LeadDecoder, visible_batch
 from baselines.B5_slowlead.losses import objective
 from baselines.B5_slowlead import train
+from baselines.B5_slowlead.common import Records
 
 
 def fixture():
@@ -29,6 +30,30 @@ class ModelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
+
+    def test_float64_cache_and_scale_match_train_and_eval_input_contract(self):
+        data = fixture()
+        for k in ("anchor_uV", "global_i", "local_i", "numeric", "age_topcoded", "target_uV"):
+            data[k] = np.asarray(data[k], np.float64)
+        data["sex"] = np.asarray(data["sex"], np.uint8)
+        expected_types = {"anchor": torch.float32, "global_i": torch.float32,
+            "local_i": torch.float32, "numeric": torch.float32, "age_topcoded": torch.float32,
+            "sex": torch.int64, "field_mask": torch.bool}
+        m = JointSlow(dict(channels=8, heads=2, layers=1), window_batch=3).set_group("A").eval()
+        with tempfile.TemporaryDirectory() as directory:
+            for stored_anchor in (False, True):
+                if stored_anchor:
+                    data["anchor"] = data["anchor_uV"].reshape(1, 6000, 10).mean(-1) / np.float64(100.)
+                np.savez(Path(directory) / "one.npz", **data)
+                record = Records(directory, [dict(file="one.npz")], np.float64(100.))[0]
+                b = visible_batch(data, "cpu", np.float64(100.))
+                for k, dtype in expected_types.items():
+                    self.assertEqual(record[k].dtype, dtype)
+                    self.assertEqual(b[k].dtype, dtype)
+                    torch.testing.assert_close(record[k], b[k][0])
+                self.assertEqual(record["target_uV"].dtype, torch.float64)
+                with torch.no_grad():
+                    self.assertTrue(torch.isfinite(m(**b)).all())
 
     def test_abc_zero_init_reproduces_original_full_record(self):
         data = fixture()

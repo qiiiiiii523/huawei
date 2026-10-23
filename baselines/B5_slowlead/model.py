@@ -8,6 +8,15 @@ from baselines.B5_best.slow import SlowCNN, Block
 from baselines.B5_slow120 import FIELDS
 from baselines.B5_slow120.model import SlowCorrection, inputs as global_inputs
 
+VISIBLE_DTYPES = {"anchor": np.float32, "global_i": np.float32, "local_i": np.float32,
+                  "numeric": np.float32, "age_topcoded": np.float32,
+                  "sex": np.int64, "field_mask": np.bool_}
+
+
+def canonical_visible(data):
+    """Cache precision is independent of the float32 model input contract."""
+    return {k: np.asarray(data[k], dtype=dtype) for k, dtype in VISIBLE_DTYPES.items()}
+
 
 def local_native(model, anchor, fields, window_batch=2, checkpoint_blocks=False,
                  enable_decoder=True, ii_native=None):
@@ -126,4 +135,5 @@ def visible_batch(data, device, scale_i):
     else:
         anchor = np.asarray(data["anchor_uV"], np.float32).reshape(1, 6000, 10).mean(-1) / scale_i
     fields = {k: np.asarray(data[k]) for k in ("global_i", "local_i", *FIELDS)}
-    return {k: torch.from_numpy(np.asarray(v)[None].copy()).to(device) for k, v in {"anchor": anchor, **fields}.items()}
+    values = canonical_visible({"anchor": anchor, **fields})
+    return {k: torch.from_numpy(v[None].copy()).to(device) for k, v in values.items()}

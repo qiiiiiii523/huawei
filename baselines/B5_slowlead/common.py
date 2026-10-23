@@ -9,7 +9,7 @@ from baselines.B5_best.common import read, write, sha, state_sha
 from baselines.B5_slow120.common import load_study as load_source
 from baselines.B5_final.profile import BASE_SHA, BODY_SHA, SAMPLING
 from . import PROTOCOL
-from .model import JointSlow
+from .model import JointSlow, canonical_visible
 
 
 def code_sha():
@@ -85,4 +85,7 @@ class Records(Dataset):
             data = {k: np.asarray(z[k]).copy() for k in z.files if k != "anchor_uV"}
             if "anchor" not in data:
                 data["anchor"] = z["anchor_uV"].reshape(1, 6000, 10).mean(-1).astype(np.float32) / self.scale_i
+        # Cast after mean/division too: NumPy float64 scales may promote float32.
+        # Supervision arrays retain their original precision.
+        data.update(canonical_visible(data))
         return {k: torch.from_numpy(v) for k, v in data.items()}
