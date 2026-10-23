@@ -1,10 +1,20 @@
-# B5-final：当前选定最佳组合
+# B7：干净I直连的七通道条件Flow Matching
+
+本分支当前只保存B7设计与数据核查资料，未实现B7模型、权重迁移或训练入口。首轮B7-U7默认以B5兼容参数作部分迁移初始化；当前仓库中的B5运行命令仍对应旧模型。
+
+请先阅读[B7说明与实验顺序](baselines/B7/README.md)、[完整方案](docs/b7_plan.md)、[逐层结构](docs/b7_architecture.md)和[权重迁移决策](docs/b7_migration.md)。
+
+## 以下为继承的B5-final背景及公共底座说明
+
+下面的已有成绩、配置和命令属于原B5，不能当作已实现B7的运行方式或B7性能结果。
+
+### B5-final：原选定最佳组合
 
 主办方测试入口已接入：`python competition_main.py`，Windows构建后为 `B5Submit.exe`。逐人调用官方input/output接口，统一生成三个任务的39列CSV；模型、采样和context修正不变。服务器自测、权重搬迁和EXE打包步骤见 [官方测试与提交说明](docs/b5_official_submission.md)。官方4点样例仅支持 `--inspect-input`；完整推理必须有真实120秒I和两份选定.pt权重。
 
 使用入口和服务器命令见 [docs/b5_final.md](docs/b5_final.md)。固定 **新FM-best45＋P慢CNN＋d6 FIR25＋body适配seed43-best3**，Heun16/K16、推理seed42、慢β=0.75、body α=1。统一配置为 `configs/b5_final.json`，单条预测使用 `python -m baselines.B5_final.predict`，四组评估使用 `bash scripts/run_b5_final.sh --gpu 1`。
 
-已有服务器报告：Task1 r=0.70812168、Task2 r=0.70690564、平均r=0.70751366。两份服务器权重按SHA256固定；本机只整理代码，不包含.pt文件，也未重新训练。原B5-best及实验入口保留历史默认值，**当前分支请使用B5_final入口**。下面保留公共底座的历史说明。
+已有服务器报告：Task1 r=0.70812168、Task2 r=0.70690564、平均r=0.70751366。两份服务器权重按SHA256固定；本机只整理代码，不包含.pt文件，也未重新训练。原B5-best及实验入口保留历史默认值；上述B5_final入口仅用于原B5组合。下面保留公共底座的历史说明。
 
 # ECG-12 joint-anchor 公共主干
 
