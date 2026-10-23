@@ -27,6 +27,8 @@ tail -f /home/qht/huawei_B7/results/B7/auto_seed42/logs/P.log
 
 所有产物在`results/B7/auto_seed42`：`data`是缓存；`P/A/Q/B`各自保存best_r.pt、best.pt、last.pt及训练历史；`logs`是逐任务日志；`pipeline_status.json`记录任务完成、失败和依赖阻塞状态。
 
+`pipeline_status.json`的`training_results`统一汇总已成功阶段的最佳验证r、最佳/最后权重绝对路径及完成步数。训练完成判定还会核对completed、last和best的分数及身份一致性，并严格加载最佳模型；不会仅检查best文件存在。P/Q的r来自各自公开验证集，A/B来自同一华为验证口径，只有A/B用于路线效果比较。
+
 两个GPU时将`--gpu-b 0`改为`--gpu-b 1`；同卡并行显存不足时加`--max-train 1`。GPU编号须是分配给你的GPU；本脚本不会自动估算显存。仅查看依赖与命令、不创建缓存或训练，可在Python pipeline命令末尾加`--dry-run`。
 
 断线不需重启；总控结束或服务器重启后，重新执行同一段启动命令即可检查已完成任务并恢复有last.pt的中断训练。代码、配置、元数据与原始数据应保持不变；完成训练还会检查prepared数据hash。准备数据中途失败的半成品缓存、没有last.pt的训练目录会报错并保留，需先看日志解决问题，再使用新的`--output`目录重新开始，不自动删除。训练恢复从最近保存的验证checkpoint继续，不保证从中断的那一步继续。不是无条件自动重试或服务器开机自启动。

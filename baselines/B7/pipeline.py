@@ -5,6 +5,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -120,7 +121,17 @@ def validate_artifact(job):
         records = read_manifest(manifest)["records"]
         if identity.get("record_sha256") != {r["record_id"]: file_sha256(r["resolved_path"]) for r in records}:
             raise RuntimeError(f"{job.name}: completed run data changed")
-        load_checkpoint(job.artifact.parent / "best_r.pt")
+        best_path = job.artifact.parent / "best_r.pt"
+        best = load_checkpoint(best_path)
+        if (checkpoint.get("update") != value["update"] or best.get("identity") != identity
+                or not math.isfinite(value.get("best_r", float("nan")))
+                or best.get("best_r") != value["best_r"] or checkpoint.get("best_r") != value["best_r"]):
+            raise RuntimeError(f"{job.name}: completion, last and best checkpoints disagree")
+        from .checkpoint import model_from_checkpoint
+        model_from_checkpoint(best)  # Strictly validate the generated model's state tensors.
+        return {"best_r": value["best_r"], "best_checkpoint": str(best_path.resolve()),
+                "last_checkpoint": str((job.artifact.parent / "last.pt").resolve()),
+                "updates": value["update"]}
     elif job.module == "prepare":
         from .data import read_manifest
         value = read_manifest(job.artifact)
@@ -157,6 +168,7 @@ def run(args):
     state_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
     (output / "data").mkdir(exist_ok=True)
     status = {job.name: "pending" for job in jobs}
+    training_results = {}
     running = {}
     stopped = False
     def stop(signum, frame):
@@ -176,7 +188,9 @@ def run(args):
                 try:
                     if code:
                         raise RuntimeError(f"exit code {code}")
-                    validate_artifact(job)
+                    result = validate_artifact(job)
+                    if job.module == "train":
+                        training_results[name] = result
                     status[name] = "done"
                     print(f"[DONE] {name}", flush=True)
                 except Exception as exc:
@@ -197,7 +211,9 @@ def run(args):
                     continue
                 try:
                     if job.artifact.is_file():
-                        validate_artifact(job)
+                        result = validate_artifact(job)
+                        if job.module == "train":
+                            training_results[job.name] = result
                         status[job.name] = "done"
                         print(f"[REUSE] {job.name}", flush=True)
                         continue
@@ -219,7 +235,8 @@ def run(args):
                 except Exception as exc:
                     status[job.name] = "failed"
                     print(f"[FAILED] {job.name}: {exc}", flush=True)
-            summary = {"jobs": status.copy(), "success": all(v == "done" for v in status.values())}
+            summary = {"jobs": status.copy(), "success": all(v == "done" for v in status.values()),
+                       "training_results": training_results.copy()}
             temporary = output / "pipeline_status.json.tmp"
             temporary.write_text(json.dumps(summary, indent=2), encoding="utf-8")
             temporary.replace(output / "pipeline_status.json")

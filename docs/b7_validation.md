@@ -4,6 +4,8 @@
 
 ## 总控入口补充（2026-10-24）
 
+最终按用户逐项复核调度表，补齐统一分数/路径汇总：`pipeline_status.json.training_results`保存P/A/Q/B各自的best_r、best/last路径和步数。完成判定核对completed与last步数、best/last身份和分数，并strict加载最佳模型。新增A失败不影响Q/B及真实小模型权重完成一致性测试；全部37项测试通过。并行/失败调度仍使用模拟进程，未执行服务器GPU全流程。
+
 新增`python -m baselines.B7.pipeline`，自动调度四步数据准备及P/A/Q/B训练，最多两份GPU训练与一份CPU准备同时执行。支持独立日志、失败阻断依赖、进程锁、完成校验、复用成功缓存和已有last.pt恢复。只通过本地调度测试，尚未在真实服务器启动全流程。
 
 测试命令`python -m unittest discover -s baselines/B7/tests -v`共35项通过：新增6项检查真实任务图、恢复时移除旧初始化参数、半成品准备目录不覆盖、B在Q结束后立即启动且无需等待A、Q失败不影响A但阻断B、P失败阻断后续训练。调度并行测试使用模拟进程，没有执行真实GPU训练。
