@@ -37,6 +37,14 @@ tail -f /home/qht/huawei_B7_T/results/B7-T/auto_seed42/logs/P.log
 
 数据协议没有改变，现有B7 manifest及其冻结scale可以通过绝对路径交给单阶段train入口复用。自动pipeline默认在自身output/data里新建专用缓存；它不会自动导入其他run的缓存或权重。T不接受U7 checkpoint，必须重新从随机T训练P，后续为T的A/Q/B。
 
+## PTB-Diagnostic根目录副本处理
+
+B7-T的新运行已直接修复PTB自动索引，无需另外运行B7的补救脚本。只收集数据根目录下的`patient数字/记录.hea`。例如`patient279/s0533_re.hea`保留，根目录`s0533_re.hea`跳过；不把根目录名称当患者，也不删除原始文件。其他没有患者归属的根目录头文件同样排除。
+
+记录与target ID改为`ptbdb:patient279/s0533_re`，subject仍为`ptbdb:patient279`，划分仍使用原来的患者hash。若出现backup/patient279或patient279/子目录中的头文件，报错要求核对，不任意选副本。只有平铺头文件、没有患者目录的数据也会报错，不编造患者ID。
+
+正常pipeline启动已自动使用这项规则，不需要额外参数。`prepare_ptb.log`中的`[ptbdb-index]`及PTB manifest的`public_index_audit`会记录头文件总数、保留数和根目录排除名单。不要把用户报告的550份扫描数直接当作有效样本数；以实际患者目录索引结果为准。
+
 ## 数据准备中断后的核验恢复
 
 已同步B7@0113fbc：Chapman的JS23074等头文件可能把第一条信号描述粘在记录首行。读取器在内存中拆开，仍校验12导联完整性、初值和checksum，不改原始文件。B7-T已对本地真实JS23074读取通过。

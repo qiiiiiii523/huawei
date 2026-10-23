@@ -36,6 +36,8 @@ A先做：同一公开10秒候选P直接华为40秒。
 
 B后做：从同一P进行PTBDB40秒，再华为40秒。PTBDB按WFDB头的文件映射读取标准12导联(.dat)，额外Frank3在.xyz；它不是异常头文件。
 
+PTBDB自动索引只接收根目录下`patient数字/记录.hea`；根目录散落头文件（包括同名副本）记录后排除，不删除。记录ID使用`ptbdb:patient279/s0533_re`形式，subject及hash划分仍按患者目录。日志`[ptbdb-index]`与manifest的`public_index_audit`记录扫描数、保留数和排除名单；意外嵌套目录报错，不猜测患者身份。
+
 ```powershell
 python -m baselines.B7.prepare --public-source ptbdb --root 'C:/Users/Ashley/Desktop/HW/Data/PTB_db' --scale-manifest results/B7/data_public10/manifest.json --output results/B7/data_ptb40
 python -m baselines.B7.train --manifest results/B7/data_ptb40/manifest.json --config configs/b7_public40.json --init-checkpoint results/B7-T/public10_seed42/best_r.pt --output results/B7-T/public40_seed42 --device cuda
@@ -93,7 +95,7 @@ python -m baselines.B7.inference --checkpoint results/B7-T/B7_T_inference.pt --a
 python -m unittest discover -s baselines/B7/tests -v
 ```
 
-58项测试通过：原B7的24项核心行为、5项华为桥接检查、10项自动调度检查、4项数据准备恢复检查，以及15项Transformer检查（全采样分片、局部边界、全局长程依赖、变长/补齐、输出顺序、条件注入及U7权重拒绝）。额外使用正式15M参数模型完成40秒合成CPU反向传播和AdamW更新，全部参数梯度有限。完整120秒Heun16/K16的控制流沿用轻量速度场检查，不表示已完成正式网络GPU全量验证。
+65项测试通过：原B7的24项核心行为、5项华为桥接检查、10项自动调度检查、4项数据准备恢复、7项PTB索引检查，以及15项Transformer检查（全采样分片、局部边界、全局长程依赖、变长/补齐、输出顺序、条件注入及U7权重拒绝）。额外使用正式15M参数模型完成40秒合成CPU反向传播和AdamW更新，全部参数梯度有限。完整120秒Heun16/K16的控制流沿用轻量速度场检查，不表示已完成正式网络GPU全量验证。
 
 本分支已实现T；原U7仅保留在B7分支，UT7仍未实现。尚未进行真实训练或GPU验证，不保证T优于U7。详见[当前验证记录](../../docs/b7_t_validation.md)。
 

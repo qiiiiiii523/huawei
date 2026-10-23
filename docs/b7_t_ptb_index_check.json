@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-24",
+  "scope": "local PTB header indexing only; no model training",
+  "local_root": "C:\\Users\\Ashley\\Desktop\\HW\\Data\\PTB_db",
+  "audit": [
+    {
+      "source": "ptbdb",
+      "headers": 548,
+      "retained": 548,
+      "excluded_root_headers": [],
+      "policy": "only-direct-patient-number-records; root files excluded, not deleted",
+      "raw_data_modified": false
+    }
+  ],
+  "unique_records": 548,
+  "patients": 290,
+  "splits": {
+    "train": 454,
+    "test": 51,
+    "validation": 43
+  },
+  "patient_hash_assignments_unchanged": true,
+  "header_files_unchanged": true,
+  "server_case": "550 headers with patient279/s0533_re.hea and root s0533_re.hea was supplied by user; reproduced in temporary regression fixtures, not a remote scan"
+}

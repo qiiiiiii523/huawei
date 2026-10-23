@@ -9,11 +9,6 @@
       "sha256_lf": "9d4cdd9b587d89661a5af3ca6bcda9b3b50b712104d7e3c4c3f0ff8101835d02",
       "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7"
     },
-    "baselines/B7/prepare.py": {
-      "identical_to_source": true,
-      "sha256_lf": "118f83b98262b08f4d12a445af5ed9b55d0ed1bbec7cf58482c1d313aa23949a",
-      "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7"
-    },
     "baselines/B7/huawei_index.py": {
       "identical_to_source": true,
       "sha256_lf": "4732ecf540790cd5cfd6608dfbf7706a3f4fb0080f93c945ef4f3d8e5718cf60",
@@ -221,11 +216,12 @@
     "additional_T_retry_tests": 2
   },
   "review_tests": {
-    "total": 58,
+    "total": 65,
     "core": 24,
     "huawei_index": 5,
     "pipeline": 10,
     "preparation_recovery": 4,
+    "PTB_index": 7,
     "transformer": 15,
     "passed": true
   },
@@ -245,5 +241,16 @@
       "original_header_and_payload_unchanged": true
     }
   },
-  "model_training_loss_sampling_scoring_unchanged_from_T_commit_e5d3b3a": true
+  "model_training_loss_sampling_scoring_unchanged_from_T_commit_e5d3b3a": true,
+  "intentional_preparation_changes": {
+    "source_reader_baseline_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
+    "source_reader_baseline_sha256_lf": "118f83b98262b08f4d12a445af5ed9b55d0ed1bbec7cf58482c1d313aa23949a",
+    "current_prepare_sha256_lf": "6c8e6064d697dfdbc59b22af305f0d97c18fab1acb962787c3586caae308a7e5",
+    "change": "Integrate canonical PTB patient-directory indexing into standard prepare; exclude root headers, qualify physical IDs, preserve audit in manifest",
+    "policy_matches_B7_recovery_script_commit": "0ecdd045534140909e6e8cfe459d91e6d44893b1",
+    "existing_patient_hash_splits_unchanged": true,
+    "PTBXL_Chapman_index_rules_unchanged": true
+  },
+  "only_PTBDb_indexing_changed_from_c3b3fc0": true,
+  "PTB_index_check_report": "b7_t_ptb_index_check.json"
 }

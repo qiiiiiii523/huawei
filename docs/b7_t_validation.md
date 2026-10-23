@@ -14,7 +14,7 @@
 python -m unittest discover -s baselines/B7/tests -v
 ```
 
-共58项：继承B7的24项核心行为（模型实例替换为T）、5项华为索引桥接、10项自动调度、4项数据准备恢复，以及15项Transformer专门检查。全部通过。
+共65项：继承B7的24项核心行为（模型实例替换为T）、5项华为索引桥接、10项自动调度、4项数据准备恢复、7项PTB索引，以及15项Transformer专门检查。全部通过。
 
 - 原B7行为：40秒输出形状、直接I/不加噪、7维flow、整窗MAE/中央PCC、II权重、QC/mask、真实窗口、K16平均、拼接/肢体公式、评分器一致性、数据划分/scale冻结、checkpoint导出和精确训练恢复。
 - Transformer：patch包含完整采样且时间顺序正确；输出恢复采样/导联顺序；局部平移连接相邻窗口但不首尾循环；padding key被屏蔽且全空窗口有限；奇数token和短片段恢复原长度；40秒远端I可影响中央预测；时间及人口学条件有效；短长窗位置前缀一致；没有卷积骨干；U7权重明确拒绝。
@@ -27,7 +27,7 @@ python -m unittest discover -s baselines/B7/tests -v
 
 ## “其他规则不动”的对照证据
 
-相对源提交逐文件核查20个文件，包含数据读取/准备/华为桥接、flow、loss、肢体公式、推理、B7评分、原公共评分器、导出、依赖及metadata，内容完全相同（仅统一CRLF/LF后比较）。
+创建与前轮复核曾逐文件核对20个数据/训练协议文件。本轮只对prepare.py增加PTB规范患者目录索引，源读取器和数据恢复功能仍保留；其他19个公共协议文件维持前轮对照，具体差异及SHA见scope audit。模型、loss、flow、推理和评分没有更改。
 
 三份配置仅`model`字段不同，loss、sampling、training与stage逐项相同。LossConfig、SamplingConfig、TimeEmbedding及MetadataEncoder的AST与源B7相同。训练脚本去除模型类名及初始化来源标记的必要差异后，与源B7完全相同；未改AdamW/EMA、预算、采样概率或best选取逻辑。原噪声key协议也保留，以便架构比较使用相同种子条件。
 
@@ -60,3 +60,15 @@ Transformer本轮新增批处理隔离、同一patch内正负采样变化不被�
 新增prepare --resume及pipeline --retry-preparation，用原始记录逐条核验已有NPZ，保持一致缓存的字节/mtime，缺少的记录继续写入，内容冲突立即停止。仅允许准备阶段采用新修复；已有任意P/A/Q/B目录或完整manifest时不能用该选项绕过原校验。新增两项T侧测试检查重试只影响准备任务、所有训练阶段目录均会阻止准备重试。训练依赖与失败隔离仍通过原回归。
 
 完整58项测试通过（6.518秒）。未启动服务器训练、未修改原始数据和源B7工作树。服务器恢复条件及命令见[b7_server_data.md](b7_server_data.md)。这次改变读取器与数据准备运行方式，不改变模型任务、患者split、QC、scale计算、loss或评分协议。
+
+## PTB根目录重复头文件修复（2026-10-24）
+
+用户报告服务器550份头文件中，s0533_re同时出现在patient279和根目录。此前递归扫描将根目录当作患者路径，造成重复ID或错误患者归属。现将B7@0ecdd04补救脚本采用的规范目录策略直接接入T的标准public_index/prepare入口：只收集直接patient数字目录里的头文件；根目录头文件排除但不删除；意外深层路径报错，不猜测身份。
+
+record_id及target_record_id均包含患者目录，subject及原hash划分保留。日志输出索引统计，manifest保存public_index_audit供核验。相同患者的多条记录仍进入同一split；根目录副本不影响保留记录的排序、内容或划分。PTB-XL与Chapman规则不变。自动pipeline原prepare_ptb任务直接获益，不需要单独补救脚本。
+
+新增7项测试：根目录同名副本及无患者归属头文件被排除且不改写、患者hash不变、带患者记录身份、插入根副本不改变索引顺序、异常嵌套拒绝、纯平铺无患者拒绝、完整40秒prepare产生唯一训练记录并保留audit。全部65项测试通过（5.291秒）。
+
+本地PTB_db只读索引核查：548份头文件、548个唯一记录、290位患者，train454、validation43、test51，与原患者hash逐条一致，读取前后头文件SHA相同。服务器550份文件未远程重扫；用户报告的根副本情形由临时测试目录复现。详细结果见[b7_t_ptb_index_check.json](b7_t_ptb_index_check.json)。
+
+用户尚未运行T，因此更新代码后从正常T入口准备新数据即可。模型、配置、loss、训练、K16与评分相对c3b3fc0均未改变；源B7正在使用的代码没有修改。

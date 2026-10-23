@@ -141,14 +141,43 @@ def read_raw(path):
     raise ValueError("Expected .hea, .xml or raw-uV .npz")
 
 
-def public_index(source, root):
+def _ptbdb_record_paths(root):
+    """Only the canonical patient-number directories establish PTB identity."""
+    paths = sorted(root.rglob("*.hea"))
+    retained, excluded = [], []
+    for path in paths:
+        relative = path.relative_to(root)
+        if len(relative.parts) == 2 and re.fullmatch(r"patient\d+", relative.parts[0]):
+            retained.append(path)
+        elif len(relative.parts) == 1:
+            excluded.append(relative.as_posix())
+        else:
+            raise ValueError(f"Unexpected nested PTB header; review rather than guess: {relative}")
+    if not retained:
+        raise ValueError("No PTB records found in patient-number directories; expected patientNNN/record.hea")
+    audit = {"source": "ptbdb", "headers": len(paths), "retained": len(retained),
+             "excluded_root_headers": excluded,
+             "policy": "only-direct-patient-number-records; root files excluded, not deleted",
+             "raw_data_modified": False}
+    print("[ptbdb-index] " + json.dumps(audit, ensure_ascii=False), flush=True)
+    return retained, audit
+
+
+def public_index(source, root, index_audit=None):
+    root = Path(root).resolve()
     if source == "public10":
-        return public_index("ptbxl", root / "PTB-XL") + public_index("chapman", root / "Chapman_Shaoxing_Ningbo")
+        return (public_index("ptbxl", root / "PTB-XL", index_audit)
+                + public_index("chapman", root / "Chapman_Shaoxing_Ningbo", index_audit))
     rows = []
     if source == "ptbxl":
         with (root / "ptbxl_database.csv").open(encoding="utf-8-sig", newline="") as h:
             entries = list(csv.DictReader(h))
         records = [(root / (r["filename_hr"] + ".hea"), r) for r in entries]
+    elif source == "ptbdb":
+        paths, audit = _ptbdb_record_paths(root)
+        records = [(p, {}) for p in paths]
+        if index_audit is not None:
+            index_audit.append(audit)
     else:
         records = [(p, {}) for p in sorted(root.rglob("*.hea"))]
     for path, info in records:
@@ -186,8 +215,9 @@ def public_index(source, root):
             except (ValueError, TypeError):
                 pass
         mask[1] = sex is not None
-        rows.append({"record_id": f"{source}:{path.stem}", "subject_id": f"{source}:{patient}",
-                     "target_record_id": f"{source}:{path.stem}", "split": split, "source": source,
+        identity = f"{patient}/{path.stem}" if source == "ptbdb" else path.stem
+        rows.append({"record_id": f"{source}:{identity}", "subject_id": f"{source}:{patient}",
+                     "target_record_id": f"{source}:{identity}", "split": split, "source": source,
                      "group": source, "path": str(path.resolve()), "input_reliable": True,
                      "metadata": {"numeric": numeric, "sex": sex if sex is not None else 2,
                                   "field_mask": mask, "age_topcoded": [topcoded]}})
@@ -201,13 +231,14 @@ def prepare(args):
         raise FileExistsError("Use a new cache directory; raw data are never modified")
     if resume and (output / "manifest.json").exists():
         raise FileExistsError("Cache is complete; reuse its manifest instead of resuming preparation")
+    index_audit = []
     if args.index:
         rows = read_json(args.index)
         if not isinstance(rows, list):
             raise ValueError("Index must be a list of record metadata")
         base = Path(args.index).resolve().parent
     else:
-        rows = public_index(args.public_source, Path(args.root).resolve())
+        rows = public_index(args.public_source, Path(args.root).resolve(), index_audit)
         base = Path(args.root).resolve()
     if not rows:
         raise ValueError("No input records")
@@ -299,6 +330,8 @@ def prepare(args):
     manifest = {"protocol": DATA_PROTOCOL, "sample_rate": 500, "scales_uV": scales,
                 "scale_source": str(Path(args.scale_manifest).resolve()) if args.scale_manifest else "fit_train_only_this_manifest",
                 "B5_weights_used": False, "records": prepared}
+    if index_audit:
+        manifest["public_index_audit"] = index_audit
     path = output / "manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     read_manifest(path)
