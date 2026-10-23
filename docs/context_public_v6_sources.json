@@ -1,0 +1,26 @@
+{
+  "source": "analysis/context_review_20261017/huawei-d6-context",
+  "policy": "byte-identical models; no legacy data/runtime/scoring copied",
+  "files": [
+    {
+      "file": "baselines/context_d6_v2/model.py",
+      "sha256": "6969c25a8c539ad69b72f1e34a6d284c465188ae8a1412f098d9099cb300f26b"
+    },
+    {
+      "file": "baselines/context_d6_v3.py",
+      "sha256": "42bc6122e5e02e461fd9f19b45de96a64d395a61df2c51f95d8011b6bb3ac40c"
+    },
+    {
+      "file": "baselines/context_d6_v4.py",
+      "sha256": "a8a731a7cef2344395e6229b00654c7f70b836e606ae44414f83b11449db7234"
+    },
+    {
+      "file": "baselines/context_d6_v5.py",
+      "sha256": "a0d9b63be182d514d920004c41df12952962722d2d22823b9313536e913923b0"
+    },
+    {
+      "file": "baselines/context_d6_v6.py",
+      "sha256": "33baa822e12d68f0c99e5536f09bf1fac7be9a1486bb15e280ff191327e0ad1f"
+    }
+  ]
+}

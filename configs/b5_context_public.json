@@ -1,0 +1,33 @@
+{
+  "protocol": "B5-machine-context-public-v1",
+  "implementation_stage": "audit_and_legacy_model_reuse",
+  "training_ready": false,
+  "source_git_commit": "69bc40f66f2e61dcd4075e9aa0b4031de9418a48",
+  "arms": ["control", "context_public"],
+  "internal_architecture": "legacy_context_d6_v6",
+  "route": "ecg_machine_d6_only",
+  "unchanged_routes": ["watch_ecg", "body_scale_d6"],
+  "sampling": {"solver": "heun", "steps": 16, "samples": 16, "seed": 42},
+  "slow_beta": 0.75,
+  "selection": "machine_full120_hybrid_r",
+  "deployment_metric": "0.5*task1_r+0.25*machine_r+0.25*body_r",
+  "public_pairing": {
+    "source": "PTB_Diagnostic",
+    "split_seed": 42,
+    "minimum_seconds": 10,
+    "same_subject": true,
+    "different_physical_record": true,
+    "one_history_per_target": true,
+    "target_sampling": "physical_target_uniform",
+    "history_leads": ["I", "II", "III", "aVR", "aVL", "aVF"],
+    "target_leads": ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
+  },
+  "fixed_components": ["P", "G120", "beta", "normalization_scales", "terminal_context_rules"],
+  "trainable_components": ["FM", "V6_history_encoder", "V6_injection_modules"],
+  "history_diagnostics": {
+    "variants": ["correct", "shuffled_same_device", "disabled"],
+    "change_only_internal_history": true,
+    "terminal_history": "correct_and_unchanged"
+  },
+  "excluded_experiments": ["position_scan", "encoder_scan", "Huawei_only_V6_repeat", "third_training_arm"]
+}
