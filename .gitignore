@@ -7,6 +7,8 @@ check_results/
 *.pt
 *.pth
 *.ckpt
+!models/
+!models/body_c3_seed42_best.pt
 __pycache__/
 *.py[cod]
 .pytest_cache/

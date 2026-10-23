@@ -18,47 +18,40 @@ FM + P 基础生成
 
 ## 必须使用同一套 B5-1022 权重
 
-需要四项路径：
+脚本内置当前 B5-1022 的四项已核实路径：
 
 |参数|应填写的内容|
 |---|---|
-|`--slow-run`|含 `study.json` 的 B5-1022 `shared/` 目录|
-|`--g120-checkpoint`|该 study 对应的 `G120/best.pt`|
-|`--c3-cache`|生成当前最佳 C3 时使用的 `cache/` 目录|
-|`--c3-checkpoint`|当前最佳 C3 的 `best.pt`|
+|资源|默认位置|
+|---|---|
+|`shared/`|`/home/qht/huawei/results/B5-final-exp-slow120/run_20261021_140544_2522863/shared`|
+|G120|`/home/qht/huawei/results/B5-final-exp-slow120/run_20261021_140544_2522863/G120/best.pt`|
+|G120-C3 特征缓存|`/home/qht/huawei/results/B5-1022/g120_c3_seed42_20261022_195813/cache`|
+|C3 权重|本仓库的 `models/body_c3_seed42_best.pt`|
 
-`c3-cache` 与 `c3-checkpoint` 必须来自同一 B5-1022 C3 实验。脚本会校验缓存和权重协议；不应为了运行方便改用旧 B5-final 的 body 权重。
+`c3-cache` 必须对应本次冻结的 G120 `best.pt`，其中保存了将 C3 应用于该 G120 输出所需的可见历史特征。`c3-checkpoint` 可以是协议兼容、预先确定的 C3 权重（例如当前 B5-1022 所用的 `body_c3_seed42_best.pt`）；它不需要与这个 G120 特征缓存来自同一目录。脚本会校验 G120 缓存和 C3 权重协议，不能改用旧的非 C3 `body.pt`。
 
 ## 先做同噪声的独立/成对对照
 
-在服务器 B5-1022 工作树、BioFlow 环境中定义当前最佳模型的实际路径：
+在服务器 B5-1022 工作树、BioFlow 环境中直接运行即可。仅在服务器路径改变时，才通过参数覆盖默认值。
 
 ```bash
 cd /home/qht/huawei_B5_1022
 conda activate BioFlow
-
-slow_run=/home/qht/huawei/results/B5-final-exp-slow120/run_20261021_140544_2522863/shared
-g120=/home/qht/huawei/results/B5-final-exp-slow120/run_20261021_140544_2522863/G120/best.pt
-c3_cache=/填写当前B5-1022最佳C3对应的cache目录
-c3=/填写当前B5-1022最佳C3的best.pt
 ```
 
 先运行独立 K16（这是新噪声组的对照）：
 
 ```bash
 bash scripts/run_b5_1022_noise_probe.sh \
-  --gpu 1 --mode independent --noise-scale 1.0 --noise-seed 42 \
-  --slow-run "$slow_run" --g120-checkpoint "$g120" \
-  --c3-cache "$c3_cache" --c3-checkpoint "$c3"
+  --gpu 1 --mode independent --noise-scale 1.0 --noise-seed 42
 ```
 
 完成后才运行相同 seed 的成对 K16：
 
 ```bash
 bash scripts/run_b5_1022_noise_probe.sh \
-  --gpu 1 --mode antithetic --noise-scale 1.0 --noise-seed 42 \
-  --slow-run "$slow_run" --g120-checkpoint "$g120" \
-  --c3-cache "$c3_cache" --c3-checkpoint "$c3"
+  --gpu 1 --mode antithetic --noise-scale 1.0 --noise-seed 42
 ```
 
 每轮最终读：

@@ -8,10 +8,10 @@ gpu=1
 mode=
 scale=1.0
 noise_seed=42
-slow_run=
-g120=
-c3_cache=
-c3=
+slow_run=/home/qht/huawei/results/B5-final-exp-slow120/run_20261021_140544_2522863/shared
+g120=/home/qht/huawei/results/B5-final-exp-slow120/run_20261021_140544_2522863/G120/best.pt
+c3_cache=/home/qht/huawei/results/B5-1022/g120_c3_seed42_20261022_195813/cache
+c3="$root/models/body_c3_seed42_best.pt"
 output=
 
 while (($#)); do
@@ -23,7 +23,7 @@ while (($#)); do
     --noise-seed) noise_seed="$2"; shift 2 ;;
     --slow-run) slow_run="$2"; shift 2 ;;
     --g120-checkpoint) g120="$2"; shift 2 ;;
-    --c3-cache) c3_cache="$2"; shift 2 ;;
+  --c3-cache) c3_cache="$2"; shift 2 ;;
     --c3-checkpoint) c3="$2"; shift 2 ;;
     --output) output="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
@@ -33,7 +33,10 @@ done
 [[ "$gpu" =~ ^[0-9]+$ ]] || { echo "--gpu must be a physical GPU index" >&2; exit 2; }
 [[ "$mode" == independent || "$mode" == antithetic ]] || { echo "--mode independent|antithetic is required" >&2; exit 2; }
 for value in "$slow_run" "$g120" "$c3_cache" "$c3"; do
-  [[ -n "$value" ]] || { echo "--slow-run, --g120-checkpoint, --c3-cache and --c3-checkpoint are required" >&2; exit 2; }
+  [[ -n "$value" ]] || { echo "A required B5-1022 path is empty" >&2; exit 2; }
+done
+for value in "$slow_run/study.json" "$g120" "$c3_cache/cache.json" "$c3"; do
+  [[ -f "$value" ]] || { echo "Required B5-1022 asset is missing: $value" >&2; exit 1; }
 done
 [[ -n "$output" ]] || output="$repository/results/B5-1022/noise_probes/${mode}_scale${scale//./p}_seed${noise_seed}_$(date +%Y%m%d_%H%M%S)"
 [[ ! -e "$output" ]] || { echo "Use a new output directory: $output" >&2; exit 1; }

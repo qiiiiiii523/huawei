@@ -300,7 +300,8 @@ def main() -> None:
     parser.add_argument("--repository-root", default="/home/qht/huawei")
     parser.add_argument("--slow-run", required=True, help="B5-1022 shared slow120 study directory")
     parser.add_argument("--g120-checkpoint", required=True)
-    parser.add_argument("--c3-cache", required=True, help="Cache paired with the selected B5-1022 C3 checkpoint")
+    parser.add_argument("--c3-cache", required=True,
+                        help="Completed G120/C3 feature cache for the selected frozen G120 checkpoint")
     parser.add_argument("--c3-checkpoint", required=True)
     parser.add_argument("--output", required=True, help="Must not already exist")
     parser.add_argument("--mode", choices=("independent", "antithetic"), required=True)
