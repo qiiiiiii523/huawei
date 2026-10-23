@@ -1,0 +1,60 @@
+{
+  "source_bundle_sha256": "990f5d95312dba0ab3e4bde416ee15d3b464b902fc63601aab1f852d9881f6f8",
+  "package_sha256": "961aad3b8212bef020103de9be02471a50bb5d00905ec9e6ee2f39aefb919bc1",
+  "fm_state_sha256": "990e92e30f5255046c6aa73ab55f1ef4e22fc814a05f4fc92c14457bd6d35651",
+  "original_ema_exact_match": true,
+  "no_slow_payload": true,
+  "tests_run": 13,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "torch": "2.14.1+cpu",
+  "seconds": 0.729706600002828,
+  "optimizer_updates": 0,
+  "real_ecg_performance_evaluated": false,
+  "real_model_smoke": {
+    "kind": "real_selected_EMA_synthetic_input_10s",
+    "seconds": 25.528021599995554,
+    "shape": [
+      1,
+      12,
+      5000
+    ],
+    "finite": true,
+    "weights_unchanged": true,
+    "anchor_unchanged": true,
+    "no_slow_modules_imported": true,
+    "sampling": {
+      "seed": 42,
+      "solver": "heun",
+      "steps": 16,
+      "samples": 16,
+      "noise_mode": "antithetic",
+      "noise_scale": 1.0,
+      "pair_order": "z0,-z0,z1,-z1,...,z7,-z7",
+      "key_policy": "B5-v1|seed|record_key:window_start_sample|pair_index"
+    },
+    "not_performance_evaluation": true
+  },
+  "standalone_full120_smoke": {
+    "kind": "standalone_zip_full120_synthetic_I",
+    "seconds": 312.4122067999997,
+    "shape": [
+      11,
+      60000
+    ],
+    "finite": true,
+    "observed_I_exact": true,
+    "no_slow_or_context_code_in_release": true,
+    "no_slow_modules_imported": true,
+    "fast_array_sha256": "cc7ffdcf7212b6ec178794be6d318e2cb53232029631cf6eab9e025c1b4a44e4",
+    "optimizer_updates": 0,
+    "not_performance_evaluation": true
+  },
+  "verified_release": {
+    "sha256": "a37a27b724f741af2bda669e7dc808d1e897594188795ff99e9c22a41efd0ed9",
+    "file_count": 21,
+    "all_release_sources_match_current_worktree": true,
+    "slow_model_included": false
+  }
+}

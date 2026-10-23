@@ -1,0 +1,41 @@
+{
+  "protocol": "B5-fast-frozen-v1",
+  "source_branch": "B5-1022",
+  "source_commit": "69bc40f",
+  "source_bundle_sha256": "990f5d95312dba0ab3e4bde416ee15d3b464b902fc63601aab1f852d9881f6f8",
+  "source_fm_checkpoint_sha256": "74a5e401233c1593b5d7b22da48510a5539e0c65befec5e3daa270809d7e2603",
+  "fm_state_sha256": "990e92e30f5255046c6aa73ab55f1ef4e22fc814a05f4fc92c14457bd6d35651",
+  "fm_candidate": "FM_P_best45",
+  "fm_epoch": 45,
+  "checkpoint": "models/b5_fast.pt",
+  "sampling_rate_hz": 500,
+  "record_samples": 60000,
+  "window_samples": 5000,
+  "sampling": {
+    "seed": 42,
+    "solver": "heun",
+    "steps": 16,
+    "samples": 16,
+    "noise_mode": "antithetic",
+    "noise_scale": 1.0,
+    "pair_order": "z0,-z0,z1,-z1,...,z7,-z7",
+    "key_policy": "B5-v1|seed|record_key:window_start_sample|pair_index"
+  },
+  "decomposition": {
+    "protocol": "B5-fullrecord-ma501-edge-v1",
+    "width_samples": 501,
+    "padding": "edge",
+    "filter_after_full_record_stitching": true,
+    "definition": "fast = full_fm_missing11 - moving_average501(full_fm_missing11)"
+  },
+  "slow_interface": {
+    "protocol": "B5-slow-additive-uV-v1",
+    "lead_order": ["II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"],
+    "shape": [11, 60000],
+    "unit": "uV",
+    "coefficient": 1.0,
+    "implemented_model": false
+  },
+  "trainable": false,
+  "context_enabled": false
+}
