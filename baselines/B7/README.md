@@ -13,6 +13,8 @@
 
 ## 环境与首阶段
 
+**自动完整运行**：`python -m baselines.B7.pipeline --data-root /home/qht/huawei/data --metadata /home/qht/huawei/metadata --ptb-root /home/qht/huawei/data/PTB-Diagnostic`一次执行所有准备与P→(A，Q→B)训练，默认GPU0并行最多两份训练。完整tmux启动、日志、恢复及范围说明见[服务器一键操作](../../docs/b7_server_data.md)。以下单阶段命令仍可单独使用。
+
 从仓库根目录运行。依赖：`python -m pip install -r baselines/B7/requirements.txt`。下面命令只有显式调用train才训练；本轮未执行真实ECG训练。
 
 先把两个短窗公开集一起准备为B7缓存，自动使用PTB-XL的patient/fold和Chapman按患者固定划分，scale只从train拟合：

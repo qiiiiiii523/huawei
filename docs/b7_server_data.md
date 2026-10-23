@@ -2,6 +2,35 @@
 
 服务器已知路径：代码`/home/qht/huawei_B7`，数据`/home/qht/huawei/data`，旧元数据`/home/qht/huawei/metadata`，环境`BioFlow`。下面只准备数据，不启动训练。
 
+## 推荐：一次启动准备与全部训练
+
+更新到含`baselines/B7/pipeline.py`的B7代码后，不必逐条执行下方prepare。在服务器复制执行下面整段。它会启动真实训练，默认同一张GPU 0最多并行两个训练进程；单个准备进程与训练可重叠。使用独立的`auto_seed42/data`缓存，不读取其他目录的半成品。
+
+```bash
+conda activate BioFlow
+cd /home/qht/huawei_B7
+mkdir -p results/B7/auto_seed42
+tmux new-session -d -s B7_auto "cd /home/qht/huawei_B7 && '$(command -v python)' -u -m baselines.B7.pipeline --data-root /home/qht/huawei/data --metadata /home/qht/huawei/metadata --ptb-root /home/qht/huawei/data/PTB-Diagnostic --output results/B7/auto_seed42 --gpu-p 0 --gpu-a 0 --gpu-b 0 > results/B7/auto_seed42/pipeline.log 2>&1"
+```
+
+启动器使用当前BioFlow的Python绝对路径，不依赖tmux旧服务的conda环境。tmux会话已存在时命令拒绝重复启动。总控还对同一输出目录加进程锁，避免多个调度器同时写同一权重。
+
+流程：索引及公开缓存准备→P；公开缓存完成后也准备PTB和华为缓存；P与对应数据均完成后启动A/Q；Q成功后启动B，无需等A。失败仅阻止后代依赖，独立路线继续。每个训练正常返回且有正确completed.json及可加载最佳权重才启动后继，不以best文件出现作为完成信号。
+
+```bash
+# 查看总控进度；Ctrl+C仅退出查看日志
+tail -f /home/qht/huawei_B7/results/B7/auto_seed42/pipeline.log
+
+# 查看训练细节（P/A/Q/B）
+tail -f /home/qht/huawei_B7/results/B7/auto_seed42/logs/P.log
+```
+
+所有产物在`results/B7/auto_seed42`：`data`是缓存；`P/A/Q/B`各自保存best_r.pt、best.pt、last.pt及训练历史；`logs`是逐任务日志；`pipeline_status.json`记录任务完成、失败和依赖阻塞状态。
+
+两个GPU时将`--gpu-b 0`改为`--gpu-b 1`；同卡并行显存不足时加`--max-train 1`。GPU编号须是分配给你的GPU；本脚本不会自动估算显存。仅查看依赖与命令、不创建缓存或训练，可在Python pipeline命令末尾加`--dry-run`。
+
+断线不需重启；总控结束或服务器重启后，重新执行同一段启动命令即可检查已完成任务并恢复有last.pt的中断训练。代码、配置、元数据与原始数据应保持不变；完成训练还会检查prepared数据hash。准备数据中途失败的半成品缓存、没有last.pt的训练目录会报错并保留，需先看日志解决问题，再使用新的`--output`目录重新开始，不自动删除。训练恢复从最近保存的验证checkpoint继续，不保证从中断的那一步继续。不是无条件自动重试或服务器开机自启动。
+
 ## 输入口径
 
 原B5数据集的逐点监督anchor是同步d12目标记录里的I；手表/d6是独立采集的context，不与d12逐点同步。B7取消context分支以后，本入口仍使用同步d12的I。输出index明确标记`anchor_source=same_record_target_I`和`original_context_used=false`，不把手表或d6信号伪装成同步输入，也不声称已完成这些设备真实I的部署评估。
@@ -54,4 +83,4 @@ python -m baselines.B7.prepare \
 - `results/B7/data_ptb40/manifest.json`：PTBDB真实长记录，40秒训练只选长度足够的记录，不把短记录拼接变长。
 - `results/B7/data_huawei/manifest.json`：完整120秒记录，训练取40秒窗口、验证中央核心拼接120秒。
 
-第2步和第3～4步可以在第1步成功后并行；公开P训练也只依赖第1步。后续训练依赖图仍为P结束后启动A与Q，Q结束后启动B。该文档没有实现训练调度器；不得把已有best文件出现当成前一训练阶段已完成。
+公开P训练只依赖第1步。后续训练依赖图仍为P结束后启动A与Q，Q结束后启动B。上面的pipeline入口已经实现这些准备与训练依赖，不需要人工等待。
