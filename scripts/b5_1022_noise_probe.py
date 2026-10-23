@@ -238,11 +238,15 @@ def evaluate_b5_1022(args, base_dir: Path, base_score: dict) -> dict:
                     if cached is None:
                         raise ValueError("C3 cache lacks validation body pair: " + row["pair_id"])
                     with np.load(Path(args.c3_cache) / cached["file"], allow_pickle=False) as arrays:
-                        if not np.array_equal(anchor, arrays["anchor"]):
+                        # The slow120 record stores I as [1, T]; the C3 cache
+                        # stores the same physical I as [T].  Compare values
+                        # after this intentional representation change.
+                        c3_anchor = np.asarray(arrays["anchor"], np.float32)
+                        if not np.array_equal(anchor.reshape(-1), c3_anchor):
                             raise ValueError("C3 cache anchor differs from frozen B5-1022 study")
                         corrected_ii, _, _ = c3.predict_ii_features(
-                            arrays["anchor"], corrected[1], arrays["beat"], arrays["stats"], arrays["available"])
-                    enhanced = transform(corrected, anchor, corrected_ii, projection=True, scope="five")
+                            c3_anchor, corrected[1], arrays["beat"], arrays["stats"], arrays["available"])
+                    enhanced = transform(corrected, c3_anchor, corrected_ii, projection=True, scope="five")
                     status = {"adapter": "G120_C3", "history_record_id": cached.get("history_visible_sha256", "")}
                 else:
                     history = provider(row) if task == "task2" and row["input_type"] == "ecg_machine_d6" else None
