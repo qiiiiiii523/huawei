@@ -151,6 +151,17 @@ def public_index(source, root):
         records = [(root / (r["filename_hr"] + ".hea"), r) for r in entries]
     else:
         records = [(p, {}) for p in sorted(root.rglob("*.hea"))]
+    if source == "ptbdb":
+        canonical = []
+        for path, info in records:
+            relative = path.relative_to(root)
+            if len(relative.parts) == 1:
+                print(f"[index] exclude root-level PTB header: {relative}", flush=True)
+                continue
+            if len(relative.parts) != 2 or not re.fullmatch(r"patient\d+", relative.parts[0]):
+                raise ValueError(f"Unexpected PTB header location; review required: {path}")
+            canonical.append((path, info))
+        records = canonical
     for path, info in records:
         patient = str(info.get("patient_id", path.parent.name if source == "ptbdb" else path.stem))
         if source == "ptbxl":
@@ -186,8 +197,9 @@ def public_index(source, root):
             except (ValueError, TypeError):
                 pass
         mask[1] = sex is not None
-        rows.append({"record_id": f"{source}:{path.stem}", "subject_id": f"{source}:{patient}",
-                     "target_record_id": f"{source}:{path.stem}", "split": split, "source": source,
+        identity = f"{patient}/{path.stem}" if source == "ptbdb" else path.stem
+        rows.append({"record_id": f"{source}:{identity}", "subject_id": f"{source}:{patient}",
+                     "target_record_id": f"{source}:{identity}", "split": split, "source": source,
                      "group": source, "path": str(path.resolve()), "input_reliable": True,
                      "metadata": {"numeric": numeric, "sex": sex if sex is not None else 2,
                                   "field_mask": mask, "age_topcoded": [topcoded]}})

@@ -7,12 +7,26 @@ import unittest
 import numpy as np
 
 from baselines.B7 import D12_LEADS
-from baselines.B7.prepare import prepare, read_wfdb
+from baselines.B7.prepare import prepare, read_wfdb, public_index
 from baselines.B7.pipeline import command_for, Job, preparation_only_retry_allowed
 from baselines.B7.tests.test_b7 import make_manifest
 
 
 class PreparationRecoveryTests(unittest.TestCase):
+    def test_default_PTB_index_excludes_root_copy_without_patient_leakage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for patient in ('patient001','patient279'):
+                folder=root/patient
+                folder.mkdir()
+                (folder/'s0533_re.hea').write_text('sample 12 1000 5000\n#Age: 50\n#Sex: Male')
+            (root/'s0533_re.hea').write_text('root-copy')
+            rows=public_index('ptbdb',root)
+            self.assertEqual(len(rows),2)
+            self.assertEqual(len({r['record_id'] for r in rows}),2)
+            self.assertEqual({r['subject_id'] for r in rows},{'ptbdb:patient001','ptbdb:patient279'})
+            self.assertTrue((root/'s0533_re.hea').is_file())
+
     def test_joined_first_signal_line_is_checked_and_reordered(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

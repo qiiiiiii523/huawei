@@ -4,6 +4,8 @@
 
 ## 用户批准的batch32与批量验证（2026-10-24）
 
+用户再次复核路线后发现PTB根目录重复头处理此前仅存在独立恢复脚本，现同步至默认public_index：只接受patient数字/记录.hea、根目录头明确打印排除、不删除原文件、未知嵌套拒绝，record/target ID包含患者目录。旧已完成缓存仍按原manifest直接复用，不重编号。补充默认入口回归后核心45项＋独立恢复5项均通过；实际服务器GPU冒烟及batch32全流程尚未运行。
+
 P/A/Q/B三份配置训练batch统一32；验证记录batch8、采样轨迹batch32，仍K16/Heun16。新增predict_records，保留每条记录独立的I、metadata、record/core key及中央核心拼接。不同长度flush；噪声key不变，每条记录按原K顺序累加。CPU小网络批量/逐条输出容差一致，不宣称不同GPU算法逐bit相等。
 
 全部44项测试通过：新3项为K16按轨迹分批结果精确一致、真实小网络批量记录/轨迹与逐条容差一致且I精确复制、新总控仅复用旧成功manifest不prepare且P→(A,Q→B)依赖保持。历史评分器对照测试继续通过。新--reuse-data-from检查三份manifest、scale及缓存文件，写入新实验目录；不会隐式加载旧P权重。
