@@ -17,6 +17,44 @@ from . import GROUPS
 from .common import code_sha, load_study
 
 
+PRESETS = {
+    "rate-fusion": {"groups": ("CONT", "FUSION_SAME", "FUSION"), "stages": "all"},
+    "cnn-rf": {"groups": ("CONT", "PTAIL", "PCTX", "PCTX_RF"), "stages": "rates,followup"},
+    "all": {"groups": GROUPS, "stages": "all"},
+}
+
+
+def resolve_selection(args):
+    """Resolve one route before reading data or creating any output."""
+    preset = getattr(args, "preset", None)
+    explicit = getattr(args, "groups", None)
+    if preset is not None and explicit is not None:
+        raise ValueError("Choose --preset OR --groups; do not silently override either")
+    if explicit is None:
+        preset = preset or "rate-fusion"
+        args.groups = ",".join(PRESETS[preset]["groups"])
+    groups = args.groups.split(",")
+    if not groups or len(set(groups)) != len(groups) or any(g not in GROUPS for g in groups):
+        raise ValueError("Unknown/duplicate follow-up groups")
+    if args.stages is None:
+        args.stages = PRESETS[preset]["stages"] if preset else "rates"
+    args.preset = preset or "custom"
+    return args
+
+
+def describe_plan(args):
+    """No model loading, data reads, directory creation or optimizer updates."""
+    stages = ["rates", "fixed", "followup"] if args.stages == "all" else args.stages.split(",")
+    if not stages or len(set(stages)) != len(stages) or set(stages) - {"rates", "fixed", "followup"}:
+        raise ValueError("Unknown/duplicate stages")
+    return {"preset": args.preset, "stages": stages,
+            "rate_groups": list(RATES) if "rates" in stages else [],
+            "followup_groups": args.groups.split(",") if "followup" in stages else [],
+            "seeds": [int(s) for s in args.seeds.split(",")], "run": str(Path(args.run).resolve()),
+            "training_started": False,
+            "cnn_followup_requires_completed_rate_sources": "followup" in stages}
+
+
 class Runner:
     def __init__(self, root, state):
         self.root, self.state = Path(root).resolve(), state
@@ -130,7 +168,8 @@ def run(args):
             or any(not 0 <= s < 2**32 for s in seeds)):
         raise ValueError("Need distinct valid seeds/stages")
     # All settings bind resume. Stages may be added later, settings may not change.
-    intent = {k: v for k, v in vars(args).items() if k not in ("resume", "stages", "execute_training")}
+    intent = {k: v for k, v in vars(args).items()
+              if k not in ("resume", "stages", "execute_training", "preset", "plan")}
     intent.update(source_shared=str(source), run=str(root), source_sha256=sha(source / "study.json"), code_sha256=code_sha())
     if root.exists():
         if not args.resume or not (root / "suite.json").is_file():
@@ -224,8 +263,9 @@ def main():
     p.add_argument("--source-shared", required=True)
     p.add_argument("--run", required=True)
     p.add_argument("--seeds", default="43")
-    p.add_argument("--stages", default="rates", help="rates,fixed,followup or all; can add stages with --resume")
-    p.add_argument("--groups", default=",".join(GROUPS))
+    p.add_argument("--preset", choices=tuple(PRESETS), help="Default rate-fusion; cnn-rf selects the CNN controls")
+    p.add_argument("--stages", help="rates,fixed,followup or all; can add stages with --resume")
+    p.add_argument("--groups", help="Custom groups instead of --preset; default custom stage is rates")
     p.add_argument("--reference-group", choices=("best", *RATES), default="best")
     p.add_argument("--rate-epochs", type=int, default=40)
     p.add_argument("--rate-validate-every", type=int, default=5)
@@ -242,9 +282,19 @@ def main():
     p.add_argument("--device", default="cuda")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--execute-training", action="store_true")
+    p.add_argument("--plan", action="store_true", help="Print resolved route only; no data/files/training")
     args = p.parse_args()
+    try:
+        resolve_selection(args)
+        description = describe_plan(args)
+    except ValueError as error:
+        p.error(str(error))
+    if args.plan:
+        print(json.dumps(description, ensure_ascii=False, indent=2))
+        return
     if not args.execute_training:
         p.error("No work started; add --execute-training explicitly")
+    print(json.dumps(description, ensure_ascii=False), flush=True)
     run(args)
 
 

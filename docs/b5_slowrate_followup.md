@@ -2,6 +2,32 @@
 
 本分支可以一次串联执行，也可以先做rates阶段，查看结果后在同一个suite增加后续阶段。所有模型独立保存，互不叠加训练收益，不自动覆盖当前最佳。原Final、原slow120代码及缓存保持原样。
 
+## 两条实验路线为什么在同一分支
+
+`21396c3`实现的是注意力分支的2.5/5/10Hz对照；其后`eeac9ff`把融合、P尾部微调与长窗口感受野实验合入同一套件。它们共享缓存、训练与评分代码，但科学问题不同。分支名是代码集合的名字，不代表这些实验是同一个模型，也不代表已经有新的真实成绩。“24项合成测试通过”只说明当时的代码检查通过。
+
+现在提供明确的运行选择：
+
+|选项|默认阶段|后续训练组|目的|
+|---|---|---|---|
+|`--preset rate-fusion`（默认）|rates、fixed、followup|CONT、FUSION_SAME、FUSION|只做注意力采样率与多Hz融合|
+|`--preset cnn-rf`|rates、followup|CONT、PTAIL、PCTX、PCTX_RF|CNN尾部、长窗口、感受野对照，不跑融合|
+|`--preset all`|全部|六组全部|明确要求一次跑全部实验|
+
+这次将套件默认范围改为rate-fusion，原单Hz脚本`run_b5_slowrate.sh`行为不变。已使用旧版源码启动的suite应继续使用旧commit，不能切换源码后直接resume。
+
+注意：当前CNN路线仍以本轮已完成的单Hz模型为冻结全局搭档，所以`cnn-rf`从新目录启动时会先跑三种采样率。它不是“绕过采样率实验，直接从任意历史G120开始”的独立入口。需要独立比较时为两条路线使用不同suite目录；全部路线则用同一个suite。
+
+可用`--stages rates`只跑第一阶段；随后保持同preset与参数，添加`--resume --stages all`继续。也可以用`--groups`手动指定后续组，但它不能与`--preset`同时传入，避免覆盖用户选择。自定义groups不指定stages时仍只跑rates。
+
+先预览实际运行范围，不创建文件、不读数据、不训练：
+
+```bash
+bash scripts/run_b5_slowrate_suite.sh --source-shared /原slow120/run/shared --run /计划的新suite目录 --preset rate-fusion --seeds 43,42 --plan
+```
+
+把preset换成cnn-rf即可预览CNN路线。检查输出的`rate_groups`与`followup_groups`；删掉`--plan`才会开始执行。GPU仍通过`--gpu 1`指定。
+
 ## 实验内容
 
 |阶段/组|实际做什么|比较对象|
@@ -45,7 +71,7 @@ PCTX与PCTX_RF都会真实计算`P_new-P_original_S50`并加入缓存组合。�
 SLOWRATE_SOURCE=/home/qht/huawei/results/B5-final-exp-slow120/run_20261021_140544_2522863/shared
 SLOWRATE_SUITE=/home/qht/huawei/results/B5-final-exp-slowrate/suite_$(date +%Y%m%d_%H%M%S)
 
-tmux new-session -d -s slowrate "cd /home/qht/huawei_B5_final_exp_slowrate && PATH=/home/qht/.conda/envs/BioFlow/bin:\$PATH bash scripts/run_b5_slowrate_suite.sh --source-shared $SLOWRATE_SOURCE --run $SLOWRATE_SUITE --gpu 1 --seeds 43,42 --stages all --rate-epochs 40 --followup-epochs 10; exec bash"
+tmux new-session -d -s slowrate "cd /home/qht/huawei_B5_final_exp_slowrate && PATH=/home/qht/.conda/envs/BioFlow/bin:\$PATH bash scripts/run_b5_slowrate_suite.sh --source-shared $SLOWRATE_SOURCE --run $SLOWRATE_SUITE --gpu 1 --preset all --seeds 43,42 --stages all --rate-epochs 40 --followup-epochs 10; exec bash"
 
 echo "完整结果目录：$SLOWRATE_SUITE"
 tmux attach -t slowrate
@@ -62,7 +88,7 @@ tmux attach -t slowrate
 ```bash
 cd /home/qht/huawei_B5_final_exp_slowrate
 conda activate BioFlow
-bash scripts/run_b5_slowrate_suite.sh --source-shared /原slow120/run/shared --run /原suite目录 --gpu 1 --seeds 43,42 --stages all --rate-epochs 40 --followup-epochs 10 --resume
+bash scripts/run_b5_slowrate_suite.sh --source-shared /原slow120/run/shared --run /原suite目录 --gpu 1 --preset all --seeds 43,42 --stages all --rate-epochs 40 --followup-epochs 10 --resume
 ```
 
 恢复会核对源码、源manifest、训练参数，训练从原last.pt恢复优化器与随机状态，完成的权重复评按SHA跳过。未完成的非训练输出会改名为`*_interrupted_时间戳`保留，然后重新生成；未写出last.pt的训练目录也这样保留。`active.lock`防止同一suite重复运行。改变seed/预算/窗口/源码需要另开suite，不能修改旧study。

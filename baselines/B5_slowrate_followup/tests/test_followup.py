@@ -21,7 +21,7 @@ from baselines.B5_slowrate_followup.model import Followup, PDelta, FixedEnsemble
 from baselines.B5_slowrate_followup.prepare import prepare
 from baselines.B5_slowrate_followup.common import load_study
 from baselines.B5_slowrate_followup import train
-from baselines.B5_slowrate_followup.suite import Runner
+from baselines.B5_slowrate_followup.suite import Runner, resolve_selection, describe_plan
 from baselines.B5_slowrate_followup.summarize import summarize
 
 
@@ -128,6 +128,36 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(longer.receptive_field_samples, 5117)
         self.assertEqual(tuple(longer(data["anchor50"], **{k: data[k] for k in
             ("numeric", "sex", "field_mask", "age_topcoded")} ).shape), (1, 11, 6000))
+
+
+class SelectionTests(unittest.TestCase):
+    def args(self, preset=None, groups=None, stages=None):
+        return argparse.Namespace(preset=preset, groups=groups, stages=stages, seeds="43,42", run="unused")
+
+    def test_default_fusion_route_excludes_CNN(self):
+        args = resolve_selection(self.args())
+        plan = describe_plan(args)
+        self.assertEqual(plan["followup_groups"], ["CONT", "FUSION_SAME", "FUSION"])
+        self.assertEqual(plan["stages"], ["rates", "fixed", "followup"])
+        self.assertFalse(plan["training_started"])
+
+    def test_CNN_route_excludes_fusion_and_keeps_rate_dependency(self):
+        args = resolve_selection(self.args(preset="cnn-rf"))
+        plan = describe_plan(args)
+        self.assertEqual(plan["followup_groups"], ["CONT", "PTAIL", "PCTX", "PCTX_RF"])
+        self.assertEqual(plan["stages"], ["rates", "followup"])
+        self.assertEqual(plan["rate_groups"], list(RATES))
+        self.assertTrue(plan["cnn_followup_requires_completed_rate_sources"])
+
+    def test_all_custom_and_conflicting_options(self):
+        self.assertEqual(resolve_selection(self.args(preset="all")).groups,
+                         "CONT,FUSION_SAME,FUSION,PTAIL,PCTX,PCTX_RF")
+        custom = resolve_selection(self.args(groups="CONT,PTAIL", stages="followup"))
+        self.assertEqual(describe_plan(custom)["rate_groups"], [])
+        with self.assertRaises(ValueError):
+            resolve_selection(self.args(preset="cnn-rf", groups="FUSION"))
+        with self.assertRaises(ValueError):
+            resolve_selection(self.args(groups="CONT,CONT"))
 
 
 class WorkflowTests(unittest.TestCase):

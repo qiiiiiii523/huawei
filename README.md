@@ -5,6 +5,8 @@
 
 本分支还包含固定多Hz平均、可训练多Hz融合及同Hz融合对照、原P-S50尾部微调、长窗口原感受野对照与扩大感受野CNN。串联运行入口为 `scripts/run_b5_slowrate_suite.sh`，可按阶段执行或用`--stages all`一次完成。见 [完整后续实验说明](docs/b5_slowrate_followup.md)。
 
+套件默认`--preset rate-fusion`只选采样率与融合路线；`--preset cnn-rf`选CNN尾部/窗口/感受野路线；明确使用`--preset all`才跑两条路线全部后续组。两类实验共享分支与缓存，但不是同一个实验。启动前可加`--plan`只预览范围，无文件写入或训练。
+
 以下保留原slow120及Final说明。
 
 # B5-final-exp-slow120：120秒慢分支实验

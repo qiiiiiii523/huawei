@@ -6,8 +6,8 @@ args=()
 while (($#)); do
   case "$1" in
     --gpu) gpu="$2"; shift 2 ;;
-    --resume) args+=("$1"); shift ;;
-    --source-shared|--run|--seeds|--stages|--groups|--reference-group|--rate-epochs|--rate-validate-every|--rate-batch-records|--followup-epochs|--followup-validate-every|--followup-batch-records|--learning-rate|--fusion-learning-rate|--tail-blocks|--p-preservation|--p-context-seconds|--p-extra-dilation)
+    --resume|--plan) args+=("$1"); shift ;;
+    --preset|--source-shared|--run|--seeds|--stages|--groups|--reference-group|--rate-epochs|--rate-validate-every|--rate-batch-records|--followup-epochs|--followup-validate-every|--followup-batch-records|--learning-rate|--fusion-learning-rate|--tail-blocks|--p-preservation|--p-context-seconds|--p-extra-dilation)
       args+=("$1" "$2"); shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
