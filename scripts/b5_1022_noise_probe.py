@@ -231,7 +231,7 @@ def evaluate_b5_1022(args, base_dir: Path, base_score: dict) -> dict:
                 candidate = np.concatenate([item["prediction"][index] for index in ids], axis=-1)
                 with np.load(Path(args.slow_run) / entry["file"], allow_pickle=False) as slow:
                     anchor = np.asarray(slow["anchor_uV"], np.float32)
-                    delta = g120(**inputs(array_batch(slow, device)))[0].cpu().numpy()
+                    delta = g120(**inputs(array_batch(slow, device)))[0].detach().cpu().numpy()
                 corrected = correct_base(candidate, delta, scale)
                 if task == "task2" and row["input_type"] == "body_scale_d6":
                     cached = c3_rows.get(row["pair_id"])
