@@ -43,12 +43,21 @@ def read_wfdb(path):
             raw = np.frombuffer(h.read(), dtype="<i2").reshape(nr, nc, order="F").astype("float32")
         return raw, 500, "Chapman_JS01052_MAT4_verified_layout"
     declared, fs, n = int(head[1]), float(head[2].split("/")[0]), int(head[3])
-    rows = [line.split() for line in lines[1:declared + 1]]
+    signal_lines = lines[1:]
+    joined = False
+    # Some Chapman headers concatenate the first signal line after the record
+    # fields (e.g. S23074 ... 5000 JS23074.mat 16+24 ... I).
+    if len(head) > 4 and len(head[4:]) == 9 and head[4].endswith((".mat", ".dat")):
+        signal_lines = [" ".join(head[4:]), *signal_lines]
+        joined = True
+    rows = [line.split() for line in signal_lines[:declared]]
     # WFDB may store different leads in different files (PTB: 12 in .dat, 3 in .xyz).
     standard = {k.lower() for k in D12_LEADS}
     requested = [r for r in rows if r[-1].lower() in standard]
-    if len(requested) != 12 or len({r[0] for r in requested}) != 1:
-        raise ValueError("All standard12 leads must be present in one format16 payload")
+    if (len(requested) != 12 or {r[-1].lower() for r in requested} != standard
+            or len({r[0] for r in requested}) != 1):
+        raise ValueError(f"{path}: all standard12 leads must be present in one format16 payload; "
+                         f"found {[r[-1] for r in rows if r]}")
     filename = requested[0][0]
     payload_rows = [r for r in rows if r[0] == filename]
     fmt = payload_rows[0][1]
@@ -60,6 +69,8 @@ def read_wfdb(path):
     actual = len(payload_rows)
     rows = payload_rows
     repair = "WFDB_multifile_standard12_selected" if actual != declared else "none"
+    if joined:
+        repair = "WFDB_joined_first_signal_line_verified"
     if size != n * actual * 2:
         raise ValueError("WFDB size/channel/sample count mismatch")
     with payload_path.open("rb") as h:
@@ -185,8 +196,11 @@ def public_index(source, root):
 
 def prepare(args):
     output = Path(args.output).resolve()
-    if output.exists():
+    resume = getattr(args, "resume", False)
+    if output.exists() and not resume:
         raise FileExistsError("Use a new cache directory; raw data are never modified")
+    if resume and (output / "manifest.json").exists():
+        raise FileExistsError("Cache is complete; reuse its manifest instead of resuming preparation")
     if args.index:
         rows = read_json(args.index)
         if not isinstance(rows, list):
@@ -221,14 +235,23 @@ def prepare(args):
             qc = np.asarray(row["lead_mask"])
             if qc.shape != (12,) or not np.isin(qc, [0, 1]).all():
                 raise ValueError("lead_mask must contain exactly12 boolean/0-1 values")
-    output.mkdir(parents=True)
-    (output / "records").mkdir()
+    output.mkdir(parents=True, exist_ok=resume)
+    (output / "records").mkdir(exist_ok=resume)
+    expected_names = {f"{i:07d}.npz" for i in range(len(rows))}
+    if any(p.name not in expected_names for p in (output / "records").iterdir()):
+        raise ValueError("Partial cache contains unexpected files; inspect before resuming")
     prepared = []
+    reused = 0
     for i, original in enumerate(rows):
         row = dict(original)
         raw_path = Path(row["path"])
         raw_path = (base / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
-        anchor, target, fs, repair = read_raw(raw_path)
+        if i % 250 == 0:
+            print(f"[prepare] {i}/{len(rows)} verified_reused={reused} next={raw_path}", flush=True)
+        try:
+            anchor, target, fs, repair = read_raw(raw_path)
+        except Exception as exc:
+            raise ValueError(f"Failed record {i}, {row['record_id']}, {raw_path}: {exc}") from exc
         if not math.isfinite(fs) or fs <= 0:
             raise ValueError("Sampling rate must be finite and positive")
         if target.ndim != 2 or target.shape[0] != 12 or anchor.shape != (1, target.shape[-1]):
@@ -251,8 +274,22 @@ def prepare(args):
             raise ValueError("Less than10 real seconds")
         metadata = row.pop("metadata", {})
         destination = output / "records" / f"{i:07d}.npz"
-        np.savez(destination, anchor_uV=anchor, target_uV=target, lead_mask=mask, **{
-            k: np.asarray(v) for k, v in metadata.items()})
+        arrays = {"anchor_uV": anchor, "target_uV": target, "lead_mask": mask,
+                  **{k: np.asarray(v) for k, v in metadata.items()}}
+        if destination.exists():
+            # Old caches lack a provenance ledger: independently decode each raw
+            # record and compare all stored arrays before trusting the prefix.
+            with np.load(destination, allow_pickle=False) as saved:
+                if set(saved.files) != set(arrays) or any(
+                    saved[k].shape != v.shape or not np.array_equal(saved[k], v, equal_nan=True)
+                    for k, v in arrays.items()
+                ):
+                    raise ValueError(f"Existing cache differs from raw record {i}: {destination}")
+            reused += 1
+        else:
+            with destination.with_suffix(".tmp").open("wb") as handle:
+                np.savez(handle, **arrays)
+            destination.with_suffix(".tmp").replace(destination)
         row.update(path=str(destination.relative_to(output)), resolved_path=str(destination),
                    raw_path=str(raw_path), reader=repair, real_samples=target.shape[-1])
         prepared.append(row)
@@ -265,7 +302,8 @@ def prepare(args):
     path = output / "manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     read_manifest(path)
-    print(json.dumps({"manifest": str(path), "records": len(prepared), "optimizer_updates": 0}, ensure_ascii=False))
+    print(json.dumps({"manifest": str(path), "records": len(prepared), "verified_reused": reused,
+                      "optimizer_updates": 0}, ensure_ascii=False))
 
 
 def main():
@@ -276,6 +314,7 @@ def main():
     p.add_argument("--root", help="Public dataset root when auto-indexing")
     p.add_argument("--scale-manifest", help="Reuse train-fitted B7 scales for a subsequent stage")
     p.add_argument("--output", required=True)
+    p.add_argument("--resume", action="store_true", help="Verify/reuse a partial cache against raw waveforms, then continue")
     a = p.parse_args()
     if a.public_source and not a.root:
         p.error("--public-source requires --root")

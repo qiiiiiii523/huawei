@@ -50,7 +50,17 @@ def plan(args):
              training("A", ("P", "prepare_huawei"), huawei, "b7_huawei40.json", args.gpu_a, "P"),
              training("Q", ("P", "prepare_ptb"), ptb, "b7_public40.json", args.gpu_b, "P"),
              training("B", ("Q", "prepare_huawei"), huawei, "b7_huawei40.json", args.gpu_b, "Q")]
+    if getattr(args, "retry_preparation", False):
+        for job in jobs:
+            if job.module == "prepare":
+                job.arguments.append("--resume")
     return jobs
+
+
+def preparation_only_retry_allowed(args):
+    # Code changes cannot be adopted into an existing trained lineage.
+    return (getattr(args, "retry_preparation", False)
+            and not any((args.output / name).exists() for name in ("P", "A", "Q", "B")))
 
 
 def fingerprint(args):
@@ -95,7 +105,7 @@ def command_for(job):
     elif job.module != "train" and not job.artifact.is_file():
         # prepare deliberately never overwrites a partial cache.
         destination = Path(arguments[arguments.index("--output") + 1])
-        if destination.exists():
+        if destination.exists() and not (job.module == "prepare" and "--resume" in arguments):
             raise RuntimeError(f"{job.name}: partial output {destination}; inspect log and use a new --output")
     return [sys.executable, "-u", "-m", f"baselines.B7.{job.module}", *arguments]
 
@@ -163,8 +173,18 @@ def run(args):
     logs.mkdir(exist_ok=True)
     spec = {"fingerprint": fingerprint(args), "raw_files_must_remain_unchanged": True}
     state_path = output / "pipeline_spec.json"
+    if getattr(args, "retry_preparation", False) and not preparation_only_retry_allowed(args):
+        raise RuntimeError("--retry-preparation is only allowed before any P/A/Q/B training directory exists")
     if state_path.exists() and json.loads(state_path.read_text()) != spec:
-        raise RuntimeError("Pipeline code, metadata, paths or settings changed; use a new --output")
+        if not preparation_only_retry_allowed(args):
+            raise RuntimeError("Pipeline code, metadata, paths or settings changed; use a new --output")
+        backup = output / f"pipeline_spec_before_retry_{time.time_ns()}.json"
+        backup.write_bytes(state_path.read_bytes())
+        print("[RETRY] Updating preparation-only specification; partial caches will be verified against raw data", flush=True)
+    if getattr(args, "retry_preparation", False):
+        for job in jobs:
+            if job.module == "prepare" and job.artifact.exists():
+                raise RuntimeError("--retry-preparation requires incomplete caches; completed caches need independent provenance review")
     state_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
     (output / "data").mkdir(exist_ok=True)
     status = {job.name: "pending" for job in jobs}
@@ -269,6 +289,7 @@ def main():
     parser.add_argument("--gpu-b", default="0")
     parser.add_argument("--max-train", type=int, choices=(1, 2), default=2)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--retry-preparation", action="store_true", help="Before any training, verify and reuse partial preparation after a reader fix")
     args = parser.parse_args()
     raise SystemExit(run(args))
 

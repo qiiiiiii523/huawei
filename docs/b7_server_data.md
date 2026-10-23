@@ -35,6 +35,26 @@ tail -f /home/qht/huawei_B7/results/B7/auto_seed42/logs/P.log
 
 ## 输入口径
 
+### Chapman粘行头导致prepare失败后的恢复
+
+服务器首次准备在44473份缓存后失败于`JS23074.hea`。该记录的I信号描述粘到首行；读取器已支持在内存中拆行，仍要求完整且不重复的12导联、正确初值/校验和，不改原始文件。
+
+在没有P/A/Q/B训练目录、尚无训练开始且prepare缓存仍未生成manifest时，更新到修复代码后，使用同一output并加`--retry-preparation`：
+
+```bash
+python -u -m baselines.B7.pipeline \
+  --data-root /home/qht/huawei/data \
+  --metadata /home/qht/huawei/metadata \
+  --ptb-root /home/qht/huawei/data/PTB-Diagnostic \
+  --output results/B7/auto_seed42 \
+  --gpu-p 0 --gpu-a 0 --gpu-b 0 \
+  --retry-preparation
+```
+
+该选项备份旧总控spec，仅允许准备阶段采用修复后的代码。原始文件、元数据和路径必须保持原样；不得用它变更患者划分或QC。已有索引复用；未完成prepare以`--resume`运行：逐条解码原始记录，并核对已有NPZ全部数组内容/形状；一致则保持缓存字节与mtime，不一致则停止，不盲目跳过。核验前缀仍需时间；每250条打印`[prepare]`和`verified_reused`。补齐缓存后自动继续P/A/Q/B。
+
+该恢复选项不能在训练开始后使用；后续恢复训练需去掉`--retry-preparation`并保持代码不变。保留原来的半成品目录即可，不需要删除44473份缓存。完整manifest已存在的缓存不得通过此选项跨版本直接采信；需要独立核验。
+
 原B5数据集的逐点监督anchor是同步d12目标记录里的I；手表/d6是独立采集的context，不与d12逐点同步。B7取消context分支以后，本入口仍使用同步d12的I。输出index明确标记`anchor_source=same_record_target_I`和`original_context_used=false`，不把手表或d6信号伪装成同步输入，也不声称已完成这些设备真实I的部署评估。
 
 沿用subject_split、pair_manifest、raw_record_manifest与device_interpretation_qc；不重划患者，不改QC。保留原配对分组与重复目标ID，同一d12可能出现在多个组里，组名表示原配对来源，不表示B7使用了该设备的context。I的可靠性取目标QC的I位。转换入口未映射人口学表，华为缓存使用未知人口学编码；如实验需要人口学，须另提供经过核对的B7 metadata。
