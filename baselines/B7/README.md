@@ -26,6 +26,8 @@ python -m baselines.B7.train --manifest results/B7/data_public10/manifest.json -
 
 ## 两条后续数据路线
 
+服务器已有元数据可通过新入口`python -m baselines.B7.huawei_index`转换成显式index，详见[服务器数据准备](../../docs/b7_server_data.md)。该入口明确沿用B5的同步d12-I监督，不把独立手表/d6 context作为逐点对齐的I；本入口尚未映射人口学表，华为人口学按未知处理。
+
 A先做：同一公开10秒候选P直接华为40秒。
 
 B后做：从同一P进行PTBDB40秒，再华为40秒。PTBDB按WFDB头的文件映射读取标准12导联(.dat)，额外Frank3在.xyz；它不是异常头文件。
