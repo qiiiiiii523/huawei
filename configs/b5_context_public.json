@@ -1,7 +1,6 @@
 {
   "protocol": "B5-machine-context-public-v1",
-  "implementation_stage": "audit_legacy_model_reuse_and_paired_sampler",
-  "training_ready": false,
+  "implementation_stage": "two_stage_pipeline_implemented",
   "source_git_commit": "69bc40f66f2e61dcd4075e9aa0b4031de9418a48",
   "arms": [
     "control",
@@ -109,5 +108,17 @@
       "watch_ecg",
       "body_scale_d6"
     ]
+  },
+  "training_entry_available": true,
+  "requires_completed_prepared_study": true,
+  "training_defaults": {
+    "public_epochs": 20,
+    "huawei_epochs": 20,
+    "validate_every": 5,
+    "batch_records": 2,
+    "learning_rate": 0.0001,
+    "seed": 43,
+    "target_sampling": "one random 10s window per physical target per epoch",
+    "public_to_huawei": "fixed-budget last EMA, reset optimizer"
   }
 }

@@ -1,94 +1,155 @@
-# 机器历史context公开继续训练：审计先行
+# ContextPublic：完整两阶段实验操作
 
-分支：`B5-final-exp-context-public`；源分支`B5-1022@69bc40f`。
+分支`B5-final-exp-context-public`。复用V6结构，不扫描注入位置；只新增“公开真实跨记录配对→华为机器适配”的流程。
 
-## 当前交付状态
+## 当前状态
 
-本分支完成实验协议、旧V6模型原样复用、PTB真实跨记录候选配对审计，以及机器路由的成对K16生成函数。
-**未实现新的训练、波形QC缓存和当前组合评估入口，因此现在不能启动两组训练。**
-配置`configs/b5_context_public.json`明确保存`training_ready=false`。审计成功不等于可以训练。
-此范围对应先前约定的第一步：先审计公开历史配对，数据成立后才实施长训练。
+已实现prepare、references、train、evaluate、compare和机器新记录predict。
+不是已经训练完成：需要服务器具备源资产，通过数据QC、前向测试和完整基准复评后才能启动优化器。
+旧`b5_context_public_review.md`记录的是审计阶段历史状态，以本文件为准。
 
-## 唯一新问题
+- 原FM训练目标/独立高斯噪声不改；验证/选模/推理使用Heun16、8对正负噪声K16、scale1、seed42。
+- control与context_public相同公开目标、华为目标与更新预算；每个物理目标每轮曝光一次，随机取一个真实10秒窗。不是旧训练里一轮遍历12个窗的100轮预算。
+- 默认公开20轮→华为20轮，record batch2，LR1e-4、weight decay.01、EMA.999、seed43，每5个华为轮次完整验证。
+- 公开阶段固定预算last EMA进入华为阶段，重置优化器。公开验证患者不参与梯度；本版不使用公开验证成绩挑选轮次。
+- 只替换机器FM路由。Task1/体脂秤继承指定完整G120报告的分项分数；不会用新FM重跑这两条路由。
+- 冻结P/G120/beta.75和末端FIR25。机器验证重新从噪声生成，不复用旧独立噪声快残差。
+- 内部正确/打乱/禁用历史不改变末端正确历史。新记录入口只处理机器路线；Task1/体脂秤仍调用原稳定入口。
 
-公开阶段就学习同患者不同真实记录的历史条件，再华为适配，能否改善当前最终快慢组合？
-不是首次内部注入；V6的多尺度编码、三层FiLM、瓶颈cross-attention及主干共同更新已经做过。
-复用的模型源码及SHA在`docs/context_public_v6_sources.json`，不移植旧runtime、旧评分或旧数据接口。
+## 1. 服务器创建工作树及tmux
 
-不做注入位置扫描、attention/心搏/节律编码扫描、华为单独重跑V6或第三训练组。
-
-## 两组训练协议
-
-|组|公开阶段|华为阶段|
-|---|---|---|
-|control|不读历史，匹配继续训练|不读历史，匹配机器适配|
-|context_public|真实不同记录历史，V6内部条件训练|真实机器历史，编码器/注入/FM共同更新|
-
-源FM必须是登记过的公开checkpoint，不从旧V6华为权重继续堆轮次。
-两组相同物理目标、相同目标窗口曝光和更新预算。每个目标只指定一条历史，不能枚举多历史后增加目标权重。
-FM保持原主目标；条件使用历史六肢导联，不能使用历史胸导联，也不能将当前目标同步肢体导联伪装成历史。
-公开目标最少10秒即可；120秒用于华为最终拼接评分，不强制所有公开记录120秒。
-
-## 路由和固定部分
-
-- 首轮仅机器路由使用新FM。Task1/体脂秤继续原稳定模型，要求逐点不变。
-- P、G120、beta=.75、原尺度与末端context规则固定；所有源资产须登记SHA并复现initial。
-- Heun16/成对K16/scale=1.0，固定推理噪声seed42；完整120秒、可靠I与目标导联QC、目标记录等权。
-- 按机器完整组合r选择`best_r.pt`，保留`last.pt`及训练历史。
-- 完整平均r为`0.5*Task1+0.25*machine+0.25*body`，机器增益δ对应总体δ/4。
-- 必须同时超过匹配对照和稳定机器路由；FM原始输出变好但组合不变好不升级。
-- 正确/同设备打乱/禁用仅改变新内部历史；旧末端历史始终正确且保持不变。
-
-## 成对采样、选模与基准复评（本轮统一设置）
-
-FM训练继续使用原独立标准高斯噪声及原FM目标，不将训练batch改为8对噪声。
-周期验证、best_r选模及最终推理均使用同一个`baselines.B5_context_public.sampling.sample`：
-
-- Heun16步，8对正负噪声，共16个成员，scale=1.0，seed42。
-- 成员顺序固定`z0,-z0,z1,-z1,...,z7,-z7`。
-- 8个正向基噪声复用原B5的CPU keyed RNG，以pair index 0..7取样，不重设训练先验。
-- 两组使用相同目标物理记录键和窗口起点，例如`target_record_id:start_sample`，键不包含组名或历史ID。
-- context禁用/打乱时不改变噪声键、seed和末端正确历史。
-- 这是ContextPublic机器路由的独立生成入口，不修改公共B5/Final采样器，不影响Task1和体脂秤。
-
-尚未接通的两阶段训练和完整评估编排，后续必须显式调用此函数，不能回落到公共B5默认的独立K16。
-本提交只实现生成函数和设置/报告校验，没有重新生成真实分数。
-
-训练前须新生成四份120秒机器完整组合报告：公开源FM初始、原稳定机器路由、control初始、CTX-public初始。
-每份包含采样协议、实际checkpoint SHA、验证population SHA、记录键SHA、冻结scale SHA、P/G120资产SHA和末端规则SHA。
-`validate_machine_references`拒绝独立噪声、缺字段及不同人群/键/scale等报告；报告校验不代替真实生成。
-公开源FM与原稳定华为FM不同，分数不要求相等；零初始化CTX与同权重control初始应在容差内一致。
-旧独立噪声FM预测或旧完整组合缓存不能充当这四份新报告；原始输入、目标和固定慢CNN/G120预测可以复用。
-若缓存中保存了混合结果，必须有可核验分解才能替换其中FM，不能把旧独立噪声快残差直接作为新对照。
-
-后续最佳权重保存时必须同时保存完整`sampling`字典，评估入口遇到采样不一致应拒绝比较。
-初始与稳定机器参考的选模也按本设置，不把噪声切换的收益归给context。
-
-服务器可验证采样单元测试（本地未装PyTorch的实际张量检查会明确跳过）：
+推送本轮新提交后，在服务器执行（如仓库使用gitee，将origin替换为gitee）：
 
 ```bash
+cd /home/qht/huawei
+git fetch origin B5-final-exp-context-public
+```
+
+首次创建：
+
+```bash
+git worktree add --detach /home/qht/huawei_context_public origin/B5-final-exp-context-public
+```
+
+如果这个worktree已经创建且没有本地修改，只更新：
+
+```bash
+cd /home/qht/huawei_context_public
+git switch --detach origin/B5-final-exp-context-public
+```
+
+```bash
+tmux new -s b5_context_public
+cd /home/qht/huawei_context_public
+conda activate BioFlow
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 python -m unittest discover -s baselines/B5_context_public/tests -v
 ```
 
-## 本地候选审计
+这会运行合成前向、梯度、全无效历史回退、成对噪声和断点续训测试，不使用真实患者训练。
+依赖使用BioFlow已有torch/numpy/scipy/pyyaml/wfdb。测试有失败时先停止，不启动真实训练。
 
-在本工作树根目录执行，输出必须是新目录：
+## 2. 一次性准备（例如GPU0）
 
-```powershell
-python -m baselines.B5_context_public.audit `
-  --root C:\Users\Ashley\Desktop\HW\Data\PTB_db `
-  --output C:\Users\Ashley\Downloads\备赛\B5结果分析\context_public_audit_20261023
+以下变量在同一tmux终端设置。公开FM必须指定你真实保存的公开训练best.pt，不能填写华为微调权重。
+程序检查stage=public、网络配置及冻结scales与当前Final完全兼容，失败时不偷偷替换尺度。
+
+```bash
+run=/home/qht/huawei/results/B5-context-public/public_pair_v1
+slow_root=/home/qht/huawei/results/B5-final-exp-slow120/run_20261021_140544_2522863
+public_fm=/填写实际公开预训练运行目录/best.pt
+stable_eval=/填写该G120已经完成的完整评估目录
+ptb=/home/qht/huawei/data/PTB_db
 ```
 
-审计只读原始文件，检查文件头、12标准导联、真实时长、源文件完整性、波形文件字节重复，
-按原公开慢路线的患者哈希划分，在不同物理记录间为每个目标确定一条历史。
-输出`audit.json`、`candidate_pairs.csv`，不写训练缓存，不修改源数据。
-所称历史是另一时刻，不声称一定早于目标；若实际输入规则要求只能更早，需增加可核验时间约束。
+`stable_eval`需要根目录evaluation.json，summary.group=G120，epoch与下方G120/best.pt一致，population与shared一致。
+它用于固定Task1/体脂秤原路由；机器参考会用新成对噪声重新计算。
+如果PTB在`data/PTB-Diagnostic`，只修改ptb变量。不要新建假目录或换到PTB-XL。
+配置、人口学和数据路径从原G120 study读取；需要原结果和配置文件继续存在，不复制一遍全部FM生成缓存。
 
-本轮检查PTB原生format16的文件字节数与头部一致，并只用标准12导联所依赖的数据文件做重复检查。
-不包含物理标定及波形质量筛查，字节完整仍不能证明信号正常。
-因此报告始终`waveform_QC_completed=false`、`training_ready=false`。
-下一步必须先完成波形QC/单位标定和患者级可用数量审计，再绑定公开FM与现有Final资产、实现配对缓存及训练评估。
-若QC后真实配对覆盖不足，暂停此路线，不通过同记录片段拼凑过关。
+```bash
+bash scripts/run_b5_context_public.sh prepare "$run" 0 \
+  --public-checkpoint "$public_fm" \
+  --public-root "$ptb" \
+  --slow-run "$slow_root/shared" \
+  --slow-checkpoint "$slow_root/G120/best.pt" \
+  --stable-evaluation "$stable_eval"
+```
 
-本提交没有启动服务器任务，没有推送远程；旧实验分支不受影响。
+prepare拒绝覆盖shared。中断后保留旧run，使用新的run路径重做prepare；不要手工将completed改成true。
+产物：公共文件完整性审计、单位标定/技术QC、QC后患者配对、Huawei训练/验证缓存、固定P/G120慢预测、源SHA、preflight.json和study.json。
+公开split保持原患者哈希划分；不同物理记录一目标一历史；QC后默认至少20训练/5验证患者。训练华为目标去重，验证保持原完整机器目标和QC。
+
+## 3. 成对基准复评（完成后才能训练）
+
+```bash
+bash scripts/run_b5_context_public.sh references "$run" 0
+```
+
+重新生成公开FM初始、control初始、零初始化CTX初始、稳定华为FM机器路由的完整120秒预测；都接相同P/G120和FIR25。
+公开源与稳定华为权重分数不要求一致；control/CTX初始应在2e-6容差内一致，否则停止。
+报告带采样协议、实际模型SHA、人群/记录键/scale/慢资产/末端规则指纹。
+旧独立K16报告不能通过校验。
+
+## 4. 两组训练（准备只做一次，可用两张卡并行）
+
+终端A：
+
+```bash
+cd /home/qht/huawei_context_public
+conda activate BioFlow
+run=/home/qht/huawei/results/B5-context-public/public_pair_v1
+bash scripts/run_b5_context_public.sh control "$run" 0
+```
+
+终端B：另建tmux会话后执行：
+
+```bash
+tmux new -s b5_context_public_ctx
+cd /home/qht/huawei_context_public
+conda activate BioFlow
+run=/home/qht/huawei/results/B5-context-public/public_pair_v1
+bash scripts/run_b5_context_public.sh context_public "$run" 1
+```
+
+每组自动公开训练→华为训练→best_r/last完整评估；context组额外做best_r内部打乱和禁用复评。
+GPU可以按空闲情况替换。不要让两个进程同时运行同一组。
+
+中断后重新执行对应组的同一条脚本命令，自动从该组last.pt恢复完整epoch，优化器/EMA/RNG/采样和源指纹一并恢复。
+中途未保存的epoch会重新计算。数据/源码变更后不能原地续跑，必须新run。
+best_r和last保存第0轮候选；所有分项写入history.jsonl。
+
+## 5. 汇总与打包
+
+```bash
+bash scripts/run_b5_context_public.sh compare "$run" 0
+cat "$run/comparison/summary.md"
+```
+
+升级需要CTX-public机器r同时超过control和stable_paired。最终R=0.5*Task1+0.25*machine+0.25*body。
+不能把只超过旧独立噪声成绩当作context提升；正确/打乱/禁用均在同一best_r权重上测试。
+
+```bash
+cd /home/qht/huawei
+find results/B5-context-public/public_pair_v1 -type f \
+  \( -name '*.json' -o -name '*.jsonl' -o -name '*.csv' -o -name '*.md' -o -name '*.log' \) \
+  -print0 | tar --null -T - -czf B5_context_public_reports.tar.gz
+```
+
+## 6. 新记录机器推理
+
+```bash
+python -m baselines.B5_context_public.predict \
+  --run "$run/shared" \
+  --checkpoint "$run/context_public/best_r.pt" \
+  --anchor-npy /实际新记录/I_uV.npy \
+  --metadata-json /实际新记录/metadata.json \
+  --history-npy /实际新记录/history_d6_uV.npy \
+  --history-mask-npy /实际新记录/history_valid.npy \
+  --record-key 实际稳定记录ID \
+  --output /实际新输出目录 --device cuda
+```
+
+I为原始μV、500Hz、120秒；历史六导联顺序I/II/III/aVR/aVL/aVF，历史不与当前同步，mask同shape。
+缺失历史可同时省略历史两个参数，内部回退无历史，末端回退仅投影。真实目标不作为推理输入。
+保留shared/study.json及它指向的模型源资产；无需训练缓存npz参与推理。
