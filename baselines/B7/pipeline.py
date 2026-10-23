@@ -29,6 +29,13 @@ def plan(args):
     cache = output / "data"
     public, ptb, huawei = [cache / name / "manifest.json" for name in ("public10", "ptb40", "huawei")]
     index = cache / "huawei_index.json"
+    if getattr(args, "reuse_data_from", None):
+        previous = args.reuse_data_from.resolve()
+        public = previous / "data/public10/manifest.json"
+        huawei = previous / "data/huawei/manifest.json"
+        ptb = previous / "ptb_recovery/data/manifest.json"
+        if not ptb.is_file():
+            ptb = previous / "data/ptb40/manifest.json"
     jobs = [
         Job("index", (), "huawei_index", ["--metadata", str(metadata), "--data-root", str(raw),
             "--anchor-source", "same-record-target-I", "--output", str(index)], index),
@@ -54,6 +61,10 @@ def plan(args):
         for job in jobs:
             if job.module == "prepare":
                 job.arguments.append("--resume")
+    if getattr(args, "reuse_data_from", None):
+        jobs = [job for job in jobs if job.module == "train"]
+        for job in jobs:
+            job.dependencies = tuple(dep for dep in job.dependencies if dep in ("P", "A", "Q", "B"))
     return jobs
 
 
@@ -74,6 +85,8 @@ def fingerprint(args):
             h.update(path.read_bytes().replace(b"\r\n", b"\n"))
     for key in ("data_root", "metadata", "ptb_root", "output"):
         h.update(str(getattr(args, key).resolve()).encode())
+    if getattr(args, "reuse_data_from", None):
+        h.update(str(args.reuse_data_from.resolve()).encode())
     return h.hexdigest()
 
 
@@ -166,6 +179,17 @@ def run(args):
     import torch
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable in the current Python environment")
+    if getattr(args, "reuse_data_from", None):
+        from .data import read_manifest
+        manifests = {}
+        for job in jobs:
+            path = Path(job.arguments[job.arguments.index("--manifest") + 1])
+            manifests[str(path)] = read_manifest(path)
+        scales = [m["scales_uV"] for m in manifests.values()]
+        if any(value != scales[0] for value in scales):
+            raise ValueError("Reused caches have different scales")
+        if any(not Path(r["resolved_path"]).is_file() for m in manifests.values() for r in m["records"]):
+            raise FileNotFoundError("Reused prepared waveform file is missing")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     lock = acquire_lock(output / ".pipeline.lock")
@@ -289,6 +313,7 @@ def main():
     parser.add_argument("--gpu-b", default="0")
     parser.add_argument("--max-train", type=int, choices=(1, 2), default=2)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--reuse-data-from", type=Path, help="Reuse completed data caches from an old pipeline (including repaired PTB); use a NEW --output")
     parser.add_argument("--retry-preparation", action="store_true", help="Before any training, verify and reuse partial preparation after a reader fix")
     args = parser.parse_args()
     raise SystemExit(run(args))

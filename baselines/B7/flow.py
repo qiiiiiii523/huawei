@@ -63,6 +63,19 @@ def sample(model, anchor, keys, metadata=None, config=None):
     if len(keys) != len(anchor):
         raise ValueError("Keys and batch disagree")
     total = anchor.new_zeros(len(anchor), 7, anchor.shape[-1])
+    if config.sample_batch_size > 1:
+        pairs = [(k, b) for k in range(config.samples) for b in range(len(anchor))]
+        for start in range(0, len(pairs), config.sample_batch_size):
+            chunk = pairs[start:start + config.sample_batch_size]
+            ids = torch.tensor([b for _, b in chunk], device=anchor.device)
+            noise = torch.cat([keyed_noise([keys[b]], anchor.shape[-1], config.seed, k,
+                                          anchor.device, anchor.dtype) for k, b in chunk])
+            conditions = {name: value.index_select(0, ids) for name, value in metadata.items()} if metadata else None
+            predicted = integrate(model, anchor.index_select(0, ids), noise, conditions,
+                                  steps=config.steps, solver=config.solver)
+            for j, (_, b) in enumerate(chunk):
+                total[b].add_(predicted[j])
+        return total / config.samples
     for k in range(config.samples):
         noise = keyed_noise(keys, anchor.shape[-1], config.seed, k, anchor.device, anchor.dtype)
         total += integrate(model, anchor, noise, metadata, steps=config.steps, solver=config.solver)

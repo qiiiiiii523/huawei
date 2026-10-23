@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import numpy as np
 from .data import GROUPS, load_record
-from .inference import predict_record
+from .inference import predict_records
 
 SCORE_PROTOCOL = "B7-full-record-lead-target-pair-macro-v2"
 
@@ -59,10 +59,36 @@ def aggregate(rows, stage):
 
 def evaluate(model, manifest, config, stage):
     rows = []
+    pending = []
+    scanned = 0
+    total_records = sum(r["split"] == "validation" for r in manifest["records"])
+    print(f"[validation] START records={total_records} record_batch={config.validation_batch_size} "
+          f"ode_batch={config.sample_batch_size} K={config.samples}", flush=True)
+    def flush():
+        if not pending:
+            return
+        predictions = predict_records(model, [x[1] for x in pending], manifest["scales_uV"],
+            [x[0]["record_id"] for x in pending], [x[4] for x in pending], config).cpu().numpy()
+        for (item, _, target, mask, _), prediction in zip(pending, predictions):
+            correlations, by_lead = [], {}
+            for j in range(1, 12):
+                if mask[j]:
+                    value = pearson(prediction[j], target[j])
+                    if np.isfinite(value):
+                        correlations.append(value)
+                    by_lead[str(j)] = {"r": value if np.isfinite(value) else None,
+                        "rmse_uV": float(np.sqrt(np.mean((prediction[j].astype("float64") - target[j]) ** 2)))}
+            if by_lead:
+                rows.append({"record_id": item["record_id"], "group": item["group"],
+                    "target_record_id": item["target_record_id"],
+                    "r": float(np.mean(correlations)) if correlations else None, "leads": by_lead})
+        pending.clear()
+        print(f"[validation] scored={len(rows)} scanned={scanned}/{total_records}", flush=True)
     target_masks, target_identity = {}, {}
     for row in manifest["records"]:
         if row["split"] != "validation":
             continue
+        scanned += 1
         anchor, target, mask, metadata = load_record(row)
         key = row["target_record_id"]
         if key in target_masks and not np.array_equal(target_masks[key], mask):
@@ -84,20 +110,12 @@ def evaluate(model, manifest, config, stage):
             anchor, target = anchor[:, :real_length], target[:, :real_length]
         if target.shape[-1] % 5000:
             raise ValueError("Prepared validation record must have complete real10s cores")
-        prediction = predict_record(model, anchor, manifest["scales_uV"], row["record_id"], metadata, config).cpu().numpy()
-        correlations, by_lead = [], {}
-        for j in range(1, 12):
-            if mask[j]:
-                value = pearson(prediction[j], target[j])
-                if np.isfinite(value):
-                    correlations.append(value)
-                by_lead[str(j)] = {"r": value if np.isfinite(value) else None,
-                    "rmse_uV": float(np.sqrt(np.mean(
-                    (prediction[j].astype("float64") - target[j]) ** 2)))}
-        if not by_lead:
-            continue
-        rows.append({"record_id": row["record_id"], "group": row["group"], "target_record_id": key,
-                     "r": float(np.mean(correlations)) if correlations else None, "leads": by_lead})
+        if pending and pending[0][1].shape[-1] != anchor.shape[-1]:
+            flush()
+        pending.append((row, anchor, target, mask, metadata))
+        if len(pending) >= config.validation_batch_size:
+            flush()
+    flush()
     return aggregate(rows, stage), rows
 
 

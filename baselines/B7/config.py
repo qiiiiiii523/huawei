@@ -57,6 +57,8 @@ class SamplingConfig:
     steps: int = 16
     samples: int = 16
     seed: int = 42
+    sample_batch_size: int = 1
+    validation_batch_size: int = 1
 
     def __post_init__(self):
         if self.sample_rate != 500 or self.window_seconds not in (10, 40) or self.core_seconds != 10:
@@ -65,6 +67,8 @@ class SamplingConfig:
             raise ValueError("Invalid sampling settings")
         if not 0 <= self.seed < 2**32:
             raise ValueError("Invalid seed")
+        if any(type(v) is not int or v < 1 for v in (self.sample_batch_size, self.validation_batch_size)):
+            raise ValueError("Sampling/validation batch sizes must be positive integers")
 
 
 def read_json(path: str | Path):

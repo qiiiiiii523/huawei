@@ -102,6 +102,9 @@ def train(args):
         torch.cuda.manual_seed_all(tr["seed"])
     torch.use_deterministic_algorithms(True)
     model = B7UNet(mc).to(device)
+    print(f"[train] stage={cfg['stage']} device={device} batch_size={tr['batch_size']} "
+          f"window={sc.window_seconds}s updates={tr['updates']} "
+          f"ode_batch={sc.sample_batch_size} validation_batch={sc.validation_batch_size}", flush=True)
     initialization = {"kind": "random_B7", "seed": tr["seed"], "B5_weights_used": False}
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["learning_rate"], weight_decay=tr["weight_decay"])
     ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
@@ -178,6 +181,8 @@ def train(args):
             logged = {k: float(v.detach()) for k, v in {"total": loss, **parts}.items()}
             logged["window_r"] = 1 - logged["pcc"] if logged["pcc_valid_leads"] else None
             validate(logged)
+        elif step == 1 or step % 50 == 0:
+            print(f"[train] update={step}/{tr['updates']} loss={float(loss.detach()):.6g}", flush=True)
     (output / "completed.json").write_text(json.dumps({"completed": True, "update": step,
         "best_r": best, "elapsed_seconds_this_invocation": time.monotonic() - started}), encoding="utf-8")
 

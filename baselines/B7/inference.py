@@ -17,32 +17,49 @@ from .leads import compose_d12, validate_scales
 
 @torch.no_grad()
 def predict_record(model, anchor_uV, scales_uV, record_key, metadata=None, config=None):
+    return predict_records(model, [anchor_uV], scales_uV, [record_key], [metadata], config)[0]
+
+
+@torch.no_grad()
+def predict_records(model, anchors_uV, scales_uV, record_keys, metadatas=None, config=None):
     config = config or SamplingConfig()
     if model.training:
         raise ValueError("Prediction requires eval mode")
     device = next(model.parameters(), torch.empty(0)).device
-    anchor = torch.as_tensor(anchor_uV, dtype=torch.float32, device=device)
-    if anchor.ndim == 1:
-        anchor = anchor[None]
-    if anchor.ndim != 2 or anchor.shape[0] != 1 or not torch.isfinite(anchor).all():
-        raise ValueError("Visible I must be finite [1,T] in microvolts")
+    if not anchors_uV or len(record_keys) != len(anchors_uV):
+        raise ValueError("Matching nonempty anchors and keys required")
+    tensors = []
+    for a in anchors_uV:
+        a = torch.as_tensor(a, dtype=torch.float32, device=device)
+        if a.ndim == 1:
+            a = a[None]
+        if a.ndim != 2 or a.shape[0] != 1 or not torch.isfinite(a).all():
+            raise ValueError("Visible I must be finite [1,T] in microvolts")
+        tensors.append(a)
+    if len({a.shape[-1] for a in tensors}) != 1:
+        raise ValueError("Batched records must have equal lengths")
+    anchor = torch.stack(tensors)
     scales = validate_scales(scales_uV).to(device)
     length = anchor.shape[-1]
     core, width = config.core_seconds * 500, config.window_seconds * 500
     margin = (width - core) // 2
     if length < core or length % core:
         raise ValueError("Record length must be a positive multiple of real 10s (5000 points)")
-    if metadata:
-        metadata = {k: torch.as_tensor(v, device=device).unsqueeze(0) for k, v in metadata.items()}
-    result = anchor.new_empty(1, 7, length)
+    metadatas = metadatas or [None] * len(anchor)
+    if len(metadatas) != len(anchor):
+        raise ValueError("Metadata count differs")
+    unknown = {"numeric": [0., 0., 0.], "sex": 2, "field_mask": [False]*4, "age_topcoded": [0.]}
+    metadata = {k: torch.stack([torch.as_tensor((m or unknown)[k], device=device) for m in metadatas])
+                for k in unknown}
+    result = anchor.new_empty(len(anchor), 7, length)
     for s in range(0, length, core):
         positions = torch.arange(s - margin, s - margin + width, device=device).clamp(0, length - 1)
         # Fixed full-resolution I is the first channel at every ODE evaluation.
-        q = anchor[:, positions].unsqueeze(0) / scales[0]
-        predicted = sample(model, q, [f"{record_key}:core={s}"], metadata, config)
+        q = anchor[:, :, positions] / scales[0]
+        predicted = sample(model, q, [f"{key}:core={s}" for key in record_keys], metadata, config)
         result[:, :, s:s + core] = predicted[:, :, margin:margin + core]
     result = result * scales[list(GENERATED_INDICES)][None, :, None]
-    output = compose_d12(anchor.unsqueeze(0), result)[0]
+    output = compose_d12(anchor, result)
     if not torch.isfinite(output).all():
         raise FloatingPointError("Nonfinite physical waveform")
     return output
