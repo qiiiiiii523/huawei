@@ -15,15 +15,19 @@ def run(args):
     groups = args.groups
     if len(roots) == 1:
         roots *= len(groups)
-    if len(roots) != len(groups) or not groups:
-        raise ValueError("Use one rate-run for all groups, or one run per member")
+    if len(roots) != len(groups) or len(groups) < 2:
+        raise ValueError("Use >=2 members, with one shared rate-run or one run per member")
     device = device_from_name(args.device)
     parent = load_rates(roots[0] / "shared")
-    selected = source_checkpoints(roots[0], parent)
-    reference = max(selected, key=lambda g: selected[g]["summary"]["mean_r"])
+    studies = {root: load_rates(root / "shared") for root in dict.fromkeys(roots)}
+    selected = {root: source_checkpoints(root, study) for root, study in studies.items()}
+    # Cross-seed ensembles must beat the strongest verified single from ANY
+    # contributing run, not just the first run on the command line.
+    reference_root, reference = max(((root, g) for root in studies for g in RATES),
+        key=lambda item: selected[item[0]][item[1]]["summary"]["mean_r"])
     models, members = [], []
     for root, group in zip(roots, groups):
-        study = load_rates(root / "shared")
+        study = studies[root]
         for field in ("source_study_sha256", "population", "scale_uV", "sampling", "base_sha256", "body_sha256"):
             if study[field] != parent[field]:
                 raise ValueError("Ensemble members must share the same immutable observed-data/base study")
@@ -35,7 +39,7 @@ def run(args):
         members.append({"path": str(path), "sha256": sha(path), "group": group,
                         "seed": study["training"]["seed"], "weight": 1. / len(groups)})
     study = {**parent, "rate_shared": str(roots[0] / "shared"), "reference_group": reference,
-             "reference_Final": parent["reference"], "reference": selected[reference]["summary"]}
+             "reference_Final": parent["reference"], "reference": selected[reference_root][reference]["summary"]}
     evaluator = Evaluator(roots[0] / "shared", study, device)
     try:
         row = evaluator.evaluate(FixedEnsemble(models).to(device), args.output,
@@ -44,6 +48,8 @@ def run(args):
         evaluator.close()
     write(Path(args.output) / "ensemble.json", {"completed": True, "members": members,
         "summary": row, "reference_best_single": study["reference"],
+        "reference_rate_run": str(reference_root),
+        "delta_best_single": row["mean_r"] - study["reference"]["mean_r"],
         "equal_weights_fixed_before_validation": True, "context_applied_once": True,
         "no_patient_or_validation_fitted_weights": True})
 

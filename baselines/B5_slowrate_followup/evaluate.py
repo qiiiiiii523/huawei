@@ -130,12 +130,13 @@ class Evaluator:
         csv_write(output / "slow_diagnostics.csv", diagnostic)
         fields = list(dict.fromkeys(k for s in statuses for k in s))
         csv_write(output / "context_records.csv", [{k: s.get(k) for k in fields} for s in statuses])
-        write(output / "evaluation.json", {"protocol": PROTOCOL, "completed": True, "summary": row,
+        reproduction_failed = verify_zero and group not in ("PCTX", "PCTX_RF") and any(abs(d) > 1e-7 for d in differences.values())
+        write(output / "evaluation.json", {"protocol": PROTOCOL, "completed": not reproduction_failed, "summary": row,
             "score": score, "sampling": self.study["sampling"], "reference_group": self.study["reference_group"], "slow_beta": .75,
             "population": self.study["population"], "target_used_at_inference": False,
             "context_weights_fixed": True, "predictions_retained": keep_predictions,
             "epoch_zero_deltas": differences if verify_zero else None})
-        if verify_zero and group not in ("PCTX", "PCTX_RF") and any(abs(d) > 1e-7 for d in differences.values()):
+        if reproduction_failed:
             raise ValueError("Epoch0 failed to reproduce trained single-rate reference; report retained")
         print(row, flush=True)
         return row

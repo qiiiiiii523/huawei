@@ -47,6 +47,8 @@ FUSION/FUSION_SAME的融合层都是33→16→11的逐时间点卷积，只有�
 
 P实验确实更新原慢CNN参数。默认只解冻最后两个原残差块和输出头，可用`--tail-blocks 1/2/4`统一设置。原FM、全局注意力和context冻结。训练损失沿用原slow120目标，P组额外加入0.1倍的原P输出偏离约束，系数通过`--p-preservation`明确记录；因此P组与CONT不是纯架构单变量消融，PCTX_RF/PCTX才是本轮感受野核心对照。
 
+PCTX_RF相比PCTX同时增加了卷积块参数，因此它检验的是“新增长程卷积块”的整体效果，并非严格排除了容量差异的纯dilation因果对照。若要据此宣称收益来自感受野本身，还需另做同数量新增块、较小dilation的容量匹配控制。
+
 ## 感受野与窗口
 
 原CNN：输入卷积kernel5，8个块各两层kernel5，dilation为1,2,4,8,16,32,64,128。
@@ -92,6 +94,8 @@ bash scripts/run_b5_slowrate_suite.sh --source-shared /原slow120/run/shared --r
 ```
 
 恢复会核对源码、源manifest、训练参数，训练从原last.pt恢复优化器与随机状态，完成的权重复评按SHA跳过。未完成的非训练输出会改名为`*_interrupted_时间戳`保留，然后重新生成；未写出last.pt的训练目录也这样保留。`active.lock`防止同一suite重复运行。改变seed/预算/窗口/源码需要另开suite，不能修改旧study。
+
+审查修正版还会核验已完成报告的SHA，绑定输入改变时直接拒绝续跑。第0轮复现失败的evaluation会保存诊断但标记为`completed: false`。跨seed集成以所有参与run中的最强已复评单模型作参照。此修正版改变了代码指纹：未启动的实验请使用最新commit；旧源码已启动的run继续使用其原commit，不能跨版本resume。
 
 查看一次当前进度：
 

@@ -78,8 +78,12 @@ class Runner:
                                              sort_keys=True).encode()).hexdigest()
         old = self.state["steps"].get(name, {})
         marker = Path(marker)
+        if old.get("signature") and old["signature"] != signature:
+            raise ValueError("Step command or bound input changed; use a new suite: " + name)
         if old.get("status") == "completed" and old.get("signature") == signature:
             if marker.is_file() and read(marker).get("completed"):
+                if old.get("marker_sha256") != sha(marker):
+                    raise ValueError("Completed report changed: " + str(marker))
                 print("Already complete: " + name, flush=True)
                 return
         actual = list(argv)
@@ -122,6 +126,7 @@ class Runner:
             self.save()
             raise RuntimeError(f"Step failed: {name}. Log: {log}; resume the same suite with --resume")
         record["status"] = "completed"
+        record["marker_sha256"] = sha(marker)
         self.save()
 
 
@@ -254,6 +259,13 @@ def run(args):
         state.update(status="completed", current_step=None, completed=True)
         runner.save()
         print("Completed. Results: " + str(root / "suite_summary.md"), flush=True)
+    except BaseException as error:
+        # Includes setup/data/subprocess-start failures outside Runner.step's
+        # stream loop, so suite.json never remains misleadingly "running".
+        state.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
+                     completed=False, error=str(error))
+        runner.save()
+        raise
     finally:
         lock.unlink(missing_ok=True)
 
