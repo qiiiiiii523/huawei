@@ -2,7 +2,7 @@
   "date": "2026-10-24",
   "base_commit": "1615b2180b37ddc1b8f7d281ccb2059bff09a1d4",
   "branch": "B7-T",
-  "scope": "architecture, model config/checkpoint wiring, tests and documentation",
+  "scope": "architecture plus requested training batch32 and bounded validation batching; tests and documentation",
   "unchanged_protocol_files": {
     "baselines/B7/data.py": {
       "identical_to_source": true,
@@ -15,9 +15,11 @@
       "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7"
     },
     "baselines/B7/flow.py": {
-      "identical_to_source": true,
-      "sha256_lf": "751957ad8d52f35790ad8648b4a39965b369a5f6299c0719bc8da51a2187dabc",
-      "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7"
+      "identical_to_source": false,
+      "sha256_lf": "f3efcf7cb1575d29b33caa576cc9b1b7978a04bb496f62acc091d2a97ef36c51",
+      "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
+      "source_sha256_lf": "751957ad8d52f35790ad8648b4a39965b369a5f6299c0719bc8da51a2187dabc",
+      "intentional_change": "Bounded trajectory/record batching; fixed keyed noise, K16 waveform mean, core stitching and score formulas preserved"
     },
     "baselines/B7/losses.py": {
       "identical_to_source": true,
@@ -30,14 +32,18 @@
       "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7"
     },
     "baselines/B7/inference.py": {
-      "identical_to_source": true,
-      "sha256_lf": "9ba7cf3b7fa1c3a98f3f61a0109ee2e7e921b40d428ef522884f1c86c02f3c85",
-      "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7"
+      "identical_to_source": false,
+      "sha256_lf": "52cf87a8e2637725d64c2928f4df3e0e7eb9600c88c824c9cfdc78e5d73ed044",
+      "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
+      "source_sha256_lf": "9ba7cf3b7fa1c3a98f3f61a0109ee2e7e921b40d428ef522884f1c86c02f3c85",
+      "intentional_change": "Bounded trajectory/record batching; fixed keyed noise, K16 waveform mean, core stitching and score formulas preserved"
     },
     "baselines/B7/evaluate.py": {
-      "identical_to_source": true,
-      "sha256_lf": "efbe42c2a6e8da7a6d92d2a4b12491dc8f423d162fb80fbc6f372c70337f3105",
-      "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7"
+      "identical_to_source": false,
+      "sha256_lf": "66f4bc1602a0be281e3a30e1291c6572cb82f5c6c86ca2dd131199ad25816ea6",
+      "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
+      "source_sha256_lf": "efbe42c2a6e8da7a6d92d2a4b12491dc8f423d162fb80fbc6f372c70337f3105",
+      "intentional_change": "Bounded trajectory/record batching; fixed keyed noise, K16 waveform mean, core stitching and score formulas preserved"
     },
     "baselines/B7/package.py": {
       "identical_to_source": true,
@@ -102,14 +108,14 @@
   },
   "configs": {
     "configs/b7_huawei40.json": {
-      "all_non_model_settings_identical": true,
+      "all_non_model_settings_identical": false,
       "settings": {
         "stage": "huawei40",
         "loss": {
           "mae_weight": 1.0,
           "pcc_weight": 0.1,
           "ii_weight": 5.0,
-          "target_variance_floor": 1e-08
+          "target_variance_floor": 1E-08
         },
         "sampling": {
           "sample_rate": 500,
@@ -124,24 +130,28 @@
           "seed": 42,
           "updates": 1000,
           "validate_every": 100,
-          "batch_size": 1,
-          "learning_rate": 1e-05,
+          "batch_size": 32,
+          "learning_rate": 1E-05,
           "weight_decay": 0.01,
           "ema_decay": 0.999,
           "gradient_clip": 1.0,
           "boundary_probability": 0.15
+        },
+        "validation": {
+          "batch_size": 32
         }
-      }
+      },
+      "intentional_change": "training.batch_size=32; separate validation.batch_size=32; learning rate, updates and validation interval unchanged"
     },
     "configs/b7_public10.json": {
-      "all_non_model_settings_identical": true,
+      "all_non_model_settings_identical": false,
       "settings": {
         "stage": "public10",
         "loss": {
           "mae_weight": 1.0,
           "pcc_weight": 0.1,
           "ii_weight": 5.0,
-          "target_variance_floor": 1e-08
+          "target_variance_floor": 1E-08
         },
         "sampling": {
           "sample_rate": 500,
@@ -156,24 +166,28 @@
           "seed": 42,
           "updates": 10000,
           "validate_every": 500,
-          "batch_size": 4,
+          "batch_size": 32,
           "learning_rate": 0.0001,
           "weight_decay": 0.01,
           "ema_decay": 0.999,
           "gradient_clip": 1.0,
           "boundary_probability": 0.0
+        },
+        "validation": {
+          "batch_size": 32
         }
-      }
+      },
+      "intentional_change": "training.batch_size=32; separate validation.batch_size=32; learning rate, updates and validation interval unchanged"
     },
     "configs/b7_public40.json": {
-      "all_non_model_settings_identical": true,
+      "all_non_model_settings_identical": false,
       "settings": {
         "stage": "public40",
         "loss": {
           "mae_weight": 1.0,
           "pcc_weight": 0.1,
           "ii_weight": 5.0,
-          "target_variance_floor": 1e-08
+          "target_variance_floor": 1E-08
         },
         "sampling": {
           "sample_rate": 500,
@@ -188,14 +202,18 @@
           "seed": 42,
           "updates": 1000,
           "validate_every": 100,
-          "batch_size": 1,
-          "learning_rate": 1e-05,
+          "batch_size": 32,
+          "learning_rate": 1E-05,
           "weight_decay": 0.01,
           "ema_decay": 0.999,
           "gradient_clip": 1.0,
           "boundary_probability": 0.15
+        },
+        "validation": {
+          "batch_size": 32
         }
-      }
+      },
+      "intentional_change": "training.batch_size=32; separate validation.batch_size=32; learning rate, updates and validation interval unchanged"
     }
   },
   "unchanged_condition_and_protocol_classes": {
@@ -204,7 +222,7 @@
     "TimeEmbedding": "AST identical to source B7",
     "MetadataEncoder": "AST identical to source B7"
   },
-  "training_algorithm_unchanged_after_model_symbol_and_provenance_normalization": true,
+  "training_algorithm_unchanged_after_model_symbol_and_provenance_normalization": false,
   "noise_key_protocol_unchanged": true,
   "reviewed_against_latest_b7_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
   "pipeline": {
@@ -216,14 +234,15 @@
     "additional_T_retry_tests": 2
   },
   "review_tests": {
-    "total": 65,
+    "total": 73,
     "core": 24,
     "huawei_index": 5,
     "pipeline": 10,
     "preparation_recovery": 4,
     "PTB_index": 7,
     "transformer": 15,
-    "passed": true
+    "passed": true,
+    "batching": 8
   },
   "latest_reader_and_preparation_recovery_sync": {
     "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
@@ -241,7 +260,7 @@
       "original_header_and_payload_unchanged": true
     }
   },
-  "model_training_loss_sampling_scoring_unchanged_from_T_commit_e5d3b3a": true,
+  "model_training_loss_sampling_scoring_unchanged_from_T_commit_e5d3b3a": false,
   "intentional_preparation_changes": {
     "source_reader_baseline_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
     "source_reader_baseline_sha256_lf": "118f83b98262b08f4d12a445af5ed9b55d0ed1bbec7cf58482c1d313aa23949a",
@@ -251,6 +270,25 @@
     "existing_patient_hash_splits_unchanged": true,
     "PTBXL_Chapman_index_rules_unchanged": true
   },
-  "only_PTBDb_indexing_changed_from_c3b3fc0": true,
-  "PTB_index_check_report": "b7_t_ptb_index_check.json"
+  "only_PTBDb_indexing_changed_from_c3b3fc0": false,
+  "PTB_index_check_report": "b7_t_ptb_index_check.json",
+  "requested_batch32": {
+    "production_model_batch32_GPU_memory_or_throughput_tested": false,
+    "lightweight_full120s_forward_calls": {
+      "batched": 192,
+      "bitwise_equal": true,
+      "serial": 6144
+    },
+    "noise_key_and_K16_Heun16_unchanged": true,
+    "actual_small_transformer_sampling_tolerance": {
+      "rtol": 1E-05,
+      "atol": 2E-06
+    },
+    "baseline_commit": "b774877",
+    "losses_architecture_QC_patient_splits_and_scoring_unchanged": true,
+    "training_batch_size": 32,
+    "code_config_resume_identity_lock_preserved": true,
+    "validation_max_ODE_batch": 32,
+    "batch32_optimizer_probe": "CPU small Transformer, synthetic waveforms, real 5000-point input; finite backward and AdamW update"
+  }
 }

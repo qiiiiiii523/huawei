@@ -58,11 +58,36 @@ def integrate(model, anchor, noise, metadata=None, *, steps=16, solver="heun"):
 
 
 @torch.no_grad()
-def sample(model, anchor, keys, metadata=None, config=None):
+def sample(model, anchor, keys, metadata=None, config=None, *, batch_size=None):
     config = config or SamplingConfig()
-    if len(keys) != len(anchor):
+    if not keys or len(keys) != len(anchor):
         raise ValueError("Keys and batch disagree")
+    if batch_size is not None and (type(batch_size) is not int or batch_size < 1):
+        raise ValueError("Positive integer sampling batch_size required")
     total = anchor.new_zeros(len(anchor), 7, anchor.shape[-1])
+    if batch_size is not None:
+        # Pack independent (window, k) trajectories, never average noise or states.
+        # k-major order preserves the original accumulation order for every window.
+        count = len(anchor)
+        for start in range(0, count * config.samples, batch_size):
+            stop = min(start + batch_size, count * config.samples)
+            ids = torch.tensor([i % count for i in range(start, stop)], device=anchor.device)
+            noises = []
+            cursor = start
+            while cursor < stop:
+                k, first = divmod(cursor, count)
+                end = min(stop, (k + 1) * count)
+                noises.append(keyed_noise(keys[first:first + end - cursor], anchor.shape[-1],
+                                          config.seed, k, anchor.device, anchor.dtype))
+                cursor = end
+            condition = {key: value.index_select(0, ids) for key, value in metadata.items()} if metadata else None
+            generated = integrate(model, anchor.index_select(0, ids), torch.cat(noises), condition,
+                                  steps=config.steps, solver=config.solver)
+            # Repeated window indices can occur within one packed batch. Avoid scatter
+            # reductions, which can reorder floating-point sums or be nondeterministic.
+            for j, index in enumerate(range(start, stop)):
+                total[index % count] += generated[j]
+        return total / config.samples
     for k in range(config.samples):
         noise = keyed_noise(keys, anchor.shape[-1], config.seed, k, anchor.device, anchor.dtype)
         total += integrate(model, anchor, noise, metadata, steps=config.steps, solver=config.solver)

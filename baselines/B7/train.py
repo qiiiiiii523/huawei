@@ -53,8 +53,12 @@ def balanced_indices(dataset, count):
 
 def validate_settings(cfg):
     allowed = {"stage", "model", "loss", "sampling", "training"}
-    if set(cfg) != allowed or cfg["stage"] not in ("public10", "public40", "huawei40"):
+    if set(cfg) not in (allowed, allowed | {"validation"}) or cfg["stage"] not in ("public10", "public40", "huawei40"):
         raise ValueError("Config requires stage/model/loss/sampling/training; B5 settings are not accepted")
+    validation = cfg.get("validation", {"batch_size": 1})
+    if (set(validation) != {"batch_size"} or type(validation["batch_size"]) is not int
+            or validation["batch_size"] < 1):
+        raise ValueError("validation requires a positive integer batch_size")
     model = ModelConfig.from_dict(cfg["model"])
     loss, sampling = LossConfig(**cfg["loss"]), SamplingConfig(**cfg["sampling"])
     expected = 10 if cfg["stage"] == "public10" else 40
@@ -143,7 +147,8 @@ def train(args):
         nonlocal best
         evaluated = copy.deepcopy(model).eval()
         evaluated.load_state_dict(ema, strict=True)
-        metrics, rows = evaluate(evaluated, manifest, sc, cfg["stage"])
+        metrics, rows = evaluate(evaluated, manifest, sc, cfg["stage"],
+                                 batch_size=cfg.get("validation", {}).get("batch_size", 1))
         won = metrics["r"] > best
         if won:
             best = metrics["r"]
@@ -151,7 +156,8 @@ def train(args):
             save_checkpoint(output / "best_r.pt", best_payload)
             save_checkpoint(output / "best.pt", best_payload)
         save_checkpoint(output / "last.pt", payload())
-        report = {"update": step, "validation": metrics, "train": training_parts, "new_best": won}
+        report = {"update": step, "validation": metrics, "train": training_parts, "new_best": won,
+                  "validation_batch_size": cfg.get("validation", {}).get("batch_size", 1)}
         with (output / "history.jsonl").open("a", encoding="utf-8") as h:
             h.write(json.dumps(report, ensure_ascii=False) + "\n")
         (output / f"validation_{step:07d}.json").write_text(json.dumps({"metrics": metrics, "records": rows},

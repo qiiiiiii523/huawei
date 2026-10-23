@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import numpy as np
 from .data import GROUPS, load_record
-from .inference import predict_record
+from .inference import predict_records
 
 SCORE_PROTOCOL = "B7-full-record-lead-target-pair-macro-v2"
 
@@ -57,9 +57,35 @@ def aggregate(rows, stage):
             "targets": len(targets), "pairs": len(rows), "score_protocol": SCORE_PROTOCOL}
 
 
-def evaluate(model, manifest, config, stage):
+def evaluate(model, manifest, config, stage, *, batch_size=1):
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError("Positive integer validation batch_size required")
     rows = []
     target_masks, target_identity = {}, {}
+    pending = []
+
+    def flush():
+        predictions = predict_records(model, [item[1] for item in pending], manifest["scales_uV"],
+            [item[0]["record_id"] for item in pending], [item[4] for item in pending], config,
+            batch_size=batch_size)
+        for (row, _, target, mask, _), output in zip(pending, predictions):
+            prediction = output.cpu().numpy()
+            correlations, by_lead = [], {}
+            for j in range(1, 12):
+                if mask[j]:
+                    value = pearson(prediction[j], target[j])
+                    if np.isfinite(value):
+                        correlations.append(value)
+                    by_lead[str(j)] = {"r": value if np.isfinite(value) else None,
+                        "rmse_uV": float(np.sqrt(np.mean(
+                        (prediction[j].astype("float64") - target[j]) ** 2)))}
+            if not by_lead:
+                continue
+            rows.append({"record_id": row["record_id"], "group": row["group"],
+                         "target_record_id": row["target_record_id"],
+                         "r": float(np.mean(correlations)) if correlations else None, "leads": by_lead})
+        pending.clear()
+
     for row in manifest["records"]:
         if row["split"] != "validation":
             continue
@@ -84,20 +110,11 @@ def evaluate(model, manifest, config, stage):
             anchor, target = anchor[:, :real_length], target[:, :real_length]
         if target.shape[-1] % 5000:
             raise ValueError("Prepared validation record must have complete real10s cores")
-        prediction = predict_record(model, anchor, manifest["scales_uV"], row["record_id"], metadata, config).cpu().numpy()
-        correlations, by_lead = [], {}
-        for j in range(1, 12):
-            if mask[j]:
-                value = pearson(prediction[j], target[j])
-                if np.isfinite(value):
-                    correlations.append(value)
-                by_lead[str(j)] = {"r": value if np.isfinite(value) else None,
-                    "rmse_uV": float(np.sqrt(np.mean(
-                    (prediction[j].astype("float64") - target[j]) ** 2)))}
-        if not by_lead:
-            continue
-        rows.append({"record_id": row["record_id"], "group": row["group"], "target_record_id": key,
-                     "r": float(np.mean(correlations)) if correlations else None, "leads": by_lead})
+        pending.append((row, anchor, target, mask, metadata))
+        if len(pending) == batch_size:
+            flush()
+    if pending:
+        flush()
     return aggregate(rows, stage), rows
 
 
@@ -110,6 +127,7 @@ def main():
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--device", default="cpu")
+    p.add_argument("--batch-size", type=int, default=32, help="Maximum concurrent ODE trajectories")
     a = p.parse_args()
     output = Path(a.output)
     if output.exists():
@@ -118,9 +136,10 @@ def main():
     if list(value["scales_uV"]) != list(manifest["scales_uV"]):
         raise ValueError("Evaluation scales do not match checkpoint")
     metrics, rows = evaluate(model_from_checkpoint(value, a.device), manifest,
-                             SamplingConfig(**value["sampling"]), value["stage"])
+                             SamplingConfig(**value["sampling"]), value["stage"], batch_size=a.batch_size)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({"metrics": metrics, "records": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    output.write_text(json.dumps({"metrics": metrics, "records": rows, "batch_size": a.batch_size},
+                                 ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

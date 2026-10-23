@@ -72,3 +72,13 @@ record_id及target_record_id均包含患者目录，subject及原hash划分保�
 本地PTB_db只读索引核查：548份头文件、548个唯一记录、290位患者，train454、validation43、test51，与原患者hash逐条一致，读取前后头文件SHA相同。服务器550份文件未远程重扫；用户报告的根副本情形由临时测试目录复现。详细结果见[b7_t_ptb_index_check.json](b7_t_ptb_index_check.json)。
 
 用户尚未运行T，因此更新代码后从正常T入口准备新数据即可。模型、配置、loss、训练、K16与评分相对c3b3fc0均未改变；源B7正在使用的代码没有修改。
+
+## 全阶段batch32与验证打包（2026-10-24）
+
+按用户最新要求，public10/public40/huawei40三个配置均改为training.batch_size=32，并增加validation.batch_size=32。P/A/Q/B全部生效。学习率、更新次数、验证间隔未调整；累计训练窗口数随batch增加。模型结构、损失公式、I通道、40秒输出及中央10秒PCC不变。
+
+sample新增有界的(window,k)轨迹批处理；每条仍单独按原key生成CPU噪声，按k顺序累加最终波形，避免重复索引scatter的非确定性。predict_records按原record_key和core起点构造窗口，支持不同记录长度、缺失/已知人口学混合及尾批；evaluate按原顺序计算完整记录的QC评分，分组/target/pair聚合函数未改。验证和单独推理CLI默认batch32，Python函数默认1作为串行对照。SamplingConfig、随机key协议、K16和Heun16不变。
+
+本轮73项测试通过（9.115秒）。新增8项覆盖batch32配置、各batch和尾批结果、完整120秒Heun16/K16、跨记录变长与人口学、真实Transformer的批处理数值一致性、QC与重复target评分、batch32真实10秒长度的反向传播和AdamW更新、非法参数拒绝。完整120秒轻量速度场串行6144次调用，批量192次，波形逐点相同；小Transformer比较在rtol=1e-5/atol=2e-6内通过。没有改变评分公式；不同GPU批处理矩阵计算仍可能有舍入差异。
+
+未运行服务器，也未测试正式15M模型在batch32下的GPU显存、吞吐或真实数据指标。服务器旧训练需先停止。代码与配置身份锁继续严格生效：新版本不能直接resume旧run，应使用新output；原始数据及已完成的B7波形缓存协议保持兼容。仅本地B7-T修改，原B7工作树未改。

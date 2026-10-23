@@ -2,6 +2,55 @@
 
 服务器已知路径：代码`/home/qht/huawei_B7_T`，数据`/home/qht/huawei/data`，旧元数据`/home/qht/huawei/metadata`，环境`BioFlow`。代码目录`/home/qht/huawei_B7_T`是建议的新T工作树路径，启动前需存在并切到B7-T分支。自动调度段启动真实训练，后续手动prepare段只准备数据。
 
+## 已有运行切换到batch32
+
+最新三份配置已将P/A/Q/B的训练batch全部设为32，验证最多32条独立ODE轨迹并行。训练仍采样一份噪声计算loss；验证仍Heun16/K16。以下是服务器操作说明，本地修改不会自行停止服务器进程。
+
+先在服务器停止旧`b7-t`会话中的总控。总控收到中断会终止它启动的子进程；最近checkpoint之后尚未保存的更新不会保存。
+
+```bash
+tmux send-keys -t b7-t C-c
+```
+
+等总控及其子进程退出后再更新。可用下面的只读检查，只列出工作目录为T工作树的B7任务；有输出时先检查对应日志，勿同时更新运行中的代码。
+
+```bash
+python - <<'PY'
+from pathlib import Path
+root = Path('/home/qht/huawei_B7_T').resolve()
+for proc in Path('/proc').iterdir():
+    if not proc.name.isdigit():
+        continue
+    try:
+        if (proc / 'cwd').resolve() != root:
+            continue
+        cmd = (proc / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
+        if 'baselines.B7.' in cmd:
+            print(proc.name, cmd)
+    except (OSError, RuntimeError):
+        pass
+PY
+```
+
+本地commit由用户push之后，在服务器更新分支，并在**新的输出目录**启动：
+
+```bash
+conda activate BioFlow
+cd /home/qht/huawei_B7_T
+git pull --ff-only gitee B7-T
+python -m unittest discover -s baselines/B7/tests -v
+
+B7T_PYTHON="$(command -v python)"
+B7T_OUTPUT=/home/qht/huawei_B7_T/results/B7-T/auto_bs32_seed42
+mkdir -p "$B7T_OUTPUT"
+tmux new-session -d -s b7-t-bs32 "cd /home/qht/huawei_B7_T && exec '$B7T_PYTHON' -u -m baselines.B7.pipeline --data-root /home/qht/huawei/data --metadata /home/qht/huawei/metadata --ptb-root /home/qht/huawei/data/PTB-Diagnostic --output '$B7T_OUTPUT' --gpu-p 0 --gpu-a 0 --gpu-b 0 --max-train 2 >> '$B7T_OUTPUT/pipeline.log' 2>&1"
+tail -f "$B7T_OUTPUT/pipeline.log"
+```
+
+新output使用自己的数据缓存，旧数据/权重保留。此次训练配置与代码已变化，不能对旧`auto_seed42`直接resume或修改旧pipeline_spec绕过校验。若要复用旧run已完成且核对过来源的manifest，可给单阶段`train --manifest /旧run/data/.../manifest.json --output /新训练目录`；自动pipeline当前不自动导入外部缓存。部分缓存仍需原始数据核验，不能当作完整manifest使用。
+
+batch32的正式GPU占用未实测；单卡并行数仍由`--max-train`控制，设为1会保留全部阶段但顺序训练。此次不自动调整学习率/更新次数。
+
 ## 推荐：一次启动准备与全部训练
 
 取得本分支B7-T代码后，不必逐条执行下方prepare。在服务器复制执行下面整段。它会启动真实训练，默认同一张GPU 0最多并行两个训练进程；单个准备进程与训练可重叠。使用独立的`auto_seed42/data`缓存，不读取其他目录的半成品。

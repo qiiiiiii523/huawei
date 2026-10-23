@@ -2,7 +2,15 @@
 
 2026-10-24。从B7@1615b21创建独立B7-T分支，原U7保留在B7分支。本分支只替换骨干：20毫秒联合patch→局部平移窗口Transformer→全局瓶颈→跳连解码→完整七通道速度。三尺度128/256/384，12块，参数15,063,342。没有Conv1d骨干，没有独立I编码器。
 
-包名仍为`baselines.B7`，配置名仍为`configs/b7_*.json`。不传初始化参数即从零训练T，后续只接受同架构B7-T checkpoint；B5/U7权重明确拒绝。B7缓存和冻结scale可以复用，结果写入`results/B7-T/`，不覆盖原U7结果。数据、loss、采样、评分及优化预算与B7相同。
+包名仍为`baselines.B7`，配置名仍为`configs/b7_*.json`。不传初始化参数即从零训练T，后续只接受同架构B7-T checkpoint；B5/U7权重明确拒绝。B7缓存和冻结scale可以复用，结果写入`results/B7-T/`，不覆盖原U7结果。数据、loss、采样和评分规则保留；根据最新要求，全部训练batch改为32，并增加批量验证。
+
+## Batch 32与批量验证
+
+三份配置的`training.batch_size`及`validation.batch_size`均为32，覆盖P、A、Q、B。训练是每次更新32个窗口，无梯度累积；学习率、更新次数及验证间隔保留。相同更新次数下，P看到的窗口数为原batch4的8倍，A/Q/B为原batch1的32倍。
+
+验证跨记录和窗口打包独立ODE轨迹，最多同时32条（尾批可小于32），每个窗口仍各自生成16份完整波形后求平均。固定噪声key、Heun16、中央核心拼接、QC和整记录评分均保留。`validation.batch_size`是执行参数，与K分开；`evaluate`及`inference`命令也支持`--batch-size 32`（默认32）。底层Python函数默认1，兼容串行对照。实模型因矩阵批处理次序可能产生浮点舍入差异。
+
+更新代码/配置后不能对旧训练目录直接`--resume`；使用新output，例如`results/B7-T/auto_bs32_seed42`。停止旧tmux及更新重启见[服务器说明](../../docs/b7_server_data.md)。
 
 ## 实现合同
 
@@ -95,7 +103,7 @@ python -m baselines.B7.inference --checkpoint results/B7-T/B7_T_inference.pt --a
 python -m unittest discover -s baselines/B7/tests -v
 ```
 
-65项测试通过：原B7的24项核心行为、5项华为桥接检查、10项自动调度检查、4项数据准备恢复、7项PTB索引检查，以及15项Transformer检查（全采样分片、局部边界、全局长程依赖、变长/补齐、输出顺序、条件注入及U7权重拒绝）。额外使用正式15M参数模型完成40秒合成CPU反向传播和AdamW更新，全部参数梯度有限。完整120秒Heun16/K16的控制流沿用轻量速度场检查，不表示已完成正式网络GPU全量验证。
+73项测试通过：原65项，加8项批处理检查（生产配置、K16与尾批、完整120秒、跨记录/人口学/变长、实际Transformer采样一致性、QC评分、batch32反向传播、无效参数）。batch32优化器测试使用小Transformer、真实5000点时间长度及合成波形。此前正式15M参数模型完成过batch1的40秒合成CPU反向传播；未验证正式模型batch32的GPU显存/吞吐。完整120秒Heun16/K16控制流使用轻量速度场，不能当作正式网络GPU速度测试。
 
 本分支已实现T；原U7仅保留在B7分支，UT7仍未实现。尚未进行真实训练或GPU验证，不保证T优于U7。详见[当前验证记录](../../docs/b7_t_validation.md)。
 
