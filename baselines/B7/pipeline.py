@@ -50,6 +50,15 @@ def plan(args):
              training("A", ("P", "prepare_huawei"), huawei, "b7_huawei40.json", args.gpu_a, "P"),
              training("Q", ("P", "prepare_ptb"), ptb, "b7_public40.json", args.gpu_b, "P"),
              training("B", ("Q", "prepare_huawei"), huawei, "b7_huawei40.json", args.gpu_b, "Q")]
+    if getattr(args, "reuse_data_from", None):
+        previous = args.reuse_data_from.resolve() / "data"
+        replacements = {str(public): str(previous / "public10/manifest.json"),
+                        str(ptb): str(previous / "ptb40/manifest.json"),
+                        str(huawei): str(previous / "huawei/manifest.json")}
+        jobs = [job for job in jobs if job.module == "train"]
+        for job in jobs:
+            job.arguments = [replacements.get(value, value) for value in job.arguments]
+            job.dependencies = tuple(dep for dep in job.dependencies if dep in ("P", "A", "Q", "B"))
     if getattr(args, "retry_preparation", False):
         for job in jobs:
             if job.module == "prepare":
@@ -74,6 +83,8 @@ def fingerprint(args):
             h.update(path.read_bytes().replace(b"\r\n", b"\n"))
     for key in ("data_root", "metadata", "ptb_root", "output"):
         h.update(str(getattr(args, key).resolve()).encode())
+    if getattr(args, "reuse_data_from", None):
+        h.update(str(args.reuse_data_from.resolve()).encode())
     return h.hexdigest()
 
 
@@ -134,6 +145,8 @@ def validate_artifact(job):
         best_path = job.artifact.parent / "best_r.pt"
         best = load_checkpoint(best_path)
         if (checkpoint.get("update") != value["update"] or best.get("identity") != identity
+                or checkpoint.get("pending_validation", False)
+                or checkpoint.get("last_validated_update", checkpoint["update"]) != checkpoint["update"]
                 or not math.isfinite(value.get("best_r", float("nan")))
                 or best.get("best_r") != value["best_r"] or checkpoint.get("best_r") != value["best_r"]):
             raise RuntimeError(f"{job.name}: completion, last and best checkpoints disagree")
@@ -167,6 +180,17 @@ def run(args):
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable in the current Python environment")
     output = args.output.resolve()
+    if (output / "migration.json").exists():
+        from .reschedule import validate_migration
+        validate_migration(output, getattr(args, "reuse_data_from", None))
+    if getattr(args, "reuse_data_from", None):
+        from .data import read_manifest
+        manifests = [read_manifest(path) for path in {job.arguments[job.arguments.index("--manifest") + 1]
+                                                     for job in jobs}]
+        if any(value["scales_uV"] != manifests[0]["scales_uV"] for value in manifests):
+            raise ValueError("Reused cache scales disagree")
+        if any(not Path(row["resolved_path"]).is_file() for value in manifests for row in value["records"]):
+            raise FileNotFoundError("Reused prepared waveform file is missing")
     output.mkdir(parents=True, exist_ok=True)
     lock = acquire_lock(output / ".pipeline.lock")
     logs = output / "logs"
@@ -289,6 +313,7 @@ def main():
     parser.add_argument("--gpu-b", default="0")
     parser.add_argument("--max-train", type=int, choices=(1, 2), default=2)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--reuse-data-from", type=Path, help="Use completed caches in this old run/data; no preparation jobs")
     parser.add_argument("--retry-preparation", action="store_true", help="Before any training, verify and reuse partial preparation after a reader fix")
     args = parser.parse_args()
     raise SystemExit(run(args))

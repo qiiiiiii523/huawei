@@ -2,7 +2,7 @@
   "date": "2026-10-24",
   "base_commit": "1615b2180b37ddc1b8f7d281ccb2059bff09a1d4",
   "branch": "B7-T",
-  "scope": "architecture plus requested training batch32 and bounded validation batching; tests and documentation",
+  "scope": "Transformer, batch32, bounded validation batching, independent recovery checkpoints and verified sparse-validation migration",
   "unchanged_protocol_files": {
     "baselines/B7/data.py": {
       "identical_to_source": true,
@@ -110,13 +110,6 @@
     "configs/b7_huawei40.json": {
       "all_non_model_settings_identical": false,
       "settings": {
-        "stage": "huawei40",
-        "loss": {
-          "mae_weight": 1.0,
-          "pcc_weight": 0.1,
-          "ii_weight": 5.0,
-          "target_variance_floor": 1E-08
-        },
         "sampling": {
           "sample_rate": 500,
           "window_seconds": 40,
@@ -126,10 +119,15 @@
           "samples": 16,
           "seed": 42
         },
+        "stage": "huawei40",
+        "validation": {
+          "batch_size": 32
+        },
         "training": {
           "seed": 42,
           "updates": 1000,
-          "validate_every": 100,
+          "validate_every": 500,
+          "checkpoint_every": 500,
           "batch_size": 32,
           "learning_rate": 1E-05,
           "weight_decay": 0.01,
@@ -137,22 +135,18 @@
           "gradient_clip": 1.0,
           "boundary_probability": 0.15
         },
-        "validation": {
-          "batch_size": 32
-        }
-      },
-      "intentional_change": "training.batch_size=32; separate validation.batch_size=32; learning rate, updates and validation interval unchanged"
-    },
-    "configs/b7_public10.json": {
-      "all_non_model_settings_identical": false,
-      "settings": {
-        "stage": "public10",
         "loss": {
           "mae_weight": 1.0,
           "pcc_weight": 0.1,
           "ii_weight": 5.0,
           "target_variance_floor": 1E-08
-        },
+        }
+      },
+      "intentional_change": "Training/validation batch32; validation every P2000/Q1000/A-B500; independent checkpoint every500; LR and update budgets unchanged"
+    },
+    "configs/b7_public10.json": {
+      "all_non_model_settings_identical": false,
+      "settings": {
         "sampling": {
           "sample_rate": 500,
           "window_seconds": 10,
@@ -162,10 +156,15 @@
           "samples": 16,
           "seed": 42
         },
+        "stage": "public10",
+        "validation": {
+          "batch_size": 32
+        },
         "training": {
           "seed": 42,
           "updates": 10000,
-          "validate_every": 500,
+          "validate_every": 2000,
+          "checkpoint_every": 500,
           "batch_size": 32,
           "learning_rate": 0.0001,
           "weight_decay": 0.01,
@@ -173,22 +172,18 @@
           "gradient_clip": 1.0,
           "boundary_probability": 0.0
         },
-        "validation": {
-          "batch_size": 32
-        }
-      },
-      "intentional_change": "training.batch_size=32; separate validation.batch_size=32; learning rate, updates and validation interval unchanged"
-    },
-    "configs/b7_public40.json": {
-      "all_non_model_settings_identical": false,
-      "settings": {
-        "stage": "public40",
         "loss": {
           "mae_weight": 1.0,
           "pcc_weight": 0.1,
           "ii_weight": 5.0,
           "target_variance_floor": 1E-08
-        },
+        }
+      },
+      "intentional_change": "Training/validation batch32; validation every P2000/Q1000/A-B500; independent checkpoint every500; LR and update budgets unchanged"
+    },
+    "configs/b7_public40.json": {
+      "all_non_model_settings_identical": false,
+      "settings": {
         "sampling": {
           "sample_rate": 500,
           "window_seconds": 40,
@@ -198,10 +193,15 @@
           "samples": 16,
           "seed": 42
         },
+        "stage": "public40",
+        "validation": {
+          "batch_size": 32
+        },
         "training": {
           "seed": 42,
           "updates": 1000,
-          "validate_every": 100,
+          "validate_every": 1000,
+          "checkpoint_every": 500,
           "batch_size": 32,
           "learning_rate": 1E-05,
           "weight_decay": 0.01,
@@ -209,11 +209,14 @@
           "gradient_clip": 1.0,
           "boundary_probability": 0.15
         },
-        "validation": {
-          "batch_size": 32
+        "loss": {
+          "mae_weight": 1.0,
+          "pcc_weight": 0.1,
+          "ii_weight": 5.0,
+          "target_variance_floor": 1E-08
         }
       },
-      "intentional_change": "training.batch_size=32; separate validation.batch_size=32; learning rate, updates and validation interval unchanged"
+      "intentional_change": "Training/validation batch32; validation every P2000/Q1000/A-B500; independent checkpoint every500; LR and update budgets unchanged"
     }
   },
   "unchanged_condition_and_protocol_classes": {
@@ -227,14 +230,15 @@
   "reviewed_against_latest_b7_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
   "pipeline": {
     "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
-    "logic_identical_except_default_output_root": true,
+    "logic_identical_except_default_output_root": false,
     "default_output": "results/B7-T/auto_seed42",
-    "sha256_lf": "33c36eb414814d70b5a0313a6f436a42ba00c0648257e0190344c93d5c0db24d",
+    "sha256_lf": "a0217040ba91e25b2de867e183510d332df04a86917552055977d9d9c2750e2a",
     "source_test_cases_preserved_with_Transformer_fixture": true,
-    "additional_T_retry_tests": 2
+    "additional_T_retry_tests": 2,
+    "cache_reuse_with_same_training_dependencies": true
   },
   "review_tests": {
-    "total": 73,
+    "total": 87,
     "core": 24,
     "huawei_index": 5,
     "pipeline": 10,
@@ -242,7 +246,8 @@
     "PTB_index": 7,
     "transformer": 15,
     "passed": true,
-    "batching": 8
+    "batching": 8,
+    "sparse_resume": 14
   },
   "latest_reader_and_preparation_recovery_sync": {
     "source_commit": "0113fbcf3c8cdf46989c41c7265cadbf70c0ddb7",
@@ -290,5 +295,30 @@
     "code_config_resume_identity_lock_preserved": true,
     "validation_max_ODE_batch": 32,
     "batch32_optimizer_probe": "CPU small Transformer, synthetic waveforms, real 5000-point input; finite backward and AdamW update"
+  },
+  "sparse_validation_resume": {
+    "changed_code_modules_from_approved_source": [
+      "train.py",
+      "pipeline.py",
+      "reschedule.py"
+    ],
+    "independent_checkpoint_every": 500,
+    "optimizer_EMA_RNG_step_and_best_preserved": true,
+    "real_server_checkpoint_migrated_or_training_stopped": false,
+    "validate_every": {
+      "Q": 1000,
+      "A": 500,
+      "B": 500,
+      "P": 2000
+    },
+    "completed_and_running_stages_supported": true,
+    "checkpoint_save_and_validation_seconds_logged": true,
+    "approved_source_revision": "807b8b074f8dcb1f0439f27d0eb91541678ed463",
+    "pending_validation_retried_before_training_or_completion": true,
+    "old_checkpoint_and_cache_files_modified": false,
+    "original_strict_resume_checks_preserved": true,
+    "approved_source_code_sha256": "964aae60c2f2f4b4d2de131876035d1961d8b9c2ed3ea1f3f0fd36f6842d6247",
+    "migration_uses_new_run_and_existing_caches": true,
+    "CPU_small_transformer_uninterrupted_vs_migrated_state_comparison": "model, EMA, AdamW and RNG equal"
   }
 }

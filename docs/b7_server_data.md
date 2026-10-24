@@ -2,6 +2,8 @@
 
 服务器已知路径：代码`/home/qht/huawei_B7_T`，数据`/home/qht/huawei/data`，旧元数据`/home/qht/huawei/metadata`，环境`BioFlow`。代码目录`/home/qht/huawei_B7_T`是建议的新T工作树路径，启动前需存在并切到B7-T分支。自动调度段启动真实训练，后续手动prepare段只准备数据。
 
+已在运行807b8b0的batch32实验、现在需要减少验证时，请使用[保留现有训练的迁移续训步骤](b7_t_sparse_resume.md)。当前配置已改为P/Q/A/B每2000/1000/500/500步验证，各阶段每500步独立保存；不要按下方首次batch32启动步骤重新从零训练，也不要直接改旧JSON后resume。
+
 ## 已有运行切换到batch32
 
 最新三份配置已将P/A/Q/B的训练batch全部设为32，验证最多32条独立ODE轨迹并行。训练仍采样一份噪声计算loss；验证仍Heun16/K16。以下是服务器操作说明，本地修改不会自行停止服务器进程。

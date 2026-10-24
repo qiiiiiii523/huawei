@@ -4,5 +4,5 @@
   "loss": {"mae_weight": 1.0, "pcc_weight": 0.1, "ii_weight": 5.0, "target_variance_floor": 1e-8},
   "sampling": {"sample_rate": 500, "window_seconds": 40, "core_seconds": 10, "solver": "heun", "steps": 16, "samples": 16, "seed": 42},
   "validation": {"batch_size": 32},
-  "training": {"seed": 42, "updates": 1000, "validate_every": 100, "batch_size": 32, "learning_rate": 0.00001, "weight_decay": 0.01, "ema_decay": 0.999, "gradient_clip": 1.0, "boundary_probability": 0.15}
+  "training": {"seed": 42, "updates": 1000, "validate_every": 500, "checkpoint_every": 500, "batch_size": 32, "learning_rate": 0.00001, "weight_decay": 0.01, "ema_decay": 0.999, "gradient_clip": 1.0, "boundary_probability": 0.15}
 }

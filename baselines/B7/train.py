@@ -65,12 +65,14 @@ def validate_settings(cfg):
     if sampling.window_seconds != expected:
         raise ValueError("Stage and window disagree")
     tr = cfg["training"]
-    if set(tr) != {"seed", "updates", "validate_every", "batch_size", "learning_rate", "weight_decay",
+    if set(tr) - {"checkpoint_every"} != {"seed", "updates", "validate_every", "batch_size", "learning_rate", "weight_decay",
                    "ema_decay", "gradient_clip", "boundary_probability"}:
         raise ValueError("Unexpected or missing training settings")
     for key in ("updates", "validate_every", "batch_size"):
         if type(tr[key]) is not int or tr[key] < 1:
             raise ValueError("Positive integer required: " + key)
+    if "checkpoint_every" in tr and (type(tr["checkpoint_every"]) is not int or tr["checkpoint_every"] < 1):
+        raise ValueError("Positive integer required: checkpoint_every")
     if type(tr["seed"]) is not int or not 0 <= tr["seed"] < 2**32:
         raise ValueError("Invalid training seed")
     if any(not np.isfinite(tr[k]) for k in ("learning_rate", "weight_decay", "ema_decay", "gradient_clip", "boundary_probability")):
@@ -106,10 +108,14 @@ def train(args):
         torch.cuda.manual_seed_all(tr["seed"])
     torch.use_deterministic_algorithms(True)
     model = B7Transformer(mc).to(device)
+    checkpoint_every = tr.get("checkpoint_every", tr["validate_every"])
+    print(f"[train] stage={cfg['stage']} batch={tr['batch_size']} window={sc.window_seconds}s "
+          f"updates={tr['updates']} validate_every={tr['validate_every']} checkpoint_every={checkpoint_every}", flush=True)
     initialization = {"kind": "random_B7T", "seed": tr["seed"], "B5_weights_used": False, "B7_U7_weights_used": False}
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["learning_rate"], weight_decay=tr["weight_decay"])
     ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
     step, best = 0, -float("inf")
+    last_validated_update, pending_validation, pending_train_parts = -1, False, None
     identity = {"manifest_sha256": file_sha256(args.manifest), "code_sha256": code_sha(), "config": cfg}
     data_sha = {r["record_id"]: file_sha256(r["resolved_path"]) for r in manifest["records"]}
     identity["record_sha256"] = data_sha
@@ -129,26 +135,37 @@ def train(args):
         optimizer.load_state_dict(old["optimizer"])
         ema = {k: v.to(device) for k, v in old["ema"].items()}
         step, best, initialization = old["update"], old["best_r"], old["initialization"]
+        last_validated_update = old.get("last_validated_update", step)
+        pending_validation = old.get("pending_validation", False)
+        pending_train_parts = old.get("pending_train_parts")
         restore_rng(old["rng"])
+        print(f"[resume] update={step} best_r={best:.6f} last_validated={last_validated_update} "
+              f"pending_validation={pending_validation}", flush=True)
     dataset = WindowDataset(manifest, sc.window_seconds, tr["boundary_probability"])
     output.mkdir(parents=True, exist_ok=args.resume)
     (output / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def payload():
+    def payload(pending=False, training_parts=None):
         return {"architecture_id": ARCHITECTURE_ID, "format_version": CHECKPOINT_VERSION,
                 "generated_leads": GENERATED_LEADS, "model_config": mc.to_dict(), "loss": asdict(lc),
                 "sampling": asdict(sc), "scales_uV": manifest["scales_uV"], "stage": cfg["stage"],
                 "score_protocol": SCORE_PROTOCOL,
                 "model": model.state_dict(), "ema": ema, "optimizer": optimizer.state_dict(),
                 "update": step, "best_r": best, "identity": identity, "rng": pack_rng(),
+                "last_validated_update": last_validated_update, "pending_validation": pending,
+                "pending_train_parts": training_parts if pending else None,
                 "initialization": initialization}
 
     def validate(training_parts=None):
-        nonlocal best
+        nonlocal best, last_validated_update
+        print(f"[validation] start update={step} K={sc.samples} steps={sc.steps}", flush=True)
+        validation_started = time.monotonic()
         evaluated = copy.deepcopy(model).eval()
         evaluated.load_state_dict(ema, strict=True)
         metrics, rows = evaluate(evaluated, manifest, sc, cfg["stage"],
                                  batch_size=cfg.get("validation", {}).get("batch_size", 1))
+        validation_seconds = time.monotonic() - validation_started
+        last_validated_update = step
         won = metrics["r"] > best
         if won:
             best = metrics["r"]
@@ -157,6 +174,7 @@ def train(args):
             save_checkpoint(output / "best.pt", best_payload)
         save_checkpoint(output / "last.pt", payload())
         report = {"update": step, "validation": metrics, "train": training_parts, "new_best": won,
+                  "validation_seconds": validation_seconds,
                   "validation_batch_size": cfg.get("validation", {}).get("batch_size", 1)}
         with (output / "history.jsonl").open("a", encoding="utf-8") as h:
             h.write(json.dumps(report, ensure_ascii=False) + "\n")
@@ -165,9 +183,22 @@ def train(args):
         print(json.dumps(report, ensure_ascii=False), flush=True)
         del evaluated
 
+    def save_last(pending=False, training_parts=None):
+        started = time.monotonic()
+        save_checkpoint(output / "last.pt", payload(pending, training_parts))
+        report = {"update": step, "last_validated_update": last_validated_update,
+                  "pending_validation": pending, "save_seconds": time.monotonic() - started}
+        with (output / "checkpoint_history.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(report) + "\n")
+        print("[checkpoint] " + json.dumps(report), flush=True)
+
     if not args.resume:
         save_checkpoint(output / "initial.pt", payload())
+        save_last(pending=True)
         validate()
+    elif pending_validation or (step == tr["updates"] and last_validated_update != step):
+        print(f"[resume] completing interrupted validation at update={step}", flush=True)
+        validate(pending_train_parts)
     started = time.monotonic()
     for step in range(step + 1, tr["updates"] + 1):
         model.train()
@@ -180,10 +211,15 @@ def train(args):
         with torch.no_grad():
             for k, value in model.state_dict().items():
                 ema[k].mul_(tr["ema_decay"]).add_(value, alpha=1 - tr["ema_decay"])
-        if step % tr["validate_every"] == 0 or step == tr["updates"]:
+        due_validation = step % tr["validate_every"] == 0 or step == tr["updates"]
+        if step % checkpoint_every == 0 or due_validation:
             logged = {k: float(v.detach()) for k, v in {"total": loss, **parts}.items()}
             logged["window_r"] = 1 - logged["pcc"] if logged["pcc_valid_leads"] else None
-            validate(logged)
+            save_last(pending=due_validation, training_parts=logged)
+            if due_validation:
+                validate(logged)
+        if step % 50 == 0:
+            print(f"[train] update={step}/{tr['updates']} loss={float(loss.detach()):.6g}", flush=True)
     (output / "completed.json").write_text(json.dumps({"completed": True, "update": step,
         "best_r": best, "elapsed_seconds_this_invocation": time.monotonic() - started}), encoding="utf-8")
 

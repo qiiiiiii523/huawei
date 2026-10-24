@@ -6,11 +6,17 @@
 
 ## Batch 32与批量验证
 
-三份配置的`training.batch_size`及`validation.batch_size`均为32，覆盖P、A、Q、B。训练是每次更新32个窗口，无梯度累积；学习率、更新次数及验证间隔保留。相同更新次数下，P看到的窗口数为原batch4的8倍，A/Q/B为原batch1的32倍。
+三份配置的`training.batch_size`及`validation.batch_size`均为32，覆盖P、A、Q、B。训练是每次更新32个窗口，无梯度累积；学习率和更新次数保留。相同更新次数下，P看到的窗口数为原batch4的8倍，A/Q/B为原batch1的32倍。
 
 验证跨记录和窗口打包独立ODE轨迹，最多同时32条（尾批可小于32），每个窗口仍各自生成16份完整波形后求平均。固定噪声key、Heun16、中央核心拼接、QC和整记录评分均保留。`validation.batch_size`是执行参数，与K分开；`evaluate`及`inference`命令也支持`--batch-size 32`（默认32）。底层Python函数默认1，兼容串行对照。实模型因矩阵批处理次序可能产生浮点舍入差异。
 
 更新代码/配置后不能对旧训练目录直接`--resume`；使用新output，例如`results/B7-T/auto_bs32_seed42`。停止旧tmux及更新重启见[服务器说明](../../docs/b7_server_data.md)。
+
+## 减少验证，保留已训练状态
+
+最新配置：P每2000步、Q每1000步、A/B每500步完整验证；四阶段均每500步独立原子保存last.pt，结束强制验证。best.pt/best_r.pt仍只按完整验证r更新。训练每50步打印轻量进度，checkpoint_history记录实际保存耗时，验证history记录validation_seconds。
+
+已运行807b8b0的batch32实验可以先停止旧总控，再用`python -m baselines.B7.reschedule --source OLD --output NEW`迁移完整状态，接着`pipeline --reuse-data-from OLD --output NEW ...`自动继续原路线。只允许已核对的调度代码/间隔变更，不放宽模型、数据、优化设置、K16或评分身份检查。原checkpoint/缓存保留，P及已开始的其他阶段均可延续。完整服务器命令见[迁移与续训说明](../../docs/b7_t_sparse_resume.md)。
 
 ## 实现合同
 
@@ -103,7 +109,7 @@ python -m baselines.B7.inference --checkpoint results/B7-T/B7_T_inference.pt --a
 python -m unittest discover -s baselines/B7/tests -v
 ```
 
-73项测试通过：原65项，加8项批处理检查（生产配置、K16与尾批、完整120秒、跨记录/人口学/变长、实际Transformer采样一致性、QC评分、batch32反向传播、无效参数）。batch32优化器测试使用小Transformer、真实5000点时间长度及合成波形。此前正式15M参数模型完成过batch1的40秒合成CPU反向传播；未验证正式模型batch32的GPU显存/吞吐。完整120秒Heun16/K16控制流使用轻量速度场，不能当作正式网络GPU速度测试。
+87项测试通过：原65项，加8项批处理检查及14项稀疏验证/迁移续训检查。batch32优化器测试使用小Transformer、真实5000点时间长度及合成波形；迁移续训对照逐项比较模型、EMA、AdamW和RNG。此前正式15M参数模型完成过batch1的40秒合成CPU反向传播；未验证正式模型batch32的GPU显存/吞吐。完整120秒Heun16/K16控制流使用轻量速度场，不能当作正式网络GPU速度测试。
 
 本分支已实现T；原U7仅保留在B7分支，UT7仍未实现。尚未进行真实训练或GPU验证，不保证T优于U7。详见[当前验证记录](../../docs/b7_t_validation.md)。
 
