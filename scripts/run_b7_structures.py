@@ -34,7 +34,7 @@ def suite_jobs(args):
 def choose_parallelism(peaks, free_gib, requested):
     # Probe is a planning estimate; keep headroom for workspace/allocator variation.
     per_job = max(peaks) * 1.15 + 2
-    slots = min(requested, int(free_gib // per_job))
+    slots = min(requested or 4, int(free_gib // per_job))
     if slots < 1:
         raise RuntimeError(f"Insufficient free GPU memory: {free_gib:.1f} GiB; estimated slot {per_job:.1f} GiB")
     return slots
@@ -111,7 +111,8 @@ def main():
     p.add_argument("--reuse-data-from", type=Path, default=Path("/home/qht/huawei_B7/results/B7/auto_seed42"))
     p.add_argument("--output", type=Path, default=Path("results/B7-M2-M3"))
     p.add_argument("--gpu", default="0")
-    p.add_argument("--max-train", type=int, choices=(1, 2), default=2)
+    p.add_argument("--max-train", type=int, choices=(0, 1, 2, 3, 4), default=0,
+                   help="Maximum concurrent training stages; default 0 has no limit")
     p.add_argument("--gpu-probe", action="store_true", help="Optional GPU short tests; disabled by default")
     p.add_argument("--max-peak-gib", type=float, default=None, help="Optional probe limit; no limit by default")
     p.add_argument("--dry-run", action="store_true")

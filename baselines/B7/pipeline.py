@@ -263,7 +263,7 @@ def run(args, jobs=None):
                     continue
                 gpu_count = sum(j.gpu is not None for j, _, _ in running.values())
                 cpu_count = len(running) - gpu_count
-                if (job.gpu is not None and gpu_count >= args.max_train) or (job.gpu is None and cpu_count >= 1):
+                if (job.gpu is not None and args.max_train > 0 and gpu_count >= args.max_train) or (job.gpu is None and cpu_count >= 1):
                     continue
                 try:
                     if job.artifact.is_file():
@@ -323,7 +323,7 @@ def main():
     parser.add_argument("--gpu-p", default="0")
     parser.add_argument("--gpu-a", default="0")
     parser.add_argument("--gpu-b", default="0")
-    parser.add_argument("--max-train", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--max-train", type=int, choices=(0, 1, 2, 3, 4), default=2, help="0 disables the training concurrency limit")
     parser.add_argument("--config-dir", type=Path, default=Path("configs"), help="Independent P/Q/A/B configuration directory")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reuse-data-from", type=Path, help="Reuse completed data caches from an old pipeline (including repaired PTB); use a NEW --output")

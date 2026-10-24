@@ -23,7 +23,7 @@ class StructureTests(unittest.TestCase):
 
     def args(self, root):
         return Namespace(output=root / "suite", data_root=root, metadata=root, ptb_root=root,
-            reuse_data_from=root / "cache", gpu="0", dry_run=False, max_train=2, max_peak_gib=40.)
+            reuse_data_from=root / "cache", gpu="0", dry_run=False, max_train=0, max_peak_gib=None)
 
     def test_config_budgets_and_exact_parameter_counts(self):
         for name, count in (("m2", 11477663), ("m3", 11136927)):
@@ -79,16 +79,23 @@ class StructureTests(unittest.TestCase):
                  patch.object(pipeline, "run", return_value=0) as execute:
                 self.assertEqual(runner.run(args), 0)
             self.assertEqual(execute.call_count, 1)
-            self.assertEqual(args.max_train, 2)
+            self.assertEqual(args.max_train, 0)
             plan = json.loads((args.output / "gpu_plan.json").read_text())
             self.assertFalse(plan["gpu_probe"])
             self.assertIsNone(plan["memory_limit_GiB"])
 
     def test_combined_scheduler_global_cap_and_failure_isolation(self):
+        self.check_scheduler(2)
+
+    def test_unlimited_scheduler_starts_four_ready_stages(self):
+        self.check_scheduler(0)
+
+    def check_scheduler(self, max_train):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = make_manifest(root)
             args = self.args(root)
+            args.max_train = max_train
             args.config_dir = runner.ROOT / "configs"
             args.experiment_suite = True
             args.retry_preparation = False
@@ -119,7 +126,7 @@ class StructureTests(unittest.TestCase):
             finally:
                 import os
                 os.chdir(original_cwd)
-            self.assertEqual(maximum[0], 2)
+            self.assertEqual(maximum[0], 2 if max_train else 4)
             self.assertNotIn("M2_B", started)
             self.assertIn("M3_B", started)
             status = json.loads((args.output / "pipeline_status.json").read_text())
