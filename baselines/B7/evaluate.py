@@ -45,7 +45,7 @@ def aggregate(rows, stage):
             raise ValueError(f"No defined QC-eligible targets for every missing lead in group {group}")
         lead_means[group] = {lead: float(np.mean(values)) for lead, values in groups[group].items()}
         means[group] = float(np.mean(list(lead_means[group].values())))
-    if stage == "huawei40":
+    if stage in ("huawei40", "huawei10"):
         if set(means) != set(GROUPS):
             raise ValueError("Huawei best selection requires task1, machine and body validation groups")
         score = .5 * means["task1"] + .25 * means["machine"] + .25 * means["body"]
@@ -101,9 +101,9 @@ def evaluate(model, manifest, config, stage):
         target_identity[key] = fingerprint
         if not row["input_reliable"]:
             continue
-        if stage == "huawei40" and target.shape[-1] != 60000:
+        if stage in ("huawei40", "huawei10") and target.shape[-1] != 60000:
             raise ValueError("Huawei validation must contain real full120s, not padded targets")
-        if stage != "huawei40":
+        if stage not in ("huawei40", "huawei10"):
             real_length = target.shape[-1] // 5000 * 5000
             if real_length < config.window_seconds * 500:
                 continue

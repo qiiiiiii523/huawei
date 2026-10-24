@@ -53,11 +53,11 @@ def balanced_indices(dataset, count):
 
 def validate_settings(cfg):
     allowed = {"stage", "model", "loss", "sampling", "training"}
-    if set(cfg) != allowed or cfg["stage"] not in ("public10", "public40", "huawei40"):
+    if set(cfg) != allowed or cfg["stage"] not in ("public10", "public40", "huawei40", "huawei10"):
         raise ValueError("Config requires stage/model/loss/sampling/training; B5 settings are not accepted")
     model = ModelConfig.from_dict(cfg["model"])
     loss, sampling = LossConfig(**cfg["loss"]), SamplingConfig(**cfg["sampling"])
-    expected = 10 if cfg["stage"] == "public10" else 40
+    expected = 10 if cfg["stage"] in ("public10", "huawei10") else 40
     if sampling.window_seconds != expected:
         raise ValueError("Stage and window disagree")
     tr = cfg["training"]
