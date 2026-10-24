@@ -107,11 +107,13 @@ def acquire_lock(path):
     return handle  # OS releases the lock on exit, including crashes.
 
 
-def command_for(job):
+def command_for(job, recover_initial=False):
     arguments = job.arguments.copy()
     if job.module == "train" and job.artifact.parent.exists():
         if not (job.artifact.parent / "last.pt").is_file():
-            raise RuntimeError(f"{job.name}: incomplete directory without last.pt; inspect its log and use a new --output")
+            if not recover_initial:
+                raise RuntimeError(f"{job.name}: incomplete directory without last.pt; inspect its log and use a new --output")
+            recover_initial_checkpoint(job)
         if "--init-checkpoint" in arguments:
             pos = arguments.index("--init-checkpoint")
             del arguments[pos:pos + 2]
@@ -122,6 +124,30 @@ def command_for(job):
         if destination.exists() and not (job.module == "prepare" and "--resume" in arguments):
             raise RuntimeError(f"{job.name}: partial output {destination}; inspect log and use a new --output")
     return [sys.executable, "-u", "-m", f"baselines.B7.{job.module}", *arguments]
+
+
+def recover_initial_checkpoint(job):
+    """Recover a failed first update without fabricating training progress."""
+    from .checkpoint import load_checkpoint, save_checkpoint, file_sha256, model_from_checkpoint
+    from .train import code_sha
+    from .data import read_manifest
+    initial_path = job.artifact.parent / "initial.pt"
+    value = load_checkpoint(initial_path)
+    manifest_path = Path(job.arguments[job.arguments.index("--manifest") + 1])
+    config_path = Path(job.arguments[job.arguments.index("--config") + 1])
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    manifest = read_manifest(manifest_path)
+    expected = {"manifest_sha256": file_sha256(manifest_path), "code_sha256": code_sha(),
+                "config": config, "record_sha256": {
+                    r["record_id"]: file_sha256(r["resolved_path"]) for r in manifest["records"]}}
+    if (value.get("update") != 0 or value.get("identity") != expected
+            or value.get("stage") != config["stage"]
+            or list(value["scales_uV"]) != list(manifest["scales_uV"])
+            or any(k not in value for k in ("optimizer", "rng", "model", "ema", "initialization"))):
+        raise RuntimeError(f"{job.name}: initial checkpoint identity/state changed; cannot recover")
+    model_from_checkpoint(value)
+    save_checkpoint(job.artifact.parent / "last.pt", value)
+    print(f"[RECOVER_INITIAL] {job.name}: verified initial.pt, resuming update=0", flush=True)
 
 
 def validate_artifact(job):
@@ -204,7 +230,7 @@ def run(args, jobs=None):
     spec = {"fingerprint": fingerprint(args), "raw_files_must_remain_unchanged": True}
     if getattr(args, "experiment_suite", False):
         spec["experiments"] = [{"name": j.name, "after": j.dependencies,
-            "arguments": j.arguments, "gpu": j.gpu,
+            "arguments": j.arguments, "gpu": None if getattr(args, "gpu_is_runtime", False) else j.gpu,
             "config": json.loads(Path(j.arguments[j.arguments.index("--config") + 1]).read_text())}
             for j in jobs]
         spec = json.loads(json.dumps(spec))
@@ -265,6 +291,10 @@ def run(args, jobs=None):
                 cpu_count = len(running) - gpu_count
                 if (job.gpu is not None and args.max_train > 0 and gpu_count >= args.max_train) or (job.gpu is None and cpu_count >= 1):
                     continue
+                per_gpu = getattr(args, "max_per_gpu", 0)
+                if (job.gpu is not None and per_gpu > 0
+                        and sum(j.gpu == job.gpu for j, _, _ in running.values()) >= per_gpu):
+                    continue
                 try:
                     if job.artifact.is_file():
                         result = validate_artifact(job)
@@ -273,7 +303,7 @@ def run(args, jobs=None):
                         status[job.name] = "done"
                         print(f"[REUSE] {job.name}", flush=True)
                         continue
-                    command = command_for(job)
+                    command = command_for(job, recover_initial=getattr(args, "recover_initial", False))
                     env = os.environ.copy()
                     env["PYTHONUNBUFFERED"] = "1"
                     env.setdefault("OMP_NUM_THREADS", "4")
