@@ -2,6 +2,14 @@
 
 日期：2026-10-24。范围：CPU行为测试与本地真实文件只读检查，不是ECG性能评估。
 
+## 全阶段稀疏验证与独立checkpoint（2026-10-24）
+
+用户确定本轮保留325万参数、batch32，P/Q/A/B分别每2000/1000/500/500更新验证，各阶段每500更新独立保存last。新增checkpoint_every可选字段，旧配置缺失时行为不变；新配置验证前也保存pending_validation=True，恢复后先补中断的验证再继续训练。last_validated_update区分已保存训练步与已评估步，best仅由真实验证更新。
+
+安全迁移到新目录保留原模型/EMA/AdamW/RNG/步数/best及原checkpoint文件。新工具scripts/reschedule_b7_all_stages.py核对全阶段仅调度设置改变，允许已知032fc7d/dfd2fc3/9cc3773至本提交的训练保存调度和prepare已知修复代码变化，网络/loss/采样等计算文件逐字对照，当前代码必须为已提交状态。原数据逐文件hash仍严格检查。
+
+核心45项通过；独立调度迁移6项通过，新增覆盖非验证步恢复点、验证中断重试、代码升级禁止改网络，以及原last/best字节不变和模型/EMA/AdamW连续训练一致性。服务器实际GPU迁移续训尚未执行，指令见[b7_sparse_resume.md](b7_sparse_resume.md)。
+
 ## 用户批准的batch32与批量验证（2026-10-24）
 
 用户再次复核路线后发现PTB根目录重复头处理此前仅存在独立恢复脚本，现同步至默认public_index：只接受patient数字/记录.hea、根目录头明确打印排除、不删除原文件、未知嵌套拒绝，record/target ID包含患者目录。旧已完成缓存仍按原manifest直接复用，不重编号。补充默认入口回归后核心45项＋独立恢复5项均通过；实际服务器GPU冒烟及batch32全流程尚未运行。

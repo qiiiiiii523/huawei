@@ -11,12 +11,24 @@ from baselines.B7 import train as trainer
 from baselines.B7.config import LossConfig, SamplingConfig
 from baselines.B7.checkpoint import load_checkpoint
 from baselines.B7.tests.test_b7 import make_manifest, small_config
-from scripts.reschedule_b7_validation import migrate
+from scripts.reschedule_b7_validation import migrate, verify_schedule_upgrade, package_hash
 
 
 class RescheduleTests(unittest.TestCase):
     def setUp(self):
         torch.set_num_threads(2)
+
+    def test_code_upgrade_guard_allows_only_committed_schedule_and_reader_files(self):
+        original={'model.py':b'model','train.py':b'old training'}
+        updated={'model.py':b'model','train.py':b'checkpoint scheduling'}
+        with patch('scripts.reschedule_b7_validation.package_at_revision',side_effect=[updated,original]), \
+             patch.object(trainer,'code_sha',return_value=package_hash(updated)):
+            self.assertEqual(verify_schedule_upgrade(package_hash(original)),'032fc7d')
+        updated['model.py']=b'changed network'
+        with patch('scripts.reschedule_b7_validation.package_at_revision',side_effect=[updated,original]), \
+             patch.object(trainer,'code_sha',return_value=package_hash(updated)):
+            with self.assertRaisesRegex(ValueError,'Computational model'):
+                verify_schedule_upgrade(package_hash(original))
 
     def source(self, root):
         manifest=make_manifest(root)
@@ -86,6 +98,50 @@ class RescheduleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Prepared data/scales changed'):
                 migrate(root/'old',root/'new',manifest,cp,4)
             self.assertFalse((root/'new').exists())
+
+    def test_periodic_checkpoint_without_validation_can_resume(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            args,manifest,cp,config=self.source(root)
+            migrate(root/'old',root/'new',manifest,cp,4,checkpoint_every=1,allow_code_upgrade=True)
+            args.output=str(root/'new/P');args.resume=True
+            original=trainer.balanced_indices
+            calls=0
+            def interrupt(*a,**kw):
+                nonlocal calls
+                calls+=1
+                if calls==2:raise RuntimeError('between validations')
+                return original(*a,**kw)
+            with patch.object(trainer,'balanced_indices',interrupt):
+                with self.assertRaisesRegex(RuntimeError,'between validations'):
+                    trainer.train(args)
+            saved=load_checkpoint(root/'new/P/last.pt')
+            self.assertEqual(saved['update'],3)
+            self.assertEqual(saved['last_validated_update'],2)
+            self.assertFalse(saved['pending_validation'])
+            self.assertEqual(saved['best_r'],load_checkpoint(root/'old/P/last.pt')['best_r'])
+            trainer.train(args)
+            self.assertTrue((root/'new/P/completed.json').is_file())
+
+    def test_interrupted_scheduled_validation_is_retried_before_completion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            args,manifest,cp,config=self.source(root)
+            migrate(root/'old',root/'new',manifest,cp,4,checkpoint_every=1,allow_code_upgrade=True)
+            args.output=str(root/'new/P');args.resume=True
+            with patch.object(trainer,'evaluate',side_effect=RuntimeError('during validation')):
+                with self.assertRaisesRegex(RuntimeError,'during validation'):
+                    trainer.train(args)
+            saved=load_checkpoint(root/'new/P/last.pt')
+            self.assertEqual(saved['update'],4)
+            self.assertTrue(saved['pending_validation'])
+            self.assertFalse((root/'new/P/completed.json').exists())
+            original=trainer.evaluate
+            with patch.object(trainer,'evaluate',wraps=original) as spy:
+                trainer.train(args)
+                self.assertEqual(spy.call_count,1)
+            self.assertFalse(load_checkpoint(root/'new/P/last.pt')['pending_validation'])
+            self.assertTrue((root/'new/P/completed.json').is_file())
 
 
 if __name__=='__main__':

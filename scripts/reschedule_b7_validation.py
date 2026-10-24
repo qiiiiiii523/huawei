@@ -4,6 +4,7 @@ Deploy this script alone. Do not switch the live model package or reset AdamW.
 """
 import argparse
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -37,7 +38,48 @@ def assert_stopped(source):
             continue
 
 
-def migrate(source, output, manifest, config_path, every):
+def package_at_revision(revision):
+    command = ['git','-c',f'safe.directory={ROOT.as_posix()}']
+    paths = subprocess.check_output([*command,'ls-tree','-r','--name-only',revision,'--','baselines/B7'],cwd=ROOT).decode().splitlines()
+    result = {}
+    for path in paths:
+        if Path(path).parent.as_posix() == 'baselines/B7' and path.endswith('.py'):
+            result[Path(path).name] = subprocess.check_output([*command,'show',f'{revision}:{path}'],cwd=ROOT).replace(b'\r\n',b'\n')
+    return result
+
+
+def package_hash(files):
+    h=hashlib.sha256()
+    for name,contents in sorted(files.items()):
+        h.update(name.encode());h.update(contents)
+    return h.hexdigest()
+
+
+def verify_schedule_upgrade(saved_hash):
+    """Only known batch32 code to the committed checkpoint-scheduling revision."""
+    from baselines.B7.train import code_sha
+    current=package_at_revision('HEAD')
+    if package_hash(current) != code_sha():
+        raise ValueError('Current B7 package has uncommitted edits; use the tested committed version')
+    for revision in ('032fc7d','dfd2fc3','9cc3773'):
+        original=package_at_revision(revision)
+        if package_hash(original) != saved_hash:
+            continue
+        changed={name for name in set(current)|set(original) if current.get(name)!=original.get(name)}
+        if changed - {'train.py','prepare.py'}:
+            raise ValueError(f'Computational model/sampling files changed: {sorted(changed)}')
+        return revision
+    raise ValueError('Unrecognized source training code; do not bypass the identity check')
+
+
+def without_schedule(config):
+    value=copy.deepcopy(config)
+    for key in ('validate_every','checkpoint_every'):
+        value['training'].pop(key,None)
+    return value
+
+
+def migrate(source, output, manifest, config_path, every, checkpoint_every=None, allow_code_upgrade=False):
     from baselines.B7.checkpoint import load_checkpoint, save_checkpoint, file_sha256, model_from_checkpoint
     from baselines.B7.data import read_manifest
     from baselines.B7.train import code_sha, validate_settings
@@ -55,13 +97,18 @@ def migrate(source, output, manifest, config_path, every):
         last = load_checkpoint(source/'P/last.pt')
         best = load_checkpoint(source/'P/best_r.pt')
         identity = last['identity']
-        config = json.loads(config_path.read_text(encoding='utf-8-sig'))
-        if config != identity['config'] or json.loads((source/'P/config.json').read_text()) != config:
+        current_config = json.loads(config_path.read_text(encoding='utf-8-sig'))
+        config = identity['config']
+        config_matches = (without_schedule(current_config)==without_schedule(config) if allow_code_upgrade else current_config==config)
+        if not config_matches or json.loads((source/'P/config.json').read_text()) != config:
             raise ValueError('Current config differs from saved P; do not edit it manually before migration')
         if config['stage'] != 'public10' or last['stage'] != 'public10':
             raise ValueError('Only P/public10 may be rescheduled here')
+        approved_revision=None
         if identity['code_sha256'] != code_sha():
-            raise ValueError('Model package changed; deploy only this script on the original code version')
+            if not allow_code_upgrade:
+                raise ValueError('Model package changed; deploy only this script on the original code version')
+            approved_revision=verify_schedule_upgrade(identity['code_sha256'])
         if identity['manifest_sha256'] != file_sha256(manifest):
             raise ValueError('Manifest changed')
         data = read_manifest(manifest)
@@ -78,16 +125,20 @@ def migrate(source, output, manifest, config_path, every):
         model_from_checkpoint(best)
         new_config = copy.deepcopy(config)
         new_config['training']['validate_every'] = every
+        if checkpoint_every is not None:
+            new_config['training']['checkpoint_every']=checkpoint_every
         validate_settings(new_config)
         new_identity = copy.deepcopy(identity)
         new_identity['config'] = new_config
+        new_identity['code_sha256']=code_sha()
         output.mkdir(parents=True)
         target = output/'P'
         target.mkdir()
         # Originals remain byte-for-byte untouched; only identity/config changes
         # in NEW checkpoint copies. No tensor, optimizer, RNG or step changes.
         record = {'source':str(source),'manifest':str(manifest),'source_last_sha256':file_sha256(source/'P/last.pt'),
-                  'source_best_sha256':file_sha256(source/'P/best_r.pt'), 'source_code_sha256':code_sha(),
+                  'source_best_sha256':file_sha256(source/'P/best_r.pt'), 'source_code_sha256':identity['code_sha256'],
+                  'target_code_sha256':code_sha(),'approved_source_revision':approved_revision,
                   'old_validate_every':config['training']['validate_every'],'new_validate_every':every,
                   'resume_update':last['update'],'best_r':last['best_r'],'complete':False}
         (output/'migration.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
