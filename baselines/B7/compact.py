@@ -30,14 +30,14 @@ def load_configs(preset):
         model, loss, sampling = validate_settings(cfg)
         short = stage == "public10"
         expected_training = {"seed": 42, "updates": 10000 if short else 1000,
-            "validate_every": 10000 if short else (1000 if stage == "public40" else 500),
+            "validate_every": 10000 if short else 1000,
             "checkpoint_every": 500, "batch_size": 64 if short else 32,
             "learning_rate": .0001 if short else .00001, "weight_decay": .01,
             "ema_decay": .999, "gradient_clip": 1., "boundary_probability": 0. if short else .15}
         if (cfg["stage"] != stage or model != PRESETS[preset]["model"] or loss != LossConfig()
                 or sampling != SamplingConfig(window_seconds=10 if short else 40)
                 or cfg["training"] != expected_training
-                or cfg["validation"] != {"batch_size": 32, "initial": not short}):
+                or cfg["validation"] != {"batch_size": 32, "initial": False}):
             raise ValueError(f"Unexpected {preset}/{stage} recipe; use a separate experiment for other settings")
         configs[stage] = cfg
     return configs

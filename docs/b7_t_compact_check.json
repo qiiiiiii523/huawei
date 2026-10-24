@@ -71,7 +71,7 @@
         "huawei40": {
           "seed": 42,
           "updates": 1000,
-          "validate_every": 500,
+          "validate_every": 1000,
           "checkpoint_every": 500,
           "batch_size": 32,
           "learning_rate": 1e-05,
@@ -88,11 +88,11 @@
         },
         "public40": {
           "batch_size": 32,
-          "initial": true
+          "initial": false
         },
         "huawei40": {
           "batch_size": 32,
-          "initial": true
+          "initial": false
         }
       }
     },
@@ -148,7 +148,7 @@
         "huawei40": {
           "seed": 42,
           "updates": 1000,
-          "validate_every": 500,
+          "validate_every": 1000,
           "checkpoint_every": 500,
           "batch_size": 32,
           "learning_rate": 1e-05,
@@ -165,11 +165,11 @@
         },
         "public40": {
           "batch_size": 32,
-          "initial": true
+          "initial": false
         },
         "huawei40": {
           "batch_size": 32,
-          "initial": true
+          "initial": false
         }
       }
     }
@@ -187,11 +187,14 @@
     "total": 103,
     "new_compact_cases": 16,
     "Bash_launcher_control_flow": true,
-    "final_only_resume_state_equivalence": true
+    "final_only_resume_state_equivalence": true,
+    "evaluated_weights_equal_final_EMA": true
   },
   "CPU_full_model_40s_batch1_probe": "b7_t_compact_cpu_probe.json",
   "GPU_memory_or_throughput_measured": false,
   "server_training_started": false,
   "probe_default_memory_budget_gib": 35,
-  "probe_budget_is_not_a_hard_GPU_limit": true
+  "probe_budget_is_not_a_hard_GPU_limit": true,
+  "all_stages_initial_validation": false,
+  "all_stages_final_EMA_only": true
 }

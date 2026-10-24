@@ -39,12 +39,12 @@
   },
   "validation": {
     "batch_size": 32,
-    "initial": true
+    "initial": false
   },
   "training": {
     "seed": 42,
     "updates": 1000,
-    "validate_every": 500,
+    "validate_every": 1000,
     "checkpoint_every": 500,
     "batch_size": 32,
     "learning_rate": 1E-05,

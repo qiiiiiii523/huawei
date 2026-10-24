@@ -1,4 +1,4 @@
-"""Independent recipes, final-only P validation, restart state and probe behavior."""
+"""Independent recipes, final-only stage validation, restart state and probe behavior."""
 from argparse import Namespace
 import copy
 from dataclasses import asdict
@@ -49,11 +49,11 @@ class CompactTests(unittest.TestCase):
             del model
             for stage, cfg in configs.items():
                 self.assertEqual(cfg['training']['checkpoint_every'], 500)
-                self.assertEqual(cfg['validation']['initial'], stage != 'public10')
+                self.assertFalse(cfg['validation']['initial'])
                 self.assertEqual(cfg['training']['batch_size'], 64 if stage == 'public10' else 32)
                 self.assertEqual(cfg['training']['updates'], 10000 if stage == 'public10' else 1000)
                 self.assertEqual(cfg['training']['validate_every'],
-                                 {'public10': 10000, 'public40': 1000, 'huawei40': 500}[stage])
+                                 {'public10': 10000, 'public40': 1000, 'huawei40': 1000}[stage])
                 self.assertEqual(cfg['loss'], asdict(LossConfig()))
                 self.assertEqual(cfg['sampling']['samples'], 16)
                 self.assertEqual(cfg['sampling']['steps'], 16)
@@ -83,12 +83,18 @@ class CompactTests(unittest.TestCase):
             root = Path(temp)
             cfg, args = self.fixture(root)
             original = trainer.evaluate
-            with patch.object(trainer, 'evaluate', wraps=original) as evaluator:
+            evaluated_states = []
+            def capture_ema(model, *a, **kw):
+                evaluated_states.append(copy.deepcopy(model.state_dict()))
+                return original(model, *a, **kw)
+            with patch.object(trainer, 'evaluate', side_effect=capture_ema) as evaluator:
                 trainer.train(args)
                 self.assertEqual(evaluator.call_count, 1)
             history = [json.loads(line) for line in (root / 'run/history.jsonl').read_text().splitlines()]
             self.assertEqual([row['update'] for row in history], [4])
             last = load_checkpoint(root / 'run/last.pt')
+            reschedule.assert_same(evaluated_states[0], last['ema'])
+            self.assertTrue(any(not torch.equal(last['model'][k], last['ema'][k]) for k in last['model']))
             self.assertEqual(last['last_validated_update'], 4)
             self.assertFalse(last['pending_validation'])
             self.assertEqual(last['initialization']['kind'], 'random_B7T')

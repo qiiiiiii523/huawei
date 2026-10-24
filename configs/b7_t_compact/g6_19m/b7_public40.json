@@ -39,7 +39,7 @@
   },
   "validation": {
     "batch_size": 32,
-    "initial": true
+    "initial": false
   },
   "training": {
     "seed": 42,
