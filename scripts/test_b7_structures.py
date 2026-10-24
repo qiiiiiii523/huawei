@@ -69,6 +69,21 @@ class StructureTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runner.choose_parallelism([39.], 25., 2)
 
+    def test_default_run_skips_probes_without_memory_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self.args(root)
+            manifest = {"scales_uV": [100.] * 12, "records": [{"resolved_path": str(make_manifest(root))}]}
+            with patch("baselines.B7.data.read_manifest", return_value=manifest), \
+                 patch.object(runner, "checked_subprocess", side_effect=AssertionError("Probe must not run")), \
+                 patch.object(pipeline, "run", return_value=0) as execute:
+                self.assertEqual(runner.run(args), 0)
+            self.assertEqual(execute.call_count, 1)
+            self.assertEqual(args.max_train, 2)
+            plan = json.loads((args.output / "gpu_plan.json").read_text())
+            self.assertFalse(plan["gpu_probe"])
+            self.assertIsNone(plan["memory_limit_GiB"])
+
     def test_combined_scheduler_global_cap_and_failure_isolation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

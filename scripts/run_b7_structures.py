@@ -1,4 +1,4 @@
-"""M2/M3: reuse B7 waveform caches, probe GPU, then run one bounded experiment graph."""
+"""M2/M3: reuse B7 waveform caches and directly run one bounded experiment graph."""
 from __future__ import annotations
 
 import argparse
@@ -70,6 +70,13 @@ def run(args):
             scales = manifest["scales_uV"]
             if any(not Path(r["resolved_path"]).is_file() for r in manifest["records"]):
                 raise FileNotFoundError("Cached waveform missing in " + path)
+        if not getattr(args, "gpu_probe", False):
+            report = {"gpu_probe": False, "effective_parallelism": args.max_train,
+                      "memory_limit_GiB": None}
+            (args.output / "gpu_plan.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+            print("[GPU_PLAN] short probes disabled; no memory budget limit; "
+                  f"max_train={args.max_train}", flush=True)
+            return pipeline.run(args, jobs=jobs)
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = args.gpu
         env["PYTHONUNBUFFERED"] = "1"
@@ -77,9 +84,11 @@ def run(args):
         for name in ("m2", "m3"):
             for stage in ("public10", "public40"):
                 log = args.output / f"probe_{name}_{stage}.log"
-                report = checked_subprocess([sys.executable, "-u", str(Path(__file__).resolve()),
-                    "--probe-config", str(ROOT / "configs" / ("u7_" + name) / f"b7_{stage}.json"),
-                    "--max-peak-gib", str(args.max_peak_gib)], log, env)
+                command = [sys.executable, "-u", str(Path(__file__).resolve()),
+                    "--probe-config", str(ROOT / "configs" / ("u7_" + name) / f"b7_{stage}.json")]
+                if args.max_peak_gib is not None:
+                    command += ["--max-peak-gib", str(args.max_peak_gib)]
+                report = checked_subprocess(command, log, env)
                 peaks.append(report["peak_reserved_GiB"])
         free = checked_subprocess([sys.executable, "-u", str(Path(__file__).resolve()),
                                    "--free-memory"], args.output / "gpu_free.log", env)["free_GiB"]
@@ -103,12 +112,13 @@ def main():
     p.add_argument("--output", type=Path, default=Path("results/B7-M2-M3"))
     p.add_argument("--gpu", default="0")
     p.add_argument("--max-train", type=int, choices=(1, 2), default=2)
-    p.add_argument("--max-peak-gib", type=float, default=40.)
+    p.add_argument("--gpu-probe", action="store_true", help="Optional GPU short tests; disabled by default")
+    p.add_argument("--max-peak-gib", type=float, default=None, help="Optional probe limit; no limit by default")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--probe-config", type=Path, help=argparse.SUPPRESS)
     p.add_argument("--free-memory", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args()
-    if args.max_peak_gib <= 0:
+    if args.max_peak_gib is not None and args.max_peak_gib <= 0:
         p.error("max-peak-gib must be positive")
     if args.probe_config:
         from scripts.run_b7_large import probe
