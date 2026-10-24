@@ -1,0 +1,56 @@
+{
+  "stage": "huawei40",
+  "model": {
+    "patch_size": 10,
+    "embed_dims": [
+      144,
+      288,
+      432
+    ],
+    "heads": [
+      4,
+      8,
+      12
+    ],
+    "depths": [
+      2,
+      2,
+      5
+    ],
+    "window_size": 64,
+    "mlp_ratio": 4,
+    "time_dim": 128,
+    "metadata_dim": 128
+  },
+  "loss": {
+    "mae_weight": 1.0,
+    "pcc_weight": 0.1,
+    "ii_weight": 5.0,
+    "target_variance_floor": 1E-08
+  },
+  "sampling": {
+    "sample_rate": 500,
+    "window_seconds": 40,
+    "core_seconds": 10,
+    "solver": "heun",
+    "steps": 16,
+    "samples": 16,
+    "seed": 42
+  },
+  "validation": {
+    "batch_size": 32,
+    "initial": true
+  },
+  "training": {
+    "seed": 42,
+    "updates": 1000,
+    "validate_every": 500,
+    "checkpoint_every": 500,
+    "batch_size": 32,
+    "learning_rate": 1E-05,
+    "weight_decay": 0.01,
+    "ema_decay": 0.999,
+    "gradient_clip": 1.0,
+    "boundary_probability": 0.15
+  }
+}

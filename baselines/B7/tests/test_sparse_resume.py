@@ -23,10 +23,16 @@ class SparseResumeTests(unittest.TestCase):
     def setUpClass(cls):
         torch.set_num_threads(2)
         cls.baseline_package = reschedule.package_at_revision(reschedule.BASELINE_REVISION)
+        # The old migration whitelist intentionally rejects the compact branch.
+        # Exercise its legacy migration tests against the approved schedule-only
+        # package; compact experiment rejection is covered in test_compact.py.
+        cls.approved_schedule_package = reschedule.package_at_revision('5cffb8e')
 
     def setUp(self):
-        self.current_package = {p.name: p.read_bytes().replace(b'\r\n', b'\n')
-                                for p in Path(reschedule.__file__).parent.glob('*.py')}
+        self.current_package = copy.deepcopy(self.approved_schedule_package)
+        self.worktree_guard = patch.object(reschedule, 'working_package', side_effect=lambda: self.current_package)
+        self.worktree_guard.start()
+        self.addCleanup(self.worktree_guard.stop)
         self.code_guard = patch.object(reschedule, 'package_at_revision', side_effect=lambda revision:
             self.current_package if revision == 'HEAD' else self.baseline_package)
         self.code_guard.start()

@@ -56,9 +56,10 @@ def validate_settings(cfg):
     if set(cfg) not in (allowed, allowed | {"validation"}) or cfg["stage"] not in ("public10", "public40", "huawei40"):
         raise ValueError("Config requires stage/model/loss/sampling/training; B5 settings are not accepted")
     validation = cfg.get("validation", {"batch_size": 1})
-    if (set(validation) != {"batch_size"} or type(validation["batch_size"]) is not int
-            or validation["batch_size"] < 1):
-        raise ValueError("validation requires a positive integer batch_size")
+    if (set(validation) not in ({"batch_size"}, {"batch_size", "initial"})
+            or type(validation["batch_size"]) is not int or validation["batch_size"] < 1
+            or type(validation.get("initial", True)) is not bool):
+        raise ValueError("validation requires a positive integer batch_size and optional boolean initial")
     model = ModelConfig.from_dict(cfg["model"])
     loss, sampling = LossConfig(**cfg["loss"]), SamplingConfig(**cfg["sampling"])
     expected = 10 if cfg["stage"] == "public10" else 40
@@ -194,8 +195,12 @@ def train(args):
 
     if not args.resume:
         save_checkpoint(output / "initial.pt", payload())
-        save_last(pending=True)
-        validate()
+        initial_validation = cfg.get("validation", {}).get("initial", True)
+        save_last(pending=initial_validation)
+        if initial_validation:
+            validate()
+        else:
+            print("[validation] initial evaluation disabled by this experiment config", flush=True)
     elif pending_validation or (step == tr["updates"] and last_validated_update != step):
         print(f"[resume] completing interrupted validation at update={step}", flush=True)
         validate(pending_train_parts)

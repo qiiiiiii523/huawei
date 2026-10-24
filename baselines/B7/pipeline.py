@@ -26,6 +26,7 @@ class Job:
 
 def plan(args):
     output, raw, metadata = args.output.resolve(), args.data_root.resolve(), args.metadata.resolve()
+    config_dir = Path(getattr(args, "config_dir", None) or "configs")
     cache = output / "data"
     public, ptb, huawei = [cache / name / "manifest.json" for name in ("public10", "ptb40", "huawei")]
     index = cache / "huawei_index.json"
@@ -41,7 +42,7 @@ def plan(args):
     ]
     def training(name, dependencies, manifest, config, gpu, parent=None):
         directory = output / name
-        command = ["--manifest", str(manifest), "--config", str(Path("configs") / config),
+        command = ["--manifest", str(manifest), "--config", str(config_dir / config),
                    "--output", str(directory), "--device", "cuda"]
         if parent:
             command += ["--init-checkpoint", str(output / parent / "best_r.pt")]
@@ -76,7 +77,8 @@ def fingerprint(args):
     # Lock the code, settings and metadata across reruns. Raw files are read-only;
     # training additionally verifies its prepared data and config on resume.
     h = hashlib.sha256()
-    for folder, pattern in ((Path(__file__).parent, "*.py"), (Path("configs"), "b7_*.json"),
+    config_dir = Path(getattr(args, "config_dir", None) or "configs")
+    for folder, pattern in ((Path(__file__).parent, "*.py"), (config_dir, "b7_*.json"),
                             (args.metadata, "*.csv")):
         for path in sorted(folder.glob(pattern)):
             h.update(path.name.encode())
@@ -85,6 +87,8 @@ def fingerprint(args):
         h.update(str(getattr(args, key).resolve()).encode())
     if getattr(args, "reuse_data_from", None):
         h.update(str(args.reuse_data_from.resolve()).encode())
+    if getattr(args, "config_dir", None):
+        h.update(str(config_dir.resolve()).encode())
     return h.hexdigest()
 
 
@@ -313,6 +317,7 @@ def main():
     parser.add_argument("--gpu-b", default="0")
     parser.add_argument("--max-train", type=int, choices=(1, 2), default=2)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--config-dir", type=Path, help="Independent directory containing three b7 stage configs")
     parser.add_argument("--reuse-data-from", type=Path, help="Use completed caches in this old run/data; no preparation jobs")
     parser.add_argument("--retry-preparation", action="store_true", help="Before any training, verify and reuse partial preparation after a reader fix")
     args = parser.parse_args()
