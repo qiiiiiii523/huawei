@@ -151,6 +151,11 @@ def validate_artifact(job):
                 or not math.isfinite(value.get("best_r", float("nan")))
                 or best.get("best_r") != value["best_r"] or checkpoint.get("best_r") != value["best_r"]):
             raise RuntimeError(f"{job.name}: completion, last and best checkpoints disagree")
+        if config["training"].get("validation_mode") == "final_only":
+            if (value.get("selection") != "final_ema" or best.get("update") != value["update"]
+                    or checkpoint.get("pending_validation") is not False
+                    or checkpoint.get("last_validated_update") != value["update"]):
+                raise RuntimeError(f"{job.name}: final EMA validation is incomplete")
         from .checkpoint import model_from_checkpoint
         model_from_checkpoint(best)  # Strictly validate the generated model's state tensors.
         return {"best_r": value["best_r"], "best_checkpoint": str(best_path.resolve()),
@@ -166,9 +171,9 @@ def validate_artifact(job):
             raise RuntimeError("Huawei index must be a list")
 
 
-def run(args):
+def run(args, jobs=None):
     os.chdir(Path(__file__).resolve().parents[2])
-    jobs = plan(args)
+    jobs = plan(args) if jobs is None else jobs
     if args.dry_run:
         for job in jobs:
             print(json.dumps({"job": job.name, "after": job.dependencies, "gpu": job.gpu,
@@ -197,6 +202,12 @@ def run(args):
     logs = output / "logs"
     logs.mkdir(exist_ok=True)
     spec = {"fingerprint": fingerprint(args), "raw_files_must_remain_unchanged": True}
+    if getattr(args, "experiment_suite", False):
+        spec["experiments"] = [{"name": j.name, "after": j.dependencies,
+            "arguments": j.arguments, "gpu": j.gpu,
+            "config": json.loads(Path(j.arguments[j.arguments.index("--config") + 1]).read_text())}
+            for j in jobs]
+        spec = json.loads(json.dumps(spec))
     state_path = output / "pipeline_spec.json"
     if getattr(args, "retry_preparation", False) and not preparation_only_retry_allowed(args):
         raise RuntimeError("--retry-preparation is only allowed before any P/A/Q/B training directory exists")

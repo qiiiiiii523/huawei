@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def probe(config_path):
+def probe(config_path, max_peak_gib=None):
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     import torch
     from baselines.B7.train import validate_settings
     from baselines.B7.model import B7UNet
@@ -27,11 +28,10 @@ def probe(config_path):
         raise RuntimeError("CUDA unavailable; activate the training environment")
     torch.set_num_threads(4)
     torch.manual_seed(tr["seed"])
+    torch.use_deterministic_algorithms(True)
     torch.cuda.reset_peak_memory_stats()
     model = B7UNet(mc).cuda().train()
     parameters = sum(p.numel() for p in model.parameters())
-    if parameters != 15327327:
-        raise RuntimeError(f"Unexpected parameter count: {parameters}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["learning_rate"], weight_decay=tr["weight_decay"])
     ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
     length, batch_size = sc.window_seconds * sc.sample_rate, tr["batch_size"]
@@ -55,6 +55,8 @@ def probe(config_path):
     if prediction.shape != (sc.validation_batch_size, 7, length) or not torch.isfinite(prediction).all():
         raise RuntimeError("Invalid generated waveform")
     torch.cuda.synchronize()
+    if max_peak_gib is not None and torch.cuda.max_memory_reserved() / 2**30 > max_peak_gib:
+        raise RuntimeError(f"Probe reserved peak exceeds {max_peak_gib} GiB; inspect GPU log before training")
     print(json.dumps({"status": "PASS", "parameters": parameters, "seconds": sc.window_seconds,
                       "batch": batch_size, "K": sc.samples, "loss": float(loss.detach()),
                       "peak_allocated_GiB": torch.cuda.max_memory_allocated() / 2**30,
@@ -168,4 +170,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # The old CLI now starts the agreed M2/M3 suite, not the superseded batch comparison.
+    from scripts.run_b7_structures import main as structures_main
+    structures_main()

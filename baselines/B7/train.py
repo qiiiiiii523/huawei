@@ -61,9 +61,13 @@ def validate_settings(cfg):
     if sampling.window_seconds != expected:
         raise ValueError("Stage and window disagree")
     tr = cfg["training"]
-    if set(tr) - {"checkpoint_every"} != {"seed", "updates", "validate_every", "batch_size", "learning_rate", "weight_decay",
+    if set(tr) - {"checkpoint_every", "validation_mode"} != {"seed", "updates", "validate_every", "batch_size", "learning_rate", "weight_decay",
                    "ema_decay", "gradient_clip", "boundary_probability"}:
         raise ValueError("Unexpected or missing training settings")
+    if tr.get("validation_mode", "periodic") not in ("periodic", "final_only"):
+        raise ValueError("validation_mode must be periodic or final_only")
+    if tr.get("validation_mode") == "final_only" and tr["validate_every"] != tr["updates"]:
+        raise ValueError("final_only requires validate_every == updates")
     for key in ("updates", "validate_every", "batch_size"):
         if type(tr[key]) is not int or tr[key] < 1:
             raise ValueError("Positive integer required: " + key)
@@ -106,7 +110,9 @@ def train(args):
     model = B7UNet(mc).to(device)
     print(f"[train] stage={cfg['stage']} device={device} batch_size={tr['batch_size']} "
           f"window={sc.window_seconds}s updates={tr['updates']} "
-          f"ode_batch={sc.sample_batch_size} validation_batch={sc.validation_batch_size}", flush=True)
+          f"ode_batch={sc.sample_batch_size} validation_batch={sc.validation_batch_size} "
+          f"validation_mode={tr.get('validation_mode', 'periodic')} "
+          f"parameters={sum(p.numel() for p in model.parameters())}", flush=True)
     initialization = {"kind": "random_B7", "seed": tr["seed"], "B5_weights_used": False}
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["learning_rate"], weight_decay=tr["weight_decay"])
     ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
@@ -173,7 +179,10 @@ def train(args):
 
     if not args.resume:
         save_checkpoint(output / "initial.pt", payload())
-        validate()
+        if tr.get("validation_mode", "periodic") == "periodic":
+            validate()
+        else:
+            print("[validation] initial and intermediate full validation disabled; final EMA only", flush=True)
     elif pending_validation:
         print(f"[resume] completing interrupted validation at update={step}", flush=True)
         validate()
@@ -189,7 +198,7 @@ def train(args):
         with torch.no_grad():
             for k, value in model.state_dict().items():
                 ema[k].mul_(tr["ema_decay"]).add_(value, alpha=1 - tr["ema_decay"])
-        due_validation = step % tr["validate_every"] == 0 or step == tr["updates"]
+        due_validation = validation_due(tr, step)
         if "checkpoint_every" in tr and (step % tr["checkpoint_every"] == 0 or due_validation):
             save_checkpoint(output / "last.pt", payload(pending=due_validation))
             print(f"[checkpoint] update={step} last_validated={last_validated_update} "
@@ -201,7 +210,13 @@ def train(args):
         elif step == 1 or step % 50 == 0:
             print(f"[train] update={step}/{tr['updates']} loss={float(loss.detach()):.6g}", flush=True)
     (output / "completed.json").write_text(json.dumps({"completed": True, "update": step,
-        "best_r": best, "elapsed_seconds_this_invocation": time.monotonic() - started}), encoding="utf-8")
+        "best_r": best, "selection": "final_ema" if tr.get("validation_mode") == "final_only" else "best_validation_r",
+        "elapsed_seconds_this_invocation": time.monotonic() - started}), encoding="utf-8")
+
+
+def validation_due(training, step):
+    return step == training["updates"] or (training.get("validation_mode", "periodic") == "periodic"
+                                          and step % training["validate_every"] == 0)
 
 
 def main():
