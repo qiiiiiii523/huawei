@@ -24,6 +24,14 @@ class Job:
     gpu: str | None = None
 
 
+def reused_manifests(previous):
+    previous = Path(previous).resolve()
+    repaired = previous / "ptb_recovery/data/manifest.json"
+    return {"public10": previous / "data/public10/manifest.json",
+            "ptb40": repaired if repaired.is_file() else previous / "data/ptb40/manifest.json",
+            "huawei": previous / "data/huawei/manifest.json"}
+
+
 def plan(args):
     output, raw, metadata = args.output.resolve(), args.data_root.resolve(), args.metadata.resolve()
     config_dir = Path(getattr(args, "config_dir", None) or "configs")
@@ -52,10 +60,10 @@ def plan(args):
              training("Q", ("P", "prepare_ptb"), ptb, "b7_public40.json", args.gpu_b, "P"),
              training("B", ("Q", "prepare_huawei"), huawei, "b7_huawei40.json", args.gpu_b, "Q")]
     if getattr(args, "reuse_data_from", None):
-        previous = args.reuse_data_from.resolve() / "data"
-        replacements = {str(public): str(previous / "public10/manifest.json"),
-                        str(ptb): str(previous / "ptb40/manifest.json"),
-                        str(huawei): str(previous / "huawei/manifest.json")}
+        previous = reused_manifests(args.reuse_data_from)
+        replacements = {str(public): str(previous["public10"]),
+                        str(ptb): str(previous["ptb40"]),
+                        str(huawei): str(previous["huawei"])}
         jobs = [job for job in jobs if job.module == "train"]
         for job in jobs:
             job.arguments = [replacements.get(value, value) for value in job.arguments]
@@ -154,6 +162,10 @@ def validate_artifact(job):
                 or not math.isfinite(value.get("best_r", float("nan")))
                 or best.get("best_r") != value["best_r"] or checkpoint.get("best_r") != value["best_r"]):
             raise RuntimeError(f"{job.name}: completion, last and best checkpoints disagree")
+        if (config.get("validation", {}).get("initial", True) is False
+                and config["training"]["validate_every"] >= config["training"]["updates"]
+                and best.get("update") != value["update"]):
+            raise RuntimeError(f"{job.name}: final EMA checkpoint must be from the final update")
         from .checkpoint import model_from_checkpoint
         model_from_checkpoint(best)  # Strictly validate the generated model's state tensors.
         return {"best_r": value["best_r"], "best_checkpoint": str(best_path.resolve()),
@@ -169,9 +181,9 @@ def validate_artifact(job):
             raise RuntimeError("Huawei index must be a list")
 
 
-def run(args):
+def run(args, jobs=None):
     os.chdir(Path(__file__).resolve().parents[2])
-    jobs = plan(args)
+    jobs = plan(args) if jobs is None else jobs
     if args.dry_run:
         for job in jobs:
             print(json.dumps({"job": job.name, "after": job.dependencies, "gpu": job.gpu,
@@ -200,6 +212,11 @@ def run(args):
     logs = output / "logs"
     logs.mkdir(exist_ok=True)
     spec = {"fingerprint": fingerprint(args), "raw_files_must_remain_unchanged": True}
+    if getattr(args, "experiment_suite", False):
+        spec["experiments"] = [{"name": j.name, "after": list(j.dependencies),
+            "arguments": j.arguments, "gpu": j.gpu,
+            "config": json.loads(Path(j.arguments[j.arguments.index("--config") + 1]).read_text(encoding="utf-8"))}
+            for j in jobs]
     state_path = output / "pipeline_spec.json"
     if getattr(args, "retry_preparation", False) and not preparation_only_retry_allowed(args):
         raise RuntimeError("--retry-preparation is only allowed before any P/A/Q/B training directory exists")

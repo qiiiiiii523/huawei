@@ -27,6 +27,29 @@ K16波形平均、Heun16、验证轨迹batch32、固定噪声key、40秒滑窗�
 
 新增validation.initial布尔字段，省略时仍默认true；新实验所有阶段均显式设false。未验证的last保存best_r=-inf、last_validated_update=-1，这表示没有评估，不是模型生成失败。恢复时不补初始验证；若最终验证中断，则先补完该次验证，不能直接标记completed。每次结束仍强制验证。
 
+## 推荐：两组共用一个总控，总并发最多2
+
+在独立工作树的tmux内执行：
+
+```bash
+conda activate BioFlow
+cd /home/qht/huawei_B7_T_compact
+mkdir -p results/B7-T-compact-suite
+set -o pipefail
+python -u -m baselines.B7.compact_suite \
+  --reuse-data-from /home/qht/huawei_B7_T/results/B7-T/auto_bs32_seed42 \
+  --output results/B7-T-compact-suite --gpu 0 --max-train 2 \
+  2>&1 | tee -a results/B7-T-compact-suite/launcher.log
+```
+
+此总控管理两组共8个阶段，先启动两组P，再按P→A、P→Q→B依赖调度；训练及阶段末验证进程合计最多2个，不是每组各2个。允许1或2，不提供不限制并发选项。其他独立总控和服务器已有实验不在此上限内。不要同时用单组入口管理相同输出目录。
+
+首次训练前依次完成两组10秒/40秒短测，短测不并行。保留默认单进程35GiB短测预算，全部通过后才启动训练；这不是两个进程合计35GiB，也不保证同卡其他实验占用时一定够用。短测仅覆盖训练，不包含完整K16验证。加`--no-probe-first`可显式跳过；已有本组P/last.pt时跳过该组短测。停止后用相同命令重启，恢复及失败隔离沿用pipeline。
+
+总状态在`results/B7-T-compact-suite/pipeline_status.json`，日志在`logs/g6_19m:P.log`等；权重在`g6_19m/seed42/P`、`w144_g5_21m/seed42/P`等独立目录。只看计划可加`--dry-run`。此入口使用新的suite输出目录，不直接接管先前单组总控的运行状态。
+
+缓存兼容B7-U7-large：优先读取`旧run/ptb_recovery/data/manifest.json`，不存在才读取`旧run/data/ptb40/manifest.json`；公开短窗和华为仍来自`旧run/data/public10`和`旧run/data/huawei`。发现修复manifest后若损坏会报错，不会回退到旧数据绕过核验。
+
 ## 服务器：创建独立工作树（普通终端）
 
 本地提交由用户人工push到gitee后，在服务器执行。不要在正在运行的/home/qht/huawei_B7_T里checkout或pull新实验代码。fetch和创建另一个worktree不会替换旧工作树里的代码。
@@ -82,7 +105,7 @@ bash scripts/run_b7_t_compact.sh w144_g5_21m
 
 默认每套最多一个训练子进程，因此顺序为P→A→Q→B。确需同套A/Q并行，可设B7T_MAX_TRAIN=2；需另外核算两条40秒训练的总显存。单进程预算通过不保证共享GPU上多个进程同时安全。
 
-复用的是旧run中的data/public10、data/ptb40、data/huawei完整manifest和NPZ；不重新prepare，不修改这些数据，也不使用旧权重。不要把B7T_CACHE_RUN设为只有空data目录、实际引用其他缓存的sparse运行；要指向真正保存三套缓存的原始run。原缓存不能删除。
+复用的是旧run中的data/public10、data/huawei及优先选择ptb_recovery/data（否则data/ptb40）的完整manifest和NPZ；不重新prepare，不修改这些数据，也不使用旧权重。不要把B7T_CACHE_RUN设为只有空data目录、实际引用其他缓存的sparse运行；要指向真正保存三套缓存的原始run。原缓存不能删除。
 
 ## 单独测速或仅预览
 
@@ -125,7 +148,7 @@ tail -n 5 "$B7T_RUN/P/checkpoint_history.jsonl"
 
 配置中的参数量由实际模型统计。测试覆盖各阶段配置只在末尾验证、实际评估使用最终EMA而非普通权重，以及训练确实只在末尾验证、首轮验证前的恢复点逐状态续训、最终验证中断补评、两套独立调度/指纹、原配置保持不变、非法配置拒绝、GPU探测的CPU控制流。另用两套正式结构完成CPU上的真实40秒长度、batch1、FM/MAE/PCC反向传播、AdamW及EMA更新；参数有限，I保持不变。记录见b7_t_compact_cpu_probe.json。
 
-完整103项测试通过，新增16项compact检查；实际Bash控制流测试使用假Python命令，确认先测两种长度、失败阻止训练、恢复跳过测速。两套真实调度dry-run均为P→(A,Q→B)，复用缓存时没有prepare任务。模型、数据、loss、采样和评分等13份受保护代码及原三份配置与5cffb8e逐字节一致（归一化换行）。范围核查见[b7_t_compact_check.json](b7_t_compact_check.json)。
+完整108项测试通过，新增21项compact与suite检查；实际Bash控制流测试使用假Python命令，确认先测两种长度、失败阻止训练、恢复跳过测速。两套真实调度dry-run均为P→(A,Q→B)，复用缓存时没有prepare任务。模型、数据、loss、采样和评分等13份受保护代码及原三份配置与5cffb8e逐字节一致（归一化换行）。范围核查见[b7_t_compact_check.json](b7_t_compact_check.json)。
 
 尚未在服务器测量正式10秒batch64、40秒batch32的显存或吞吐，未运行公开预训练/华为微调，不承诺新模型优于原基线。
 

@@ -22,7 +22,9 @@ task_gpu_a="${B7T_GPU_A:-${B7T_GPU:-0}}"
 task_gpu_b="${B7T_GPU_B:-${B7T_GPU:-0}}"
 
 for cache in public10 ptb40 huawei; do
-  if [[ ! -f "$task_cache/data/$cache/manifest.json" ]]; then
+  if [[ "$cache" == ptb40 && -f "$task_cache/ptb_recovery/data/manifest.json" ]]; then
+    continue
+  elif [[ ! -f "$task_cache/data/$cache/manifest.json" ]]; then
     echo "Missing completed cache: $task_cache/data/$cache/manifest.json" >&2
     exit 2
   fi

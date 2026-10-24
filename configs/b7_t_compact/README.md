@@ -9,3 +9,7 @@ All stages checkpoint every500. Both candidates start their own P from scratch.
 
 Do not replace `configs/b7_*.json` or baseline checkpoint files. Server worktree,
 GPU probe, cache reuse and restart commands: [guide](../../docs/b7_t_compact.md).
+
+Recommended two-candidate launcher: `python -m baselines.B7.compact_suite ...`.
+One scheduler enforces a global maximum of two training jobs (including final validation).
+Repaired PTB cache `ptb_recovery/data/manifest.json` takes priority when present.

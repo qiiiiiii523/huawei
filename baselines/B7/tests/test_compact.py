@@ -15,7 +15,7 @@ from unittest.mock import patch
 import torch
 
 from baselines.B7 import compact, pipeline, reschedule, train as trainer
-from baselines.B7.checkpoint import load_checkpoint
+from baselines.B7.checkpoint import load_checkpoint, save_checkpoint
 from baselines.B7.compact_probe import measure
 from baselines.B7.config import LossConfig, SamplingConfig
 from baselines.B7.model import B7Transformer
@@ -103,6 +103,14 @@ class CompactTests(unittest.TestCase):
             self.assertTrue((root / 'run/best_r.pt').exists())
             checkpoints = [json.loads(line) for line in (root / 'run/checkpoint_history.jsonl').read_text().splitlines()]
             self.assertEqual([row['update'] for row in checkpoints], [0, 1, 2, 3, 4])
+            job = pipeline.Job('P', (), 'train', ['--config', args.config, '--manifest', args.manifest],
+                               root / 'run/completed.json', '0')
+            pipeline.validate_artifact(job)
+            stale = load_checkpoint(root / 'run/best_r.pt')
+            stale['update'] = 3
+            save_checkpoint(root / 'run/best_r.pt', stale)
+            with self.assertRaisesRegex(RuntimeError, 'final EMA checkpoint'):
+                pipeline.validate_artifact(job)
 
     def test_final_only_checkpoint_can_resume_before_any_validation(self):
         with tempfile.TemporaryDirectory() as temp:

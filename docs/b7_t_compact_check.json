@@ -184,11 +184,12 @@
   "reuse_waveform_caches_without_weights": true,
   "old_migration_tool_not_for_new_architectures": true,
   "tests": {
-    "total": 103,
-    "new_compact_cases": 16,
+    "total": 108,
+    "new_compact_cases": 21,
     "Bash_launcher_control_flow": true,
     "final_only_resume_state_equivalence": true,
-    "evaluated_weights_equal_final_EMA": true
+    "evaluated_weights_equal_final_EMA": true,
+    "suite_global_limit_and_failure_isolation": true
   },
   "CPU_full_model_40s_batch1_probe": "b7_t_compact_cpu_probe.json",
   "GPU_memory_or_throughput_measured": false,
@@ -196,5 +197,9 @@
   "probe_default_memory_budget_gib": 35,
   "probe_budget_is_not_a_hard_GPU_limit": true,
   "all_stages_initial_validation": false,
-  "all_stages_final_EMA_only": true
+  "all_stages_final_EMA_only": true,
+  "repaired_PTB_cache_preferred": true,
+  "default_suite_max_train_total": 2,
+  "non_architecture_comparison": "b7_t_u7_comparison.md",
+  "U7_comparison_commit": "7d0d076"
 }
