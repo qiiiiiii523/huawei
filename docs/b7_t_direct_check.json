@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-25",
+  "branch": "B7-T-direct",
+  "base": "4c2857c",
+  "presets": ["g6_19m", "w144_g5_21m"],
+  "jobs_per_preset": ["Q40_H120", "Q40_H10", "Q40_H40C10", "Q75", "Q75_H120", "Q75_H10", "Q75_H40C10"],
+  "public_parents_only": true,
+  "reuse_old_Huawei_weights": false,
+  "fm_region": "full real window",
+  "H40C10_mae_pcc_region": "central10s",
+  "batch_size": 16,
+  "updates_per_job": 1000,
+  "checkpoint_every": 500,
+  "validation": "final EMA only; K16 Heun16; trajectory batch4",
+  "max_jobs_per_controller": 1,
+  "controllers": 2,
+  "regression_tests": {"count": 122, "passed": true, "device": "CPU"},
+  "new_tests": ["recipe invariants", "central MAE/PCC with full FM", "real Q75 filtering and public validation", "seven-job CPU training and completed-run restart"],
+  "formal_GPU_training_performed": false,
+  "GPU_memory_benchmark_performed": false,
+  "old_worktrees_modified": false
+}

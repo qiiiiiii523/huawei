@@ -51,6 +51,7 @@ class LossConfig:
     ii_weight: float = 5.0
     target_variance_floor: float = 1e-8
     pcc_core_seconds: int = 10
+    mae_core_seconds: int = 0  # Zero retains full-window MAE, including legacy runs.
 
     def __post_init__(self):
         if any(not math.isfinite(v) or v < 0 for v in asdict(self).values()):
@@ -59,6 +60,8 @@ class LossConfig:
             raise ValueError("II weight and variance floor must be positive")
         if type(self.pcc_core_seconds) is not int or self.pcc_core_seconds < 1:
             raise ValueError("PCC core seconds must be a positive integer")
+        if type(self.mae_core_seconds) is not int or self.mae_core_seconds < 0:
+            raise ValueError("MAE core seconds must be a nonnegative integer")
 
 
 @dataclass(frozen=True)
@@ -73,8 +76,8 @@ class SamplingConfig:
 
     def __post_init__(self):
         if (self.sample_rate != 500 or type(self.window_seconds) is not int or type(self.core_seconds) is not int
-                or (self.window_seconds, self.core_seconds) not in ((10, 10), (40, 10), (40, 20), (120, 120))):
-            raise ValueError("B7 uses 500Hz and window/core pairs 10/10, 40/10, 40/20 or 120/120")
+                or (self.window_seconds, self.core_seconds) not in ((10, 10), (40, 10), (40, 20), (75, 75), (120, 120))):
+            raise ValueError("B7 uses 500Hz and window/core pairs 10/10, 40/10, 40/20, 75/75 or 120/120")
         if self.solver not in ("heun", "euler") or self.steps < 1 or self.samples < 1:
             raise ValueError("Invalid sampling settings")
         if not 0 <= self.seed < 2**32:

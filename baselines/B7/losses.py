@@ -7,8 +7,8 @@ from .flow import linear_path
 
 
 def core_slice(length, sample_rate=500, core_seconds=10):
-    if sample_rate != 500 or length not in (5000, 20000, 60000):
-        raise ValueError("Training uses real 10s, 40s or 120s at 500Hz")
+    if sample_rate != 500 or length not in (5000, 20000, 37500, 60000):
+        raise ValueError("Training uses real 10s, 40s, 75s or 120s at 500Hz")
     if type(core_seconds) is not int or core_seconds < 1 or core_seconds * sample_rate > length:
         raise ValueError("PCC core must fit inside the real window")
     width = core_seconds * sample_rate
@@ -28,7 +28,15 @@ def reconstruction_losses(prediction, target, valid, config=None):
     if not torch.isfinite(p).all() or not torch.isfinite(y).all():
         raise ValueError("Nonfinite supervised waveform")
     absolute = torch.where(valid, (p - y).abs(), 0.)
-    mae = (absolute * weights).sum() / (valid * weights).sum()
+    mae_valid = valid.clone()
+    if config.mae_core_seconds:
+        mae_valid.zero_()
+        mae_core = core_slice(target.shape[-1], core_seconds=config.mae_core_seconds)
+        mae_valid[:, :, mae_core] = valid[:, :, mae_core]
+    if not mae_valid.any():
+        raise ValueError("No valid MAE supervision in selected core")
+    mae_absolute = torch.where(mae_valid, absolute, 0.)
+    mae = (mae_absolute * weights).sum() / (mae_valid * weights).sum()
     core = core_slice(target.shape[-1], core_seconds=config.pcc_core_seconds)
     mask = valid[:, :, core]
     n = mask.sum(-1).clamp_min(1)
@@ -43,8 +51,8 @@ def reconstruction_losses(prediction, target, valid, config=None):
     lead_weights = weights.squeeze(-1) * eligible
     pcc = ((1 - corr) * lead_weights).sum() / lead_weights.sum().clamp_min(1)
     # When there is no varying target in the core, PCC contributes zero.
-    counts = valid.sum((0, 2)).clamp_min(1)
-    per_lead_mae = absolute.sum((0, 2)) / counts
+    counts = mae_valid.sum((0, 2)).clamp_min(1)
+    per_lead_mae = mae_absolute.sum((0, 2)) / counts
     return {"mae": mae, "pcc": pcc, "pcc_valid_leads": eligible.sum().to(prediction.dtype),
             "mae_ii": per_lead_mae[0], "mae_chest": per_lead_mae[1:].mean()}
 

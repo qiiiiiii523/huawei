@@ -46,7 +46,7 @@ def aggregate(rows, stage):
             raise ValueError(f"No defined QC-eligible targets for every missing lead in group {group}")
         lead_means[group] = {lead: float(np.mean(values)) for lead, values in groups[group].items()}
         means[group] = float(np.mean(list(lead_means[group].values())))
-    if stage in ("huawei40", "huawei120"):
+    if stage in ("huawei10", "huawei40", "huawei120"):
         if set(means) != set(GROUPS):
             raise ValueError("Huawei best selection requires task1, machine and body validation groups")
         score = .5 * means["task1"] + .25 * means["machine"] + .25 * means["body"]
@@ -111,14 +111,15 @@ def evaluate(model, manifest, config, stage, *, batch_size=1):
         target_identity[key] = fingerprint
         if not row["input_reliable"]:
             continue
-        if stage in ("huawei40", "huawei120") and target.shape[-1] != 60000:
+        if stage in ("huawei10", "huawei40", "huawei120") and target.shape[-1] != 60000:
             raise ValueError("Huawei validation must contain real full120s, not padded targets")
-        if stage not in ("huawei40", "huawei120"):
-            real_length = target.shape[-1] // 5000 * 5000
+        if stage not in ("huawei10", "huawei40", "huawei120"):
+            unit = config.core_seconds * 500 if stage == 'public75' else 5000
+            real_length = target.shape[-1] // unit * unit
             if real_length < config.window_seconds * 500:
                 continue
             anchor, target = anchor[:, :real_length], target[:, :real_length]
-        if target.shape[-1] % 5000:
+        if target.shape[-1] % (config.core_seconds * 500 if stage == 'public75' else 5000):
             raise ValueError("Prepared validation record must have complete real10s cores")
         pending.append((row, anchor, target, mask, metadata))
         if len(pending) == batch_size:
