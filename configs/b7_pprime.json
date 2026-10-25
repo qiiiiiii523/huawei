@@ -5,7 +5,7 @@
     "time_dim": 128,
     "metadata_dim": 128,
     "dilations": [1, 2, 4, 8, 16, 32],
-    "output_head": "linear",
+    "output_head": "multiscale",
     "head_channels": 64,
     "coarse_interval_seconds": 0.5
   },
@@ -15,7 +15,7 @@
     "ii_weight": 5.0,
     "target_variance_floor": 1e-8,
     "pcc_leads": 11,
-    "low_frequency_weight": 0.0,
+    "low_frequency_weight": 1.0,
     "low_frequency_cutoff_hz": 0.5
   },
   "sampling": {

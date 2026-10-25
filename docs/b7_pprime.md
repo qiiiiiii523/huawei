@@ -1,6 +1,6 @@
 # B7 P-prime: four independent public10 experiments
 
-Current branch: **B7-P-L**, baseline linear M2 head, PCC11, no LF auxiliary loss.
+Current branch: **B7-P-MS-LF**, fine plus coarse-control-point velocity paths, PCC11 plus LF endpoint loss.
 
 All four branches start at the updated M2 `0f19a6e` (includes QC-v2 `ff91627`).
 The original M2 checkout/configs/cache/checkpoints are not modified. Only the
@@ -92,8 +92,8 @@ conda activate BioFlow
 mkdir -p results
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B7.pretrain \
   --manifest /home/qht/huawei/data_cache/B7_public_qcv2/data/public10/manifest.json \
-  --output results/Pprime_L_seed42 --device cuda \
-  > results/Pprime_L_seed42.log 2>&1
+  --output results/Pprime_MS_LF_seed42 --device cuda \
+  > results/Pprime_MS_LF_seed42.log 2>&1
 ```
 
 Use output/log suffix `LF`, `MS_LF` or `LH` on its corresponding branch. Run in a
