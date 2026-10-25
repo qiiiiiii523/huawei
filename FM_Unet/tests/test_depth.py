@@ -19,6 +19,7 @@ class DepthTests(unittest.TestCase):
 
     def test_seven_levels_forward_backward(self):
         model = build()
+        self.assertEqual(sum(p.numel() for p in model.parameters()), 14_506_847)
         sizes = []
         hooks = [getattr(model.core, f'down{i}').register_forward_hook(
             lambda module, args, output: sizes.append(output.shape[-1])) for i in range(1, 7)]
@@ -84,6 +85,20 @@ class DepthTests(unittest.TestCase):
                               'FM', 'depth-test', steps=1, samples=2, trajectory_batch=2)
         self.assertEqual(result.shape, (11, 60000))
         self.assertTrue(np.isfinite(result).all())
+
+    def test_m7_experiment_plans(self):
+        from FM_Unet.experiment import build_optimizer, load_experiment
+        root = Path(__file__).parents[2] / 'configs' / 'fm_unet_m7'
+        for stage in ('public10', 'public75', 'huawei120'):
+            config, model = load_experiment(root / f'{stage}.json')
+            self.assertEqual(model.config, ModelConfig())
+            optimizer = build_optimizer(model, config)
+            self.assertEqual(optimizer.param_groups[0]['lr'], 1e-4)
+            n = model.input_seconds
+            with torch.no_grad():
+                output = model(torch.zeros(1, 7, n * model.rate), torch.tensor([0.5]),
+                               torch.zeros(1, 1, n * 500), None)
+            self.assertEqual(output.shape, (1, 7, n * model.rate))
 
 
 if __name__ == '__main__':

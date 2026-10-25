@@ -9,10 +9,10 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ModelConfig:
-    channels: tuple[int, ...] = (16, 32, 64, 128, 128, 128, 128)
-    time_dim: int = 32
-    metadata_dim: int = 32
-    dilations: tuple[int, ...] = (1, 1, 1, 1, 2, 3, 6, 13, 26)
+    channels: tuple[int, ...] = (64, 128, 256, 256, 256, 256, 256)
+    time_dim: int = 128
+    metadata_dim: int = 128
+    dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32)
 
     def __post_init__(self):
         if len(self.channels) < 2 or any(type(c) is not int or c < 4 for c in self.channels):

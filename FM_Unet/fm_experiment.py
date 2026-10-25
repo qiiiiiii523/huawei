@@ -21,8 +21,8 @@ def restrict50(x,rate):
 
 class FMExperimentUNet(Native50UNet):
  def __init__(self,config=None,rate=5,input_seconds=120,output_seconds=120):
-  if rate not in [50,10,5] or input_seconds not in [10,40,60,120] or output_seconds not in [10,30,60,120] or output_seconds>input_seconds or 120%output_seconds:raise ValueError('Experiment contract')
-  config=config or ModelConfig(channels=(16,32,64,128,128,128,128),time_dim=32,metadata_dim=32,dilations=tuple(max(1,round(d*rate/50)) for d in [1,2,4,8,16,32,64,128,256]))
+  if rate not in [50,10,5] or input_seconds not in [10,40,60,75,120] or output_seconds not in [10,30,60,75,120] or output_seconds>input_seconds:raise ValueError('Experiment contract')
+  config=config or ModelConfig()
   if input_seconds*rate < 2**(len(config.channels)-1):raise ValueError("Input too short for configured U-Net levels; use >=64 native points for seven levels")
   super().__init__(config);self.rate=rate;self.input_seconds=input_seconds;self.output_seconds=output_seconds
  def forward(self,state,time,anchor,metadata):
@@ -40,7 +40,7 @@ def build(config=None,rate=5,input_seconds=120,output_seconds=120):return FMExpe
 
 @torch.no_grad()
 def generate_native(model,raw_i,meta,scales,noise_std,kind,record_key,steps=16,samples=16,trajectory_batch=16):
- if kind!='FM' or samples%2 or np.shape(raw_i)!=(1,60000):raise ValueError('Sampling contract')
+ if kind!='FM' or samples%2 or 120%model.output_seconds or np.shape(raw_i)!=(1,60000):raise ValueError('Sampling contract')
  model.eval();device=next(model.parameters()).device;ni=model.input_seconds*model.rate;no=model.output_seconds*model.rate;left_seconds=(model.input_seconds-model.output_seconds)//2;pieces=[]
  for start in range(0,120,model.output_seconds):
   index=np.arange((start-left_seconds)*500,(start-left_seconds+model.input_seconds)*500).clip(0,59999);anchor=torch.as_tensor((np.asarray(raw_i,np.float64)[:,index]/scales[0]).copy(),dtype=torch.float32,device=device)[None];fields={k:torch.as_tensor(v,device=device)[None] for k,v in meta.items()};key=record_key if model.input_seconds==model.output_seconds==120 else record_key+':core'+str(start)
