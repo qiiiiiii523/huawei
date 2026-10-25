@@ -9,7 +9,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ModelConfig:
-    channels: tuple[int, int, int] = (64, 128, 256)
+    channels: tuple[int, ...] = (64, 128, 256)
     time_dim: int = 128
     metadata_dim: int = 128
     dilations: tuple[int, ...] = (1, 2, 4, 8)
@@ -18,8 +18,8 @@ class ModelConfig:
     coarse_interval_seconds: float = 0.5
 
     def __post_init__(self):
-        if len(self.channels) != 3 or any(c < 4 for c in self.channels):
-            raise ValueError("Three channel widths >=4 required")
+        if not 3 <= len(self.channels) <= 8 or any(type(c) is not int or c < 4 for c in self.channels):
+            raise ValueError("Three to eight scale widths, integer channels >=4 required")
         if self.time_dim < 4 or self.time_dim % 2 or self.metadata_dim < 4:
             raise ValueError("Invalid condition dimensions")
         if not self.dilations or any(d < 1 for d in self.dilations):

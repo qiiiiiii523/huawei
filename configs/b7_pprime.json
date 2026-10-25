@@ -1,7 +1,7 @@
 {
   "stage": "public10",
   "model": {
-    "channels": [112, 224, 448],
+    "channels": [112, 224, 448, 448, 448, 448, 448],
     "time_dim": 128,
     "metadata_dim": 128,
     "dilations": [1, 2, 4, 8, 16, 32],

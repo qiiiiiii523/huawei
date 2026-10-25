@@ -118,6 +118,7 @@ def train(args):
           f"validation_mode={tr.get('validation_mode', 'periodic')} "
           f"pcc_leads={lc.pcc_leads} "
           f"head={mc.output_head} lf_weight={lc.low_frequency_weight} "
+          f"scales={len(mc.channels)} downsamplings={len(mc.channels)-1} "
           f"lf_cutoff_hz={lc.low_frequency_cutoff_hz} "
           f"parameters={sum(p.numel() for p in model.parameters())}", flush=True)
     initialization = {"kind": "random_B7", "seed": tr["seed"], "B5_weights_used": False}

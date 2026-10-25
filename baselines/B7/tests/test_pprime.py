@@ -78,7 +78,9 @@ class PPrimeTests(unittest.TestCase):
         self.assertEqual((lc.pcc_leads, lc.ii_weight, lc.pcc_weight), (11,5,.1))
         self.assertIn((mc.output_head, lc.low_frequency_weight),
                       [('linear',0.),('linear',1.),('multiscale',1.),('split',0.)])
-        for key in ('channels','dilations','time_dim','metadata_dim'):
+        self.assertEqual(c['model']['channels'], [112,224,448,448,448,448,448])
+        self.assertEqual(c['model']['channels'][:3], original['model']['channels'])
+        for key in ('dilations','time_dim','metadata_dim'):
             self.assertEqual(c['model'][key], original['model'][key])
 
     def test_physical_DCT_modes_DC_and_fast_components(self):
