@@ -112,6 +112,7 @@ def train(args):
           f"window={sc.window_seconds}s updates={tr['updates']} "
           f"ode_batch={sc.sample_batch_size} validation_batch={sc.validation_batch_size} "
           f"validation_mode={tr.get('validation_mode', 'periodic')} "
+          f"pcc_leads={lc.pcc_leads} "
           f"parameters={sum(p.numel() for p in model.parameters())}", flush=True)
     initialization = {"kind": "random_B7", "seed": tr["seed"], "B5_weights_used": False}
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["learning_rate"], weight_decay=tr["weight_decay"])
@@ -128,6 +129,8 @@ def train(args):
         model.load_state_dict(source["ema"], strict=True)
         ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
         initialization = {"kind": "previous_B7_stage", "sha256": file_sha256(args.init_checkpoint),
+                          "source_stage": source["stage"], "source_update": source["update"],
+                          "source_loss": source.get("loss"), "optimizer_reset": True,
                           "lineage": source["initialization"], "B5_weights_used": False}
     if args.resume:
         old = load_checkpoint(output / "last.pt")
@@ -142,7 +145,8 @@ def train(args):
         restore_rng(old["rng"])
         print(f"[resume] update={step} best_r={best:.6f} validate_every={tr['validate_every']} "
               f"checkpoint_every={tr.get('checkpoint_every', tr['validate_every'])}", flush=True)
-    dataset = WindowDataset(manifest, sc.window_seconds, tr["boundary_probability"])
+    dataset = WindowDataset(manifest, sc.window_seconds, tr["boundary_probability"],
+                            include_d12=lc.pcc_leads == 11)
     output.mkdir(parents=True, exist_ok=args.resume)
     (output / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 

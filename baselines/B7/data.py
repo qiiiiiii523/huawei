@@ -81,13 +81,14 @@ def fit_scales(records, minimum=100.0):
 
 
 class WindowDataset(torch.utils.data.Dataset):
-    def __init__(self, manifest, window_seconds=40, boundary_probability=0.15):
+    def __init__(self, manifest, window_seconds=40, boundary_probability=0.15, include_d12=False):
         if window_seconds not in (10, 40) or not 0 <= boundary_probability <= 1:
             raise ValueError("Invalid window configuration")
         self.manifest = manifest
         self.width, self.core = window_seconds * 500, 5000
         self.margin = (self.width - self.core) // 2
         self.boundary_probability = boundary_probability
+        self.include_d12 = include_d12
         self.scales = np.asarray(manifest["scales_uV"], dtype="float32")
         self.rows = []
         for row in manifest["records"]:
@@ -117,6 +118,12 @@ class WindowDataset(torch.utils.data.Dataset):
         result = {"anchor": torch.from_numpy(a.copy()), "target": torch.from_numpy(y.copy()),
                   "lead_mask": torch.from_numpy(mask[list(GENERATED_INDICES)].copy()),
                   "time_mask": torch.from_numpy(valid)}
+        if self.include_d12:
+            # Preserve measured targets/QC; never synthesize supervision from I/II.
+            # Values outside the real record are only padding and have time_mask=False.
+            result.update(target_d12_uV=torch.from_numpy(target[:, positions].copy()),
+                          lead_mask_d12=torch.from_numpy(mask.copy()),
+                          scales_uV=torch.from_numpy(self.scales.copy()))
         if metadata:
             result["metadata"] = {k: torch.as_tensor(v) for k, v in metadata.items()}
         else:

@@ -38,6 +38,11 @@ def probe(config_path, max_peak_gib=None):
     batch = {"anchor": torch.randn(batch_size, 1, length, device="cuda"),
              "target": torch.randn(batch_size, 7, length, device="cuda"),
              "lead_mask": torch.ones(batch_size, 7, dtype=torch.bool, device="cuda")}
+    if lc.pcc_leads == 11:
+        from baselines.B7.leads import compose_d12
+        batch.update(target_d12_uV=compose_d12(batch["anchor"], batch["target"]),
+                     lead_mask_d12=torch.ones(batch_size, 12, dtype=torch.bool, device="cuda"),
+                     scales_uV=torch.ones(batch_size, 12, device="cuda"))
     clean_i = batch["anchor"].clone()
     loss, parts = flow_loss(model, batch, lc)
     loss.backward()

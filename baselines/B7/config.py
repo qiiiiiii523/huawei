@@ -40,12 +40,15 @@ class LossConfig:
     pcc_weight: float = 0.1
     ii_weight: float = 5.0
     target_variance_floor: float = 1e-8
+    pcc_leads: int = 7
 
     def __post_init__(self):
         if any(not math.isfinite(v) or v < 0 for v in asdict(self).values()):
             raise ValueError("Loss settings must be finite and nonnegative")
         if self.ii_weight <= 0 or self.target_variance_floor <= 0:
             raise ValueError("II weight and variance floor must be positive")
+        if type(self.pcc_leads) is not int or self.pcc_leads not in (7, 11):
+            raise ValueError("pcc_leads must be 7 or 11")
 
 
 @dataclass(frozen=True)

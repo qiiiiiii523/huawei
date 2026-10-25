@@ -52,6 +52,8 @@ def plan(args):
                    "--output", str(directory), "--device", "cuda"]
         if parent:
             command += ["--init-checkpoint", str(output / parent / "best_r.pt")]
+        elif name == "P" and getattr(args, "init_p_checkpoint", None):
+            command += ["--init-checkpoint", str(args.init_p_checkpoint.resolve())]
         return Job(name, dependencies, "train", command, directory / "completed.json", gpu)
     jobs += [training("P", ("prepare_public",), public, "b7_public10.json", args.gpu_p),
              training("A", ("P", "prepare_huawei"), huawei, "b7_huawei40.json", args.gpu_a, "P"),
@@ -88,6 +90,12 @@ def fingerprint(args):
     if getattr(args, "reuse_data_from", None):
         h.update(str(args.reuse_data_from.resolve()).encode())
     h.update(str(Path(getattr(args, "config_dir", "configs")).resolve()).encode())
+    if getattr(args, "init_p_checkpoint", None):
+        path = args.init_p_checkpoint.resolve()
+        h.update(str(path).encode())
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                h.update(block)
     return h.hexdigest()
 
 
@@ -325,6 +333,8 @@ def main():
     parser.add_argument("--gpu-b", default="0")
     parser.add_argument("--max-train", type=int, choices=(0, 1, 2, 3, 4), default=2, help="0 disables the training concurrency limit")
     parser.add_argument("--config-dir", type=Path, default=Path("configs"), help="Independent P/Q/A/B configuration directory")
+    parser.add_argument("--init-p-checkpoint", type=Path,
+                        help="Initialize a NEW P experiment from a matching B7 EMA; resets optimizer and local step")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reuse-data-from", type=Path, help="Reuse completed data caches from an old pipeline (including repaired PTB); use a NEW --output")
     parser.add_argument("--retry-preparation", action="store_true", help="Before any training, verify and reuse partial preparation after a reader fix")
