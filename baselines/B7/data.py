@@ -22,12 +22,19 @@ def read_manifest(path):
     if not data.get("records"):
         raise ValueError("Empty manifest")
     seen, splits, targets = set(), {}, {}
+    from .public_qc import PUBLIC_QC_VERSION, PUBLIC_SOURCES
+    waveform_ids = set()
     for row in data["records"]:
         required = ("record_id", "subject_id", "target_record_id", "source", "group", "path", "split", "input_reliable")
         if any(key not in row for key in required) or row["split"] not in ("train", "validation", "test"):
             raise ValueError("Record metadata missing or invalid")
         if not isinstance(row["input_reliable"], bool):
             raise ValueError("input_reliable must be a boolean")
+        if data.get("public_qc_version") == PUBLIC_QC_VERSION and row["source"] in PUBLIC_SOURCES:
+            digest = row.get("public_qc", {}).get("waveform_sha256")
+            if not digest or digest in waveform_ids:
+                raise ValueError("QC-v2 manifest has missing/duplicate waveform identity")
+            waveform_ids.add(digest)
         if row["record_id"] in seen:
             raise ValueError("Duplicate record_id")
         seen.add(row["record_id"])

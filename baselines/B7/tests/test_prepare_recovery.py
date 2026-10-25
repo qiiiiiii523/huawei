@@ -1,5 +1,6 @@
 from argparse import Namespace
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -53,6 +54,11 @@ class PreparationRecoveryTests(unittest.TestCase):
         index.write_text(json.dumps(rows), encoding='utf-8')
         cache = root/'prepared'
         (cache/'records').mkdir(parents=True)
+        from baselines.B7.public_qc import PUBLIC_QC_VERSION
+        identity = {"public_qc_version": PUBLIC_QC_VERSION, "index_sha256": hashlib.sha256(
+            json.dumps(rows, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
+            "scale_manifest_sha256": None}
+        (cache / "prepare_identity.json").write_text(json.dumps(identity))
         first = cache/'records/0000000.npz'
         if corrupt:
             with np.load(root/'train.npz') as value:

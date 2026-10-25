@@ -16,6 +16,7 @@ import numpy as np
 from . import D12_LEADS
 from .config import read_json
 from .data import DATA_PROTOCOL, fit_scales, read_manifest
+from .public_qc import PUBLIC_QC_VERSION, PUBLIC_SOURCES, inspect_public, deduplicate
 
 
 def _gain(text, zero):
@@ -172,7 +173,7 @@ def public_index(source, root):
             split = "validation" if num == 8 else "test" if num == 9 else "train"
         age, sex, height, weight = info.get("age"), None, info.get("height"), info.get("weight")
         if source == "ptbxl":
-            sex = {"0": 1, "1": 0}.get(info.get("sex"))  # PTB-XL 0=female, 1=male.
+            sex = {"0": 0, "1": 1}.get(info.get("sex"))  # PTB-XL and B7: 0=male, 1=female.
         else:
             comments = path.read_text(encoding="utf-8-sig").splitlines()
             for line in comments:
@@ -199,6 +200,7 @@ def public_index(source, root):
         mask[1] = sex is not None
         identity = f"{patient}/{path.stem}" if source == "ptbdb" else path.stem
         rows.append({"record_id": f"{source}:{identity}", "subject_id": f"{source}:{patient}",
+                     "metadata_encoding": "male0-female1-v2",
                      "target_record_id": f"{source}:{identity}", "split": split, "source": source,
                      "group": source, "path": str(path.resolve()), "input_reliable": True,
                      "metadata": {"numeric": numeric, "sex": sex if sex is not None else 2,
@@ -223,12 +225,17 @@ def prepare(args):
         base = Path(args.root).resolve()
     if not rows:
         raise ValueError("No input records")
+    scale_data = read_manifest(args.scale_manifest) if args.scale_manifest else None
+    if scale_data is not None and scale_data.get("public_qc_version") != PUBLIC_QC_VERSION:
+        raise ValueError("QC-v2 preparation must reuse QC-v2 train-fitted scales; rebuild public10 first")
     # Validate metadata and patient isolation before creating any output.
     splits, ids, targets = {}, set(), {}
     for row in rows:
         required = ("record_id", "target_record_id", "subject_id", "source", "group", "path", "split", "input_reliable")
         if any(k not in row for k in required) or row["split"] not in ("train", "validation", "test"):
             raise ValueError("Invalid index row")
+        if row["source"] == "ptbxl" and row.get("metadata_encoding") != "male0-female1-v2":
+            raise ValueError("PTB-XL index needs corrected metadata_encoding; rebuild via --public-source public10")
         if row["record_id"] in ids or not isinstance(row["input_reliable"], bool):
             raise ValueError("Duplicate ID or nonboolean reliability")
         ids.add(row["record_id"])
@@ -248,11 +255,24 @@ def prepare(args):
             if qc.shape != (12,) or not np.isin(qc, [0, 1]).all():
                 raise ValueError("lead_mask must contain exactly12 boolean/0-1 values")
     output.mkdir(parents=True, exist_ok=resume)
+    policy = {"public_qc_version": PUBLIC_QC_VERSION, "index_sha256": hashlib.sha256(
+        json.dumps(rows, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
+        "scale_manifest_sha256": hashlib.sha256(Path(args.scale_manifest).read_bytes()).hexdigest()
+        if args.scale_manifest else None}
+    ledger = output / "prepare_identity.json"
+    if resume:
+        if not ledger.is_file() or read_json(ledger) != policy:
+            raise ValueError("Preparation identity/QC changed; use a new cache directory")
+    else:
+        ledger.write_text(json.dumps(policy, indent=2), encoding="utf-8")
     (output / "records").mkdir(exist_ok=resume)
     expected_names = {f"{i:07d}.npz" for i in range(len(rows))}
+    # A killed np.savez may leave its own temporary file; it is rewritten below.
+    expected_names.update(f"{i:07d}.tmp" for i in range(len(rows)))
     if any(p.name not in expected_names for p in (output / "records").iterdir()):
         raise ValueError("Partial cache contains unexpected files; inspect before resuming")
     prepared = []
+    qc_audit = []
     reused = 0
     for i, original in enumerate(rows):
         row = dict(original)
@@ -266,6 +286,8 @@ def prepare(args):
             raise ValueError(f"Failed record {i}, {row['record_id']}, {raw_path}: {exc}") from exc
         if not math.isfinite(fs) or fs <= 0:
             raise ValueError("Sampling rate must be finite and positive")
+        if row["source"] in PUBLIC_SOURCES and fs != 500:
+            raise ValueError("Public10 sources must use their original 500Hz records")
         if target.ndim != 2 or target.shape[0] != 12 or anchor.shape != (1, target.shape[-1]):
             raise ValueError("Invalid raw signal shapes")
         mask = np.asarray(row.pop("lead_mask", np.isfinite(target).all(1)), dtype=bool)
@@ -284,6 +306,12 @@ def prepare(args):
             anchor, target = anchor[:, :60000], target[:, :60000]
         if target.shape[-1] < 5000:
             raise ValueError("Less than10 real seconds")
+        if row["source"] in PUBLIC_SOURCES:
+            mask, anchor_ok, quality = inspect_public(anchor, target, mask, 500)
+            row["public_qc"] = quality
+            row["input_reliable"] = row["input_reliable"] and anchor_ok
+            qc_audit.append({"record_id": row["record_id"], "split": row["split"],
+                             "input_reliable": row["input_reliable"], "lead_mask": mask.tolist(), **quality})
         metadata = row.pop("metadata", {})
         destination = output / "records" / f"{i:07d}.npz"
         arrays = {"anchor_uV": anchor, "target_uV": target, "lead_mask": mask,
@@ -305,15 +333,31 @@ def prepare(args):
         row.update(path=str(destination.relative_to(output)), resolved_path=str(destination),
                    raw_path=str(raw_path), reader=repair, real_samples=target.shape[-1])
         prepared.append(row)
-    scales = read_manifest(args.scale_manifest)["scales_uV"] if args.scale_manifest else fit_scales(prepared)
+    prepared, duplicates = deduplicate(prepared)
+    quality_by_id = {q["record_id"]: q for q in qc_audit}
+    # Exclude unusable inputs entirely, including evaluation and scale fitting.
+    excluded = [r["record_id"] for r in prepared if r["source"] in PUBLIC_SOURCES
+                and (not r["input_reliable"] or not any(
+                    quality_by_id[r["record_id"]]["lead_mask"][j]
+                    for j in (1, 6, 7, 8, 9, 10, 11)))]
+    excluded_set = set(excluded)
+    prepared = [r for r in prepared if r["record_id"] not in excluded_set]
+    audit = {"version": PUBLIC_QC_VERSION, "input_records": len(rows), "retained_records": len(prepared),
+             "excluded_unusable": excluded, "duplicate_groups": duplicates, "records": qc_audit,
+             "policy": "heldout-first exact dedup; >=1s exact flat and >50mV jumps masked; other flags review only"}
+    (output / "public_qc_report.json").write_text(json.dumps(audit, indent=2), encoding="utf-8")
+    scales = scale_data["scales_uV"] if scale_data else fit_scales(prepared)
     for row in prepared:
         del row["resolved_path"]
     manifest = {"protocol": DATA_PROTOCOL, "sample_rate": 500, "scales_uV": scales,
+                "public_qc_version": PUBLIC_QC_VERSION,
                 "scale_source": str(Path(args.scale_manifest).resolve()) if args.scale_manifest else "fit_train_only_this_manifest",
                 "B5_weights_used": False, "records": prepared}
     path = output / "manifest.json"
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    read_manifest(path)
+    pending = output / "manifest.pending.json"
+    pending.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    read_manifest(pending)
+    pending.replace(path)
     print(json.dumps({"manifest": str(path), "records": len(prepared), "verified_reused": reused,
                       "optimizer_updates": 0}, ensure_ascii=False))
 

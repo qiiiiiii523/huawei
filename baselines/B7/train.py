@@ -88,6 +88,10 @@ def train(args):
     cfg = read_json(args.config)
     mc, lc, sc = validate_settings(cfg)
     manifest = read_manifest(args.manifest)
+    from .public_qc import PUBLIC_QC_VERSION, PUBLIC_SOURCES
+    if (not args.resume and any(r["source"] in PUBLIC_SOURCES for r in manifest["records"])
+            and manifest.get("public_qc_version") != PUBLIC_QC_VERSION):
+        raise ValueError("New public pretraining requires QC-v2 data; rebuild public10 in a new cache")
     tr = cfg["training"]
     if args.resume and args.init_checkpoint:
         raise ValueError("Choose resume or a new B7 stage initialization")
