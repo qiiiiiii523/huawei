@@ -5,7 +5,7 @@
     "time_dim": 128,
     "metadata_dim": 128,
     "dilations": [1, 2, 4, 8, 16, 32],
-    "output_head": "linear",
+    "output_head": "split",
     "head_channels": 64,
     "coarse_interval_seconds": 0.5
   },
