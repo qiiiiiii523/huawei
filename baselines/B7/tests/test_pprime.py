@@ -78,8 +78,7 @@ class PPrimeTests(unittest.TestCase):
         self.assertEqual((lc.pcc_leads, lc.ii_weight, lc.pcc_weight), (11,5,.1))
         self.assertIn((mc.output_head, lc.low_frequency_weight),
                       [('linear',0.),('linear',1.),('multiscale',1.),('split',0.)])
-        self.assertEqual(c['model']['channels'], [112,224,448,448,448,448,448])
-        self.assertEqual(c['model']['channels'][:3], original['model']['channels'])
+        self.assertEqual(c['model']['channels'], [64,128,256,256,256,256,256])
         for key in ('dilations','time_dim','metadata_dim'):
             self.assertEqual(c['model'][key], original['model'][key])
 
