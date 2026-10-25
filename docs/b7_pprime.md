@@ -14,8 +14,8 @@ supports all head types so checkpoint reconstruction/export and tests agree.
 | B7-P-MS-LF | original fine path plus coarse velocity head | 1 |
 | B7-P-LH | separate nonlinear II and chest heads | 0 |
 
-Exact parameter counts: L/LF **11,477,663**; MS-LF **11,564,198**;
-LH **11,520,463**. These counts were checked with the actual M2 widths, and each
+Seven-scale parameter counts: L/LF **40,792,991**; MS-LF **40,879,526**;
+LH **40,835,791**. These counts were checked with the actual M2 widths, and each
 variant passed a CPU5000-point forward/backward smoke test. GPU peak memory and
 validation improvement are not established by that smoke test.
 
@@ -28,7 +28,13 @@ recovery restores this same run's model/EMA/optimizer/RNG/budget from last.pt.
 
 ## Common configuration (updated M2)
 
-- Widths 112/224/448; bottleneck dilations 1/2/4/8/16/32; time/metadata 128.
+- **Seven scales**, widths 112/224/448/448/448/448/448; six stride2 downsamplings
+  and six symmetric skip connections. Per non-bottleneck scale: two encoder and
+  two decoder residual blocks; bottleneck: six blocks at dilations1/2/4/8/16/32.
+  Time/metadata dimensions128; deep width capped at448, not repeatedly doubled.
+- For10s: lengths5000->2500->1250->625->312->156->78, symmetric upsampling
+  returns exactly5000 points. Odd lengths are aligned to each saved skip, not
+  assumed to divide evenly. The MS head now reads the deepest78-point feature.
 - Real 10s at **500Hz**, 5000 input and output points; no resampling or padding.
 - Clean I + seven states = eight input channels; seven output velocities ordered
   II,V1,V2,V3,V4,V5,V6. Fixed physical-unit formulas restore the other limb leads.
@@ -119,7 +125,7 @@ select candidates by fixed validation rules and reserve test for final reporting
 
 ## Local verification
 
-CPU regression: `python -m unittest discover -s baselines/B7/tests -t .` (82 tests: 81 CPU passes, one CUDA-only check skipped locally)
+CPU regression: `python -m unittest discover -s baselines/B7/tests -t .` (91 tests: 89 CPU passes, two CUDA-only checks skipped locally)
 and `python -m unittest scripts.test_b7_structures scripts.test_b7_large
 scripts.test_recover_b7_ptb scripts.test_reschedule_b7_validation` (24 tests).
 Includes real K16 full10s inference/scoring with a small test model, actual-M2
@@ -127,3 +133,17 @@ Includes real K16 full10s inference/scoring with a small test model, actual-M2
 QC masks/NaNs, head order, zero-start MS, checkpoint reload and exact interrupted
 recovery. Validation improvement, GPU peak memory and full server training are
 not claimed by these local CPU checks.
+
+## Seven-scale training identity
+
+The four default P-prime configurations now use seven resolution scales. Their
+original three-scale commits remain in Git history, but their old checkpoints
+cannot initialize/resume the seven-scale architecture. Use a **new output
+directory**, random initialization and the same frozen QC-v2 manifest. After an
+interruption of the new run, --resume is valid only with this unchanged code,
+configuration and data. The generic model retains three-scale support so
+historical M2 inference/export can still use its original model configuration.
+Only configs/b7_pprime.json selects the new deep model; inherited u7_m2 presets
+are historical references, not the launcher default for these four experiments.
+Batch64 and20000 steps were preserved; local CPU checks do not measure batch64
+GPU memory or guarantee that a deeper model fits current shared GPU resources.
