@@ -1,21 +1,22 @@
-# B7 P-prime: four independent public10 experiments
+# B7 M7 P-prime: four independent public10 experiments
 
-Current branch: **B7-P-LF**, original linear M2 head, PCC11 plus LF endpoint loss.
+Current branch: **B7-P-LF**, original linear M7 head, PCC11 plus LF endpoint loss.
 
 All four branches start at the updated M2 `0f19a6e` (includes QC-v2 `ff91627`).
 The original M2 checkout/configs/cache/checkpoints are not modified. Only the
-dedicated `configs/b7_pprime.json` selects the experiment. Shared implementation
+canonical `configs/u7_m7/b7_public10.json` selects the M7 experiment.
+`configs/b7_pprime.json` is an identical compatibility alias checked by tests. Shared implementation
 supports all head types so checkpoint reconstruction/export and tests agree.
 
 | Branch | Head | LF coefficient |
 |---|---|---:|
-| B7-P-L | original linear 112-to-7 | 0 |
-| B7-P-LF | original linear 112-to-7 | 1 |
+| B7-P-L | original linear 64-to-7 | 0 |
+| B7-P-LF | original linear 64-to-7 | 1 |
 | B7-P-MS-LF | original fine path plus coarse velocity head | 1 |
 | B7-P-LH | separate nonlinear II and chest heads | 0 |
 
-Seven-scale parameter counts: L/LF **40,792,991**; MS-LF **40,879,526**;
-LH **40,835,791**. These counts were checked with the actual M2 widths, and each
+Seven-scale parameter counts: L/LF **14,502,815**; MS-LF **14,552,486**;
+LH **14,527,519** (all within10-20 million). These counts were checked with the actual M7 widths, and each
 variant passed a CPU5000-point forward/backward smoke test. GPU peak memory and
 validation improvement are not established by that smoke test.
 
@@ -26,12 +27,12 @@ progress, rejects old data, wrong length/rate, extra datasets and unreliable I.
 No original weights are loaded. New runs initialize randomly; normal interruption
 recovery restores this same run's model/EMA/optimizer/RNG/budget from last.pt.
 
-## Common configuration (updated M2)
+## Common configuration (fixed M7; M2 training/sampling strategy)
 
-- **Seven scales**, widths 112/224/448/448/448/448/448; six stride2 downsamplings
+- **Seven scales**, widths 64/128/256/256/256/256/256; six stride2 downsamplings
   and six symmetric skip connections. Per non-bottleneck scale: two encoder and
   two decoder residual blocks; bottleneck: six blocks at dilations1/2/4/8/16/32.
-  Time/metadata dimensions128; deep width capped at448, not repeatedly doubled.
+  Time/metadata dimensions128; deep width capped at256, not repeatedly doubled.
 - For10s: lengths5000->2500->1250->625->312->156->78, symmetric upsampling
   returns exactly5000 points. Odd lengths are aligned to each saved skip, not
   assumed to divide evenly. The MS head now reads the deepest78-point feature.
@@ -73,12 +74,12 @@ Training endpoint r is not a substitute for free-generation validation r.
 
 ## Structural candidates
 
-LH: each private head is Conv3(112,64), SiLU, Conv1(64,1 or6). This adds nonlinear
+LH: each private head is Conv3(64,64), SiLU, Conv1(64,1 or6). This adds nonlinear
 lead-specific processing; merely splitting the original linear convolution
 would have been equivalent. No II-to-chest cascade or second FM is introduced.
 
 MS-LF: time/metadata-conditioned bottleneck features are pooled to uniform knots,
-then Conv3(448,64), SiLU, Conv1(64,7), interpolated linearly to5000 points and
+then Conv3(256,64), SiLU, Conv1(64,7), interpolated linearly to5000 points and
 added to the original fine velocity path. Max physical interval .5s gives21
 knots for10s (81 for40s in reusable model code). The last coarse projection is
 zero-initialized, so initial predictions match the fine-path baseline. The coarse
@@ -86,7 +87,7 @@ head does not replace full-resolution noise removal. Neither path is guaranteed
 to become an identifiable physiological frequency band. No attention/two-stage/
 inverse-reconstruction module is added.
 
-MS deterministic-training correction:pooling and endpoint-aligned linear
+MS deterministic-training correction: pooling and endpoint-aligned linear
 interpolation use fixed matrices and matrix-product backward, instead of native
 CUDA adaptive-pool/linear-interpolation backward kernels. This preserves their
 mathematical definitions and all learned parameters. Native CUDA linear
@@ -106,8 +107,9 @@ conda activate BioFlow
 mkdir -p results
 CUDA_VISIBLE_DEVICES=0 python -u -m baselines.B7.pretrain \
   --manifest /home/qht/huawei/data_cache/B7_public_qcv2/data/public10/manifest.json \
-  --output results/Pprime_LF_seed42 --device cuda \
-  > results/Pprime_LF_seed42.log 2>&1
+  --config configs/u7_m7/b7_public10.json \
+  --output results/M7_LF_seed42 --device cuda \
+  > results/M7_LF_seed42.log 2>&1
 ```
 
 Use output/log suffix `LF`, `MS_LF` or `LH` on its corresponding branch. Run in a
@@ -125,10 +127,10 @@ select candidates by fixed validation rules and reserve test for final reporting
 
 ## Local verification
 
-CPU regression: `python -m unittest discover -s baselines/B7/tests -t .` (91 tests: 89 CPU passes, two CUDA-only checks skipped locally)
+CPU regression: `python -m unittest discover -s baselines/B7/tests -t .` (96 tests: 94 CPU passes, two CUDA-only checks skipped locally)
 and `python -m unittest scripts.test_b7_structures scripts.test_b7_large
 scripts.test_recover_b7_ptb scripts.test_reschedule_b7_validation` (24 tests).
-Includes real K16 full10s inference/scoring with a small test model, actual-M2
+Includes real K16 full10s inference/scoring with a small test model, actual-M7
 5000-point forward/backward smoke checks, physical frequency/DC/fast-mode checks,
 QC masks/NaNs, head order, zero-start MS, checkpoint reload and exact interrupted
 recovery. Validation improvement, GPU peak memory and full server training are
@@ -143,7 +145,20 @@ directory**, random initialization and the same frozen QC-v2 manifest. After an
 interruption of the new run, --resume is valid only with this unchanged code,
 configuration and data. The generic model retains three-scale support so
 historical M2 inference/export can still use its original model configuration.
-Only configs/b7_pprime.json selects the new deep model; inherited u7_m2 presets
+The launcher defaults to configs/u7_m7/b7_public10.json (alias: configs/b7_pprime.json); inherited u7_m2 presets
 are historical references, not the launcher default for these four experiments.
 Batch64 and20000 steps were preserved; local CPU checks do not measure batch64
 GPU memory or guarantee that a deeper model fits current shared GPU resources.
+
+## Fixed M7 budget revision
+
+M7 is now64/128/256/256/256/256/256 with seven resolution scales and a256
+deep-channel cap. The former112/224/448 seven-scale (approximately40.8M) and
+original three-scale M2 are **different architectures**. Neither can resume or
+initialize the new M7. Use a new M7 output directory, keeping the shared QC-v2
+cache/scales unchanged. All four branches fix the same M7 backbone; only the
+selected head and LF coefficient differ. Runtime logs identify preset=M7.
+The source M2 settings remain the reference for20000 updates, batch64, AdamW1e-4,
+checkpoint500, no initial/intermediate full validation, final EMA, Heun16 andK16.
+Parameter count is checked by tests; it is not a bound on GPU activation memory.
+See docs/m7_public10.md for the canonical preset and per-branch launch.

@@ -22,6 +22,7 @@ from .data import WindowDataset, read_manifest
 from .evaluate import SCORE_PROTOCOL, evaluate
 from .losses import flow_loss
 from .model import B7UNet
+from .presets import model_preset
 
 
 def code_sha():
@@ -112,7 +113,7 @@ def train(args):
         torch.cuda.manual_seed_all(tr["seed"])
     torch.use_deterministic_algorithms(True)
     model = B7UNet(mc).to(device)
-    print(f"[train] stage={cfg['stage']} device={device} batch_size={tr['batch_size']} "
+    print(f"[train] preset={model_preset(mc)} stage={cfg['stage']} device={device} batch_size={tr['batch_size']} "
           f"window={sc.window_seconds}s updates={tr['updates']} "
           f"ode_batch={sc.sample_batch_size} validation_batch={sc.validation_batch_size} "
           f"validation_mode={tr.get('validation_mode', 'periodic')} "

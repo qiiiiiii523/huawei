@@ -12,6 +12,10 @@ from .config import read_json
 from .data import load_record, read_manifest
 from .public_qc import PUBLIC_QC_VERSION, PUBLIC_SOURCES
 from .train import train, validate_settings
+from .config import ModelConfig
+from .presets import model_preset
+
+DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "configs/u7_m7/b7_public10.json"
 
 
 def check_public_run(config, manifest):
@@ -43,7 +47,8 @@ def run(args):
     config = read_json(args.config)
     manifest = read_manifest(args.manifest)
     check_public_run(config, manifest)
-    print(f"[P-prime] QC-v2 checked; 500Hz/5000 samples; head={config['model'].get('output_head', 'linear')}; "
+    preset = model_preset(ModelConfig.from_dict(config['model']))
+    print(f"[P-prime] preset={preset}; QC-v2 checked; 500Hz/5000 samples; head={config['model'].get('output_head', 'linear')}; "
           f"updates={config['training']['updates']}; resume={args.resume}; no downstream stages", flush=True)
     return train(Namespace(config=args.config, manifest=args.manifest, output=args.output,
                            device=args.device, resume=args.resume, init_checkpoint=None))
@@ -52,7 +57,7 @@ def run(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--manifest", required=True, help="Shared QC-v2 public10/manifest.json")
-    p.add_argument("--config", default=str(Path(__file__).resolve().parents[2] / "configs/b7_pprime.json"))
+    p.add_argument("--config", default=str(DEFAULT_CONFIG), help="Default: this branch's frozen M7 public10 config")
     p.add_argument("--output", required=True, help="New independent training directory")
     p.add_argument("--device", default="cuda")
     p.add_argument("--resume", action="store_true", help="Resume this exact run's last.pt")

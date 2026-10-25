@@ -1,10 +1,25 @@
 {
   "stage": "public10",
   "model": {
-    "channels": [112, 224, 448, 448, 448, 448, 448],
+    "channels": [
+      64,
+      128,
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
     "time_dim": 128,
     "metadata_dim": 128,
-    "dilations": [1, 2, 4, 8, 16, 32],
+    "dilations": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32
+    ],
     "output_head": "linear",
     "head_channels": 64,
     "coarse_interval_seconds": 0.5
@@ -13,7 +28,7 @@
     "mae_weight": 1.0,
     "pcc_weight": 0.1,
     "ii_weight": 5.0,
-    "target_variance_floor": 1e-8,
+    "target_variance_floor": 1e-08,
     "pcc_leads": 11,
     "low_frequency_weight": 1.0,
     "low_frequency_cutoff_hz": 0.5
