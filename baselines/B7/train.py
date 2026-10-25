@@ -117,6 +117,8 @@ def train(args):
           f"ode_batch={sc.sample_batch_size} validation_batch={sc.validation_batch_size} "
           f"validation_mode={tr.get('validation_mode', 'periodic')} "
           f"pcc_leads={lc.pcc_leads} "
+          f"head={mc.output_head} lf_weight={lc.low_frequency_weight} "
+          f"lf_cutoff_hz={lc.low_frequency_cutoff_hz} "
           f"parameters={sum(p.numel() for p in model.parameters())}", flush=True)
     initialization = {"kind": "random_B7", "seed": tr["seed"], "B5_weights_used": False}
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["learning_rate"], weight_decay=tr["weight_decay"])
@@ -216,7 +218,13 @@ def train(args):
             logged["window_r"] = 1 - logged["pcc"] if logged["pcc_valid_leads"] else None
             validate(logged)
         elif step == 1 or step % 50 == 0:
-            print(f"[train] update={step}/{tr['updates']} loss={float(loss.detach()):.6g}", flush=True)
+            details = ""
+            if lc.low_frequency_weight:
+                details = (f" fm={float(parts['fm'].detach()):.6g}"
+                           f" mae={float(parts['mae'].detach()):.6g}"
+                           f" pcc={float(parts['pcc'].detach()):.6g}"
+                           f" lf={float(parts['low_frequency_mae'].detach()):.6g}")
+            print(f"[train] update={step}/{tr['updates']} loss={float(loss.detach()):.6g}{details}", flush=True)
     (output / "completed.json").write_text(json.dumps({"completed": True, "update": step,
         "best_r": best, "selection": "final_ema" if tr.get("validation_mode") == "final_only" else "best_validation_r",
         "elapsed_seconds_this_invocation": time.monotonic() - started}), encoding="utf-8")

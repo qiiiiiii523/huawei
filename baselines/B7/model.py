@@ -9,6 +9,20 @@ from torch.nn import functional as F
 from .config import ModelConfig
 
 
+def control_point_count(length, interval_seconds, sample_rate=500):
+    """Uniform knots cover both ends; spacing never exceeds the requested seconds."""
+    if length < 2 or sample_rate != 500 or interval_seconds < 1 / sample_rate:
+        raise ValueError("Control points require T>=2, 500Hz and a valid physical interval")
+    return min(length, math.ceil((length - 1) / (sample_rate * interval_seconds)) + 1)
+
+
+class LeadHead(nn.Sequential):
+    """Private nonlinear local processing, not just a split of a linear projection."""
+    def __init__(self, channels, hidden, outputs):
+        super().__init__(nn.Conv1d(channels, hidden, 3, padding=1), nn.SiLU(),
+                         nn.Conv1d(hidden, outputs, 1))
+
+
 class TimeEmbedding(nn.Module):
     def __init__(self, dimension):
         super().__init__()
@@ -90,6 +104,18 @@ class B7UNet(nn.Module):
         self.merge0 = nn.Conv1d(c0 * 2, c0, 1)
         self.decode0 = nn.ModuleList([block(c0), block(c0)])
         self.output = nn.Conv1d(c0, 7, 1)
+        # Preserve the original trunk initialization and RNG consumed by it in all
+        # four experiments. Extra heads must not change subsequent noise/t draws.
+        with torch.random.fork_rng(devices=[]):
+            if self.config.output_head == "split":
+                self.ii_head = LeadHead(c0, self.config.head_channels, 1)
+                self.chest_head = LeadHead(c0, self.config.head_channels, 6)
+                del self.output
+            elif self.config.output_head == "multiscale":
+                self.coarse_head = LeadHead(c2, self.config.head_channels, 7)
+                # Start with the original fine path; avoid a second zero gate.
+                nn.init.zeros_(self.coarse_head[-1].weight)
+                nn.init.zeros_(self.coarse_head[-1].bias)
 
     @staticmethod
     def _blocks(blocks, h, time, metadata):
@@ -112,8 +138,16 @@ class B7UNet(nn.Module):
         s0 = self._blocks(self.encode0, h, te, me)
         s1 = self._blocks(self.encode1, self.down1(s0), te, me)
         h = self._blocks(self.bottleneck, self.down2(s1), te, me)
+        coarse = None
+        if self.config.output_head == "multiscale":
+            knots = control_point_count(state.shape[-1], self.config.coarse_interval_seconds)
+            coefficients = self.coarse_head(F.adaptive_avg_pool1d(h, knots))
+            coarse = F.interpolate(coefficients, size=state.shape[-1], mode="linear", align_corners=True)
         h = self.up1(F.interpolate(h, size=s1.shape[-1], mode="nearest"))
         h = self._blocks(self.decode1, self.merge1(torch.cat((h, s1), dim=1)), te, me)
         h = self.up0(F.interpolate(h, size=s0.shape[-1], mode="nearest"))
         h = self._blocks(self.decode0, self.merge0(torch.cat((h, s0), dim=1)), te, me)
-        return self.output(h)
+        if self.config.output_head == "split":
+            return torch.cat((self.ii_head(h), self.chest_head(h)), dim=1)
+        velocity = self.output(h)
+        return velocity if coarse is None else velocity + coarse

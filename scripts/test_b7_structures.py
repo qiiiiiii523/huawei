@@ -35,7 +35,8 @@ class StructureTests(unittest.TestCase):
                 self.assertEqual(sum(p.numel() for p in B7UNet(mc).parameters()), count)
                 tr = cfg["training"]
                 self.assertEqual(tr["batch_size"], 64 if stage == "public10" else 32)
-                self.assertEqual(tr["updates"], 10000 if stage == "public10" else 1000)
+                public_budget = 20000 if name == "m2" else 10000
+                self.assertEqual(tr["updates"], public_budget if stage == "public10" else 1000)
                 self.assertEqual(tr["validation_mode"], "final_only")
                 self.assertEqual(tr["checkpoint_every"], 500)
                 self.assertEqual([s for s in range(1, tr["updates"] + 1) if trainer.validation_due(tr, s)], [tr["updates"]])

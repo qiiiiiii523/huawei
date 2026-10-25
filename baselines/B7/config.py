@@ -13,6 +13,9 @@ class ModelConfig:
     time_dim: int = 128
     metadata_dim: int = 128
     dilations: tuple[int, ...] = (1, 2, 4, 8)
+    output_head: str = "linear"
+    head_channels: int = 64
+    coarse_interval_seconds: float = 0.5
 
     def __post_init__(self):
         if len(self.channels) != 3 or any(c < 4 for c in self.channels):
@@ -21,6 +24,12 @@ class ModelConfig:
             raise ValueError("Invalid condition dimensions")
         if not self.dilations or any(d < 1 for d in self.dilations):
             raise ValueError("Invalid dilations")
+        if self.output_head not in ("linear", "split", "multiscale"):
+            raise ValueError("output_head must be linear, split or multiscale")
+        if type(self.head_channels) is not int or self.head_channels < 1:
+            raise ValueError("head_channels must be a positive integer")
+        if not math.isfinite(self.coarse_interval_seconds) or self.coarse_interval_seconds < 1 / 500:
+            raise ValueError("coarse_interval_seconds must be at least one 500Hz sample")
 
     def to_dict(self):
         return asdict(self)
@@ -41,6 +50,8 @@ class LossConfig:
     ii_weight: float = 5.0
     target_variance_floor: float = 1e-8
     pcc_leads: int = 7
+    low_frequency_weight: float = 0.0
+    low_frequency_cutoff_hz: float = 0.5
 
     def __post_init__(self):
         if any(not math.isfinite(v) or v < 0 for v in asdict(self).values()):
@@ -49,6 +60,8 @@ class LossConfig:
             raise ValueError("II weight and variance floor must be positive")
         if type(self.pcc_leads) is not int or self.pcc_leads not in (7, 11):
             raise ValueError("pcc_leads must be 7 or 11")
+        if not 0 < self.low_frequency_cutoff_hz < 250:
+            raise ValueError("Low frequency cutoff must lie between 0 and the 250Hz Nyquist frequency")
 
 
 @dataclass(frozen=True)
