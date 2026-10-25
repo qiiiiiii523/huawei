@@ -5,6 +5,7 @@ from collections import defaultdict
 import argparse
 import hashlib
 import json
+import time
 from pathlib import Path
 import numpy as np
 from .data import GROUPS, load_record
@@ -45,7 +46,7 @@ def aggregate(rows, stage):
             raise ValueError(f"No defined QC-eligible targets for every missing lead in group {group}")
         lead_means[group] = {lead: float(np.mean(values)) for lead, values in groups[group].items()}
         means[group] = float(np.mean(list(lead_means[group].values())))
-    if stage == "huawei40":
+    if stage in ("huawei40", "huawei120"):
         if set(means) != set(GROUPS):
             raise ValueError("Huawei best selection requires task1, machine and body validation groups")
         score = .5 * means["task1"] + .25 * means["machine"] + .25 * means["body"]
@@ -61,6 +62,10 @@ def evaluate(model, manifest, config, stage, *, batch_size=1):
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("Positive integer validation batch_size required")
     rows = []
+    total = sum(r['split'] == 'validation' for r in manifest['records'])
+    scanned = 0
+    started = time.monotonic()
+    print(f'[validation] records={total} window={config.window_seconds}s core={config.core_seconds}s K={config.samples}', flush=True)
     target_masks, target_identity = {}, {}
     pending = []
 
@@ -85,10 +90,15 @@ def evaluate(model, manifest, config, stage, *, batch_size=1):
                          "target_record_id": row["target_record_id"],
                          "r": float(np.mean(correlations)) if correlations else None, "leads": by_lead})
         pending.clear()
+        elapsed = time.monotonic()-started
+        eta = elapsed * (total-scanned)/scanned if scanned else 0.
+        print(f'[validation] scanned={scanned}/{total} scored_pairs={len(rows)} '
+              f'elapsed_seconds={elapsed:.1f} estimated_remaining_seconds={eta:.1f}', flush=True)
 
     for row in manifest["records"]:
         if row["split"] != "validation":
             continue
+        scanned += 1
         anchor, target, mask, metadata = load_record(row)
         key = row["target_record_id"]
         if key in target_masks and not np.array_equal(target_masks[key], mask):
@@ -101,9 +111,9 @@ def evaluate(model, manifest, config, stage, *, batch_size=1):
         target_identity[key] = fingerprint
         if not row["input_reliable"]:
             continue
-        if stage == "huawei40" and target.shape[-1] != 60000:
+        if stage in ("huawei40", "huawei120") and target.shape[-1] != 60000:
             raise ValueError("Huawei validation must contain real full120s, not padded targets")
-        if stage != "huawei40":
+        if stage not in ("huawei40", "huawei120"):
             real_length = target.shape[-1] // 5000 * 5000
             if real_length < config.window_seconds * 500:
                 continue

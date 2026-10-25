@@ -6,10 +6,14 @@ from .config import LossConfig
 from .flow import linear_path
 
 
-def core_slice(length, sample_rate=500):
-    if sample_rate != 500 or length not in (5000, 20000):
-        raise ValueError("Training uses real 10s or 40s at 500Hz")
-    return slice(0, 5000) if length == 5000 else slice(7500, 12500)
+def core_slice(length, sample_rate=500, core_seconds=10):
+    if sample_rate != 500 or length not in (5000, 20000, 60000):
+        raise ValueError("Training uses real 10s, 40s or 120s at 500Hz")
+    if type(core_seconds) is not int or core_seconds < 1 or core_seconds * sample_rate > length:
+        raise ValueError("PCC core must fit inside the real window")
+    width = core_seconds * sample_rate
+    start = (length - width) // 2
+    return slice(start, start + width)
 
 
 def reconstruction_losses(prediction, target, valid, config=None):
@@ -25,7 +29,7 @@ def reconstruction_losses(prediction, target, valid, config=None):
         raise ValueError("Nonfinite supervised waveform")
     absolute = torch.where(valid, (p - y).abs(), 0.)
     mae = (absolute * weights).sum() / (valid * weights).sum()
-    core = core_slice(target.shape[-1])
+    core = core_slice(target.shape[-1], core_seconds=config.pcc_core_seconds)
     mask = valid[:, :, core]
     n = mask.sum(-1).clamp_min(1)
     pc, yc = p[:, :, core], y[:, :, core]
@@ -50,7 +54,7 @@ def flow_loss(model, batch, config=None, *, noise=None, time=None):
     target, anchor = batch["target"], batch["anchor"]
     if target.ndim != 3 or target.shape[1] != 7:
         raise ValueError("B7 target contains II,V1..V6 only")
-    core_slice(target.shape[-1])
+    core_slice(target.shape[-1], core_seconds=config.pcc_core_seconds)
     mask = batch["lead_mask"].bool()
     tm = batch.get("time_mask", torch.ones(len(target), target.shape[-1], dtype=torch.bool, device=target.device)).bool()
     if mask.shape != target.shape[:2] or tm.shape != (len(target), target.shape[-1]):

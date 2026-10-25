@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import numpy as np
@@ -103,7 +103,9 @@ def main():
     parser.add_argument("--metadata", help="JSON of already encoded B7 metadata arrays")
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--batch-size", type=int, default=32, help="Maximum concurrent ODE trajectories")
+    parser.add_argument("--batch-size", type=int, help="Concurrent ODE trajectories; default4 for120s,32 otherwise")
+    parser.add_argument('--window-seconds', type=int, choices=(10, 40, 120))
+    parser.add_argument('--core-seconds', type=int, choices=(10, 20, 120))
     args = parser.parse_args()
     path = Path(args.output)
     if path.exists():
@@ -112,6 +114,11 @@ def main():
     model = model_from_checkpoint(checkpoint, args.device)
     metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8-sig")) if args.metadata else None
     config = SamplingConfig(**checkpoint["sampling"])
+    if (args.window_seconds is None) != (args.core_seconds is None):
+        parser.error('Provide both --window-seconds and --core-seconds')
+    if args.window_seconds is not None:
+        config = replace(config, window_seconds=args.window_seconds, core_seconds=args.core_seconds)
+    args.batch_size = args.batch_size if args.batch_size is not None else (4 if config.window_seconds == 120 else 32)
     prediction = predict_record(model, np.load(args.anchor, allow_pickle=False), checkpoint["scales_uV"],
                                 args.record_key, metadata, config, batch_size=args.batch_size)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -53,7 +53,7 @@ def balanced_indices(dataset, count):
 
 def validate_settings(cfg):
     allowed = {"stage", "model", "loss", "sampling", "training"}
-    if set(cfg) not in (allowed, allowed | {"validation"}) or cfg["stage"] not in ("public10", "public40", "huawei40"):
+    if set(cfg) not in (allowed, allowed | {"validation"}) or cfg["stage"] not in ("public10", "public40", "huawei40", "huawei120"):
         raise ValueError("Config requires stage/model/loss/sampling/training; B5 settings are not accepted")
     validation = cfg.get("validation", {"batch_size": 1})
     if (set(validation) not in ({"batch_size"}, {"batch_size", "initial"})
@@ -62,10 +62,13 @@ def validate_settings(cfg):
         raise ValueError("validation requires a positive integer batch_size and optional boolean initial")
     model = ModelConfig.from_dict(cfg["model"])
     loss, sampling = LossConfig(**cfg["loss"]), SamplingConfig(**cfg["sampling"])
-    expected = 10 if cfg["stage"] == "public10" else 40
+    expected = {"public10": 10, "public40": 40, "huawei40": 40, "huawei120": 120}[cfg["stage"]]
     if sampling.window_seconds != expected:
         raise ValueError("Stage and window disagree")
     tr = cfg["training"]
+    if cfg["stage"] == "huawei120" and (tr.get("boundary_probability") != 0
+            or loss.pcc_core_seconds != 90 or sampling.core_seconds != 120):
+        raise ValueError("Huawei120 requires full real windows, 90s PCC core and 120/120 generation")
     if set(tr) - {"checkpoint_every"} != {"seed", "updates", "validate_every", "batch_size", "learning_rate", "weight_decay",
                    "ema_decay", "gradient_clip", "boundary_probability"}:
         raise ValueError("Unexpected or missing training settings")
@@ -124,6 +127,10 @@ def train(args):
         source = load_checkpoint(args.init_checkpoint)
         if ModelConfig.from_dict(source["model_config"]) != mc or list(source["scales_uV"]) != list(manifest["scales_uV"]):
             raise ValueError("B7 stage initialization must preserve architecture and frozen scales")
+        if cfg['stage'] == 'huawei120' and (source['stage'] != 'huawei40'
+                or source.get('identity', {}).get('manifest_sha256') != identity['manifest_sha256']
+                or source.get('identity', {}).get('record_sha256') != data_sha):
+            raise ValueError('Huawei120 adaptation must initialize from the same-data Huawei40 EMA')
         model.load_state_dict(source["ema"], strict=True)
         ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
         initialization = {"kind": "previous_B7T_stage", "sha256": file_sha256(args.init_checkpoint),
@@ -188,7 +195,9 @@ def train(args):
         started = time.monotonic()
         save_checkpoint(output / "last.pt", payload(pending, training_parts))
         report = {"update": step, "last_validated_update": last_validated_update,
-                  "pending_validation": pending, "save_seconds": time.monotonic() - started}
+                  "pending_validation": pending, "save_seconds": time.monotonic() - started,
+                  "cuda_peak_allocated_gib": torch.cuda.max_memory_allocated(device)/2**30 if device.type == 'cuda' else None,
+                  "cuda_peak_reserved_gib": torch.cuda.max_memory_reserved(device)/2**30 if device.type == 'cuda' else None}
         with (output / "checkpoint_history.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(report) + "\n")
         print("[checkpoint] " + json.dumps(report), flush=True)

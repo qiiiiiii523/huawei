@@ -82,10 +82,13 @@ def fit_scales(records, minimum=100.0):
 
 class WindowDataset(torch.utils.data.Dataset):
     def __init__(self, manifest, window_seconds=40, boundary_probability=0.15):
-        if window_seconds not in (10, 40) or not 0 <= boundary_probability <= 1:
+        if window_seconds not in (10, 40, 120) or not 0 <= boundary_probability <= 1:
             raise ValueError("Invalid window configuration")
+        if window_seconds == 120 and boundary_probability != 0:
+            raise ValueError("Full120 training must disable padded boundary windows")
         self.manifest = manifest
-        self.width, self.core = window_seconds * 500, 5000
+        self.width = window_seconds * 500
+        self.core = self.width if window_seconds == 120 else 5000
         self.margin = (self.width - self.core) // 2
         self.boundary_probability = boundary_probability
         self.scales = np.asarray(manifest["scales_uV"], dtype="float32")
@@ -93,6 +96,8 @@ class WindowDataset(torch.utils.data.Dataset):
         for row in manifest["records"]:
             if row["split"] == "train" and row["input_reliable"]:
                 anchor, _, mask, _ = load_record(row)
+                if window_seconds == 120 and (anchor.shape[-1] != 60000 or row.get('real_samples', 60000) != 60000):
+                    raise ValueError("Full120 training requires exactly 60000 real samples per record")
                 if anchor.shape[-1] >= self.width and mask[list(GENERATED_INDICES)].any():
                     self.rows.append(row)
         if not self.rows:

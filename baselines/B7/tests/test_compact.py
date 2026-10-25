@@ -54,7 +54,7 @@ class CompactTests(unittest.TestCase):
                 self.assertEqual(cfg['training']['updates'], 10000 if stage == 'public10' else 1000)
                 self.assertEqual(cfg['training']['validate_every'],
                                  {'public10': 10000, 'public40': 1000, 'huawei40': 1000}[stage])
-                self.assertEqual(cfg['loss'], asdict(LossConfig()))
+                self.assertEqual(LossConfig(**cfg['loss']), LossConfig())
                 self.assertEqual(cfg['sampling']['samples'], 16)
                 self.assertEqual(cfg['sampling']['steps'], 16)
 

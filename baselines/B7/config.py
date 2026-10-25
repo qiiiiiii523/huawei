@@ -50,12 +50,15 @@ class LossConfig:
     pcc_weight: float = 0.1
     ii_weight: float = 5.0
     target_variance_floor: float = 1e-8
+    pcc_core_seconds: int = 10
 
     def __post_init__(self):
         if any(not math.isfinite(v) or v < 0 for v in asdict(self).values()):
             raise ValueError("Loss settings must be finite and nonnegative")
         if self.ii_weight <= 0 or self.target_variance_floor <= 0:
             raise ValueError("II weight and variance floor must be positive")
+        if type(self.pcc_core_seconds) is not int or self.pcc_core_seconds < 1:
+            raise ValueError("PCC core seconds must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -69,8 +72,9 @@ class SamplingConfig:
     seed: int = 42
 
     def __post_init__(self):
-        if self.sample_rate != 500 or self.window_seconds not in (10, 40) or self.core_seconds != 10:
-            raise ValueError("B7 uses 500Hz, 10s/40s windows and 10s cores")
+        if (self.sample_rate != 500 or type(self.window_seconds) is not int or type(self.core_seconds) is not int
+                or (self.window_seconds, self.core_seconds) not in ((10, 10), (40, 10), (40, 20), (120, 120))):
+            raise ValueError("B7 uses 500Hz and window/core pairs 10/10, 40/10, 40/20 or 120/120")
         if self.solver not in ("heun", "euler") or self.steps < 1 or self.samples < 1:
             raise ValueError("Invalid sampling settings")
         if not 0 <= self.seed < 2**32:

@@ -1,0 +1,220 @@
+{
+  "date": "2026-10-25",
+  "branch": "B7-T-120",
+  "source_commit": "b1a4e23",
+  "model_py_identical_to_source": true,
+  "old_three_default_configs_unchanged": true,
+  "P_Q_training_jobs_created": false,
+  "source_initialization": "completed_same_data_A40_B40_best_EMA",
+  "full120_samples": 60000,
+  "sample_rate": 500,
+  "PCC_slice_samples": [
+    7500,
+    52500
+  ],
+  "PCC_core_seconds": 90,
+  "MAE_all_real120": true,
+  "I_noise_added": false,
+  "input_channels": 8,
+  "output_velocity_channels": 7,
+  "inference_modes": {
+    "full120": [
+      120,
+      120
+    ],
+    "window40_core10": [
+      40,
+      10
+    ],
+    "window40_core20": [
+      40,
+      20
+    ]
+  },
+  "K": 16,
+  "Heun_steps": 16,
+  "checkpoint_every": 500,
+  "default_training_batch": 4,
+  "default_trajectory_batch": 4,
+  "default_serial_training_processes": 1,
+  "initial_or_intermediate_full_validation": false,
+  "core_tests_passed": 118,
+  "standalone_tool_tests_passed": 13,
+  "CPU_actual_60000_point_backward_small_transformer": true,
+  "resume_model_EMA_AdamW_RNG_equivalence": true,
+  "CUDA_memory_measured": false,
+  "server_training_started": false,
+  "presets": {
+    "g6_19m": {
+      "stage": "huawei120",
+      "model": {
+        "patch_size": 10,
+        "embed_dims": [
+          128,
+          256,
+          384
+        ],
+        "heads": [
+          4,
+          8,
+          12
+        ],
+        "depths": [
+          2,
+          2,
+          6
+        ],
+        "window_size": 64,
+        "mlp_ratio": 4,
+        "time_dim": 128,
+        "metadata_dim": 128
+      },
+      "loss": {
+        "mae_weight": 1.0,
+        "pcc_weight": 0.1,
+        "ii_weight": 5.0,
+        "target_variance_floor": 1e-08,
+        "pcc_core_seconds": 90
+      },
+      "sampling": {
+        "sample_rate": 500,
+        "window_seconds": 120,
+        "core_seconds": 120,
+        "solver": "heun",
+        "steps": 16,
+        "samples": 16,
+        "seed": 42
+      },
+      "validation": {
+        "batch_size": 4,
+        "initial": false
+      },
+      "training": {
+        "seed": 42,
+        "updates": 1000,
+        "validate_every": 1000,
+        "checkpoint_every": 500,
+        "batch_size": 4,
+        "learning_rate": 1e-05,
+        "weight_decay": 0.01,
+        "ema_decay": 0.999,
+        "gradient_clip": 1.0,
+        "boundary_probability": 0.0
+      }
+    },
+    "original_t_15m": {
+      "stage": "huawei120",
+      "model": {
+        "patch_size": 10,
+        "embed_dims": [
+          128,
+          256,
+          384
+        ],
+        "heads": [
+          4,
+          8,
+          12
+        ],
+        "depths": [
+          2,
+          2,
+          4
+        ],
+        "window_size": 64,
+        "mlp_ratio": 4,
+        "time_dim": 128,
+        "metadata_dim": 128
+      },
+      "loss": {
+        "mae_weight": 1.0,
+        "pcc_weight": 0.1,
+        "ii_weight": 5.0,
+        "target_variance_floor": 1e-08,
+        "pcc_core_seconds": 90
+      },
+      "sampling": {
+        "sample_rate": 500,
+        "window_seconds": 120,
+        "core_seconds": 120,
+        "solver": "heun",
+        "steps": 16,
+        "samples": 16,
+        "seed": 42
+      },
+      "validation": {
+        "batch_size": 4,
+        "initial": false
+      },
+      "training": {
+        "seed": 42,
+        "updates": 1000,
+        "validate_every": 1000,
+        "checkpoint_every": 500,
+        "batch_size": 4,
+        "learning_rate": 1e-05,
+        "weight_decay": 0.01,
+        "ema_decay": 0.999,
+        "gradient_clip": 1.0,
+        "boundary_probability": 0.0
+      }
+    },
+    "w144_g5_21m": {
+      "stage": "huawei120",
+      "model": {
+        "patch_size": 10,
+        "embed_dims": [
+          144,
+          288,
+          432
+        ],
+        "heads": [
+          4,
+          8,
+          12
+        ],
+        "depths": [
+          2,
+          2,
+          5
+        ],
+        "window_size": 64,
+        "mlp_ratio": 4,
+        "time_dim": 128,
+        "metadata_dim": 128
+      },
+      "loss": {
+        "mae_weight": 1.0,
+        "pcc_weight": 0.1,
+        "ii_weight": 5.0,
+        "target_variance_floor": 1e-08,
+        "pcc_core_seconds": 90
+      },
+      "sampling": {
+        "sample_rate": 500,
+        "window_seconds": 120,
+        "core_seconds": 120,
+        "solver": "heun",
+        "steps": 16,
+        "samples": 16,
+        "seed": 42
+      },
+      "validation": {
+        "batch_size": 4,
+        "initial": false
+      },
+      "training": {
+        "seed": 42,
+        "updates": 1000,
+        "validate_every": 1000,
+        "checkpoint_every": 500,
+        "batch_size": 4,
+        "learning_rate": 1e-05,
+        "weight_decay": 0.01,
+        "ema_decay": 0.999,
+        "gradient_clip": 1.0,
+        "boundary_probability": 0.0
+      }
+    }
+  }
+}
