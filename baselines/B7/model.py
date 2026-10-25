@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .config import ModelConfig
+from .multiscale_ops import pool_control_features, interpolate_control_points
 
 
 def control_point_count(length, interval_seconds, sample_rate=500):
@@ -141,8 +142,8 @@ class B7UNet(nn.Module):
         coarse = None
         if self.config.output_head == "multiscale":
             knots = control_point_count(state.shape[-1], self.config.coarse_interval_seconds)
-            coefficients = self.coarse_head(F.adaptive_avg_pool1d(h, knots))
-            coarse = F.interpolate(coefficients, size=state.shape[-1], mode="linear", align_corners=True)
+            coefficients = self.coarse_head(pool_control_features(h, knots))
+            coarse = interpolate_control_points(coefficients, state.shape[-1])
         h = self.up1(F.interpolate(h, size=s1.shape[-1], mode="nearest"))
         h = self._blocks(self.decode1, self.merge1(torch.cat((h, s1), dim=1)), te, me)
         h = self.up0(F.interpolate(h, size=s0.shape[-1], mode="nearest"))
