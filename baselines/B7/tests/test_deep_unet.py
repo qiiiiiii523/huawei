@@ -38,7 +38,7 @@ class DeepUNetTests(unittest.TestCase):
     def test_config_seven_scales_and_rejects_invalid_widths(self):
         root=Path(__file__).resolve().parents[3]
         cfg=json.loads((root/'configs/b7_pprime.json').read_text())
-        self.assertEqual(cfg['model']['channels'],[112,224,448,448,448,448,448])
+        self.assertEqual(cfg['model']['channels'],[64,128,256,256,256,256,256])
         for widths in ((8,16),(8,)*9,(8,16,32.)):
             with self.assertRaises(ValueError):ModelConfig(channels=widths)
         self.assertEqual(len(ModelConfig(channels=(8,)*8).channels),8)
