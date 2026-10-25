@@ -87,7 +87,9 @@ class B7UNet(nn.Module):
     def __init__(self, config: ModelConfig | None = None):
         super().__init__()
         self.config = config or ModelConfig()
-        c0, c1, c2 = self.config.channels
+        widths = self.config.channels
+        c0, c1, c2 = widths[:3]
+        deepest = widths[-1]
         self.time_embedding = TimeEmbedding(self.config.time_dim)
         self.metadata_encoder = MetadataEncoder(self.config.metadata_dim)
         block = lambda c, d=1: ResidualBlock(c, self.config.time_dim, self.config.metadata_dim, d)
@@ -97,13 +99,30 @@ class B7UNet(nn.Module):
         self.down1 = nn.Conv1d(c0, c1, 4, stride=2, padding=1)
         self.encode1 = nn.ModuleList([block(c1), block(c1)])
         self.down2 = nn.Conv1d(c1, c2, 4, stride=2, padding=1)
-        self.bottleneck = nn.ModuleList([block(c2, d) for d in self.config.dilations])
+        self.bottleneck = nn.ModuleList([block(deepest, d) for d in self.config.dilations])
         self.up1 = nn.Conv1d(c2, c1, 3, padding=1)
         self.merge1 = nn.Conv1d(c1 * 2, c1, 1)
         self.decode1 = nn.ModuleList([block(c1), block(c1)])
         self.up0 = nn.Conv1d(c1, c0, 3, padding=1)
         self.merge0 = nn.Conv1d(c0 * 2, c0, 1)
         self.decode0 = nn.ModuleList([block(c0), block(c0)])
+        # Keep the original three-scale module/state keys for legacy checkpoints.
+        # Additional scales sit between down2 and the deepest bottleneck.
+        self.extra_encoders = nn.ModuleList([
+            nn.ModuleList([block(widths[i]), block(widths[i])])
+            for i in range(2, len(widths) - 1)])
+        self.extra_downs = nn.ModuleList([
+            nn.Conv1d(widths[i], widths[i + 1], 4, stride=2, padding=1)
+            for i in range(2, len(widths) - 1)])
+        self.extra_ups = nn.ModuleList([
+            nn.Conv1d(widths[i + 1], widths[i], 3, padding=1)
+            for i in reversed(range(2, len(widths) - 1))])
+        self.extra_merges = nn.ModuleList([
+            nn.Conv1d(widths[i] * 2, widths[i], 1)
+            for i in reversed(range(2, len(widths) - 1))])
+        self.extra_decoders = nn.ModuleList([
+            nn.ModuleList([block(widths[i]), block(widths[i])])
+            for i in reversed(range(2, len(widths) - 1))])
         self.output = nn.Conv1d(c0, 7, 1)
         # Preserve the original trunk initialization and RNG consumed by it in all
         # four experiments. Extra heads must not change subsequent noise/t draws.
@@ -113,7 +132,7 @@ class B7UNet(nn.Module):
                 self.chest_head = LeadHead(c0, self.config.head_channels, 6)
                 del self.output
             elif self.config.output_head == "multiscale":
-                self.coarse_head = LeadHead(c2, self.config.head_channels, 7)
+                self.coarse_head = LeadHead(deepest, self.config.head_channels, 7)
                 # Start with the original fine path; avoid a second zero gate.
                 nn.init.zeros_(self.coarse_head[-1].weight)
                 nn.init.zeros_(self.coarse_head[-1].bias)
@@ -125,8 +144,9 @@ class B7UNet(nn.Module):
         return h
 
     def forward(self, state, time, anchor, metadata=None):
-        if state.ndim != 3 or state.shape[1] != 7 or state.shape[-1] < 8:
-            raise ValueError("State must be [B,7,T], T>=8")
+        minimum = max(8, 2 ** (len(self.config.channels) - 1))
+        if state.ndim != 3 or state.shape[1] != 7 or state.shape[-1] < minimum:
+            raise ValueError(f"State must be [B,7,T], T>={minimum} for these scales")
         if anchor.shape != (len(state), 1, state.shape[-1]) or time.shape != (len(state),):
             raise ValueError("I must be [B,1,T] and time [B]")
         if not torch.isfinite(state).all() or not torch.isfinite(anchor).all() or not torch.isfinite(time).all():
@@ -138,12 +158,22 @@ class B7UNet(nn.Module):
         h = self.stem(torch.cat((anchor, state), dim=1))
         s0 = self._blocks(self.encode0, h, te, me)
         s1 = self._blocks(self.encode1, self.down1(s0), te, me)
-        h = self._blocks(self.bottleneck, self.down2(s1), te, me)
+        h = self.down2(s1)
+        extra_skips = []
+        for encoder, down in zip(self.extra_encoders, self.extra_downs):
+            h = self._blocks(encoder, h, te, me)
+            extra_skips.append(h)
+            h = down(h)
+        h = self._blocks(self.bottleneck, h, te, me)
         coarse = None
         if self.config.output_head == "multiscale":
             knots = control_point_count(state.shape[-1], self.config.coarse_interval_seconds)
             coefficients = self.coarse_head(pool_control_features(h, knots))
             coarse = interpolate_control_points(coefficients, state.shape[-1])
+        for up, merge, decoder, skip in zip(self.extra_ups, self.extra_merges,
+                                            self.extra_decoders, reversed(extra_skips)):
+            h = up(F.interpolate(h, size=skip.shape[-1], mode="nearest"))
+            h = self._blocks(decoder, merge(torch.cat((h, skip), dim=1)), te, me)
         h = self.up1(F.interpolate(h, size=s1.shape[-1], mode="nearest"))
         h = self._blocks(self.decode1, self.merge1(torch.cat((h, s1), dim=1)), te, me)
         h = self.up0(F.interpolate(h, size=s0.shape[-1], mode="nearest"))
