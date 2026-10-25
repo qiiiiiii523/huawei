@@ -80,6 +80,14 @@ head does not replace full-resolution noise removal. Neither path is guaranteed
 to become an identifiable physiological frequency band. No attention/two-stage/
 inverse-reconstruction module is added.
 
+MS deterministic-training correction: pooling and endpoint-aligned linear
+interpolation use fixed matrices and matrix-product backward, instead of native
+CUDA adaptive-pool/linear-interpolation backward kernels. This preserves their
+mathematical definitions and all learned parameters. Native CUDA linear
+interpolation can throw under the trainer's strict deterministic mode; do not
+disable that mode to bypass the issue. CPU equivalence tests check values and
+gradients; a CUDA-specific regression is provided and skips on CPU-only hosts.
+
 ## Server launch (P-prime ONLY)
 
 After pushing the corresponding branch, fetch it into a new server checkout or
@@ -111,7 +119,7 @@ select candidates by fixed validation rules and reserve test for final reporting
 
 ## Local verification
 
-CPU regression: `python -m unittest discover -s baselines/B7/tests -t .` (76 tests)
+CPU regression: `python -m unittest discover -s baselines/B7/tests -t .` (82 tests: 81 CPU passes, one CUDA-only check skipped locally)
 and `python -m unittest scripts.test_b7_structures scripts.test_b7_large
 scripts.test_recover_b7_ptb scripts.test_reschedule_b7_validation` (24 tests).
 Includes real K16 full10s inference/scoring with a small test model, actual-M2
