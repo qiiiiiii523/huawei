@@ -72,24 +72,40 @@ class SlowUNet7(nn.Module):
     def __init__(self, config: ModelConfig | None = None):
         super().__init__()
         self.config = config or ModelConfig()
-        c0, c1, c2 = self.config.channels
+        channels = self.config.channels
         self.time_embedding = TimeEmbedding(self.config.time_dim)
         self.metadata_encoder = MetadataEncoder(self.config.metadata_dim)
         block = lambda c, d=1: ResidualBlock(c, self.config.time_dim, self.config.metadata_dim, d)
-        # No separate I encoder/head. The original samples are channel zero.
-        self.stem = nn.Conv1d(8, c0, 7, padding=3)
-        self.encode0 = nn.ModuleList([block(c0), block(c0)])
-        self.down1 = nn.Conv1d(c0, c1, 4, stride=2, padding=1)
-        self.encode1 = nn.ModuleList([block(c1), block(c1)])
-        self.down2 = nn.Conv1d(c1, c2, 4, stride=2, padding=1)
-        self.bottleneck = nn.ModuleList([block(c2, d) for d in self.config.dilations])
-        self.up1 = nn.Conv1d(c2, c1, 3, padding=1)
-        self.merge1 = nn.Conv1d(c1 * 2, c1, 1)
-        self.decode1 = nn.ModuleList([block(c1), block(c1)])
-        self.up0 = nn.Conv1d(c1, c0, 3, padding=1)
-        self.merge0 = nn.Conv1d(c0 * 2, c0, 1)
-        self.decode0 = nn.ModuleList([block(c0), block(c0)])
-        self.output = nn.Conv1d(c0, 7, 1)
+        self.stem = nn.Conv1d(8, channels[0], 7, padding=3)
+        # Keep the original module names so explicit three-level checkpoints load strictly.
+        for level, width in enumerate(channels[:-1]):
+            self.add_module(f"encode{level}", nn.ModuleList([block(width), block(width)]))
+            self.add_module(f"down{level + 1}", nn.Conv1d(width, channels[level + 1], 4, stride=2, padding=1))
+        self.bottleneck = nn.ModuleList([block(channels[-1], d) for d in self.config.dilations])
+        for level in reversed(range(len(channels) - 1)):
+            width = channels[level]
+            self.add_module(f"up{level}", nn.Conv1d(channels[level + 1], width, 3, padding=1))
+            self.add_module(f"merge{level}", nn.Conv1d(width * 2, width, 1))
+            self.add_module(f"decode{level}", nn.ModuleList([block(width), block(width)]))
+        self.output = nn.Conv1d(channels[0], 7, 1)
+
+    def forward_features(self, h, time, metadata):
+        """Run every resolution level, restoring exact skip lengths on the way up."""
+        minimum = 2 ** (len(self.config.channels) - 1)
+        if h.shape[-1] < minimum:
+            raise ValueError(f"Need at least {minimum} native points for {len(self.config.channels)} levels")
+        skips = []
+        for level in range(len(self.config.channels) - 1):
+            h = self._blocks(getattr(self, f"encode{level}"), h, time, metadata)
+            skips.append(h)
+            h = getattr(self, f"down{level + 1}")(h)
+        h = self._blocks(self.bottleneck, h, time, metadata)
+        for level in reversed(range(len(skips))):
+            skip = skips[level]
+            h = getattr(self, f"up{level}")(F.interpolate(h, size=skip.shape[-1], mode="nearest"))
+            h = getattr(self, f"merge{level}")(torch.cat((h, skip), dim=1))
+            h = self._blocks(getattr(self, f"decode{level}"), h, time, metadata)
+        return self.output(h)
 
     @staticmethod
     def _blocks(blocks, h, time, metadata):
@@ -109,11 +125,4 @@ class SlowUNet7(nn.Module):
         te = self.time_embedding(time)
         me = self.metadata_encoder(anchor, metadata)
         h = self.stem(torch.cat((anchor, state), dim=1))
-        s0 = self._blocks(self.encode0, h, te, me)
-        s1 = self._blocks(self.encode1, self.down1(s0), te, me)
-        h = self._blocks(self.bottleneck, self.down2(s1), te, me)
-        h = self.up1(F.interpolate(h, size=s1.shape[-1], mode="nearest"))
-        h = self._blocks(self.decode1, self.merge1(torch.cat((h, s1), dim=1)), te, me)
-        h = self.up0(F.interpolate(h, size=s0.shape[-1], mode="nearest"))
-        h = self._blocks(self.decode0, self.merge0(torch.cat((h, s0), dim=1)), te, me)
-        return self.output(h)
+        return self.forward_features(h, te, me)

@@ -20,9 +20,10 @@ def restrict50(x,rate):
  return F.avg_pool1d(F.conv1d(z,kernel,groups=x.shape[1]),factor,factor)
 
 class FMExperimentUNet(Native50UNet):
- def __init__(self,config=None,rate=50,input_seconds=120,output_seconds=120):
+ def __init__(self,config=None,rate=5,input_seconds=120,output_seconds=120):
   if rate not in [50,10,5] or input_seconds not in [10,40,60,120] or output_seconds not in [10,30,60,120] or output_seconds>input_seconds or 120%output_seconds:raise ValueError('Experiment contract')
-  config=config or ModelConfig(channels=(16,32,64),time_dim=32,metadata_dim=32,dilations=tuple(max(1,round(d*rate/50)) for d in [1,2,4,8,16,32,64,128,256]))
+  config=config or ModelConfig(channels=(16,32,64,128,128,128,128),time_dim=32,metadata_dim=32,dilations=tuple(max(1,round(d*rate/50)) for d in [1,2,4,8,16,32,64,128,256]))
+  if input_seconds*rate < 2**(len(config.channels)-1):raise ValueError("Input too short for configured U-Net levels; use >=64 native points for seven levels")
   super().__init__(config);self.rate=rate;self.input_seconds=input_seconds;self.output_seconds=output_seconds
  def forward(self,state,time,anchor,metadata):
   ni=self.input_seconds*self.rate;no=self.output_seconds*self.rate;left=(ni-no)//2
@@ -30,9 +31,12 @@ class FMExperimentUNet(Native50UNet):
   padded=F.pad(state,(left,ni-no-left));dense=linear_expand(padded,50//self.rate)
   if self.rate==50:
    allp=super().forward(dense,time,anchor,metadata);return allp[...,left:left+no]
-  c=self.core;te=c.time_embedding(time);me=c.metadata_encoder(anchor,metadata);h=c.stem(torch.cat((pack_i(anchor),dense),1));h=restrict50(h,self.rate);s0=c._blocks(c.encode0,h,te,me);s1=c._blocks(c.encode1,c.down1(s0),te,me);h=c._blocks(c.bottleneck,c.down2(s1),te,me);h=c.up1(F.interpolate(h,size=s1.shape[-1],mode='nearest'));h=c._blocks(c.decode1,c.merge1(torch.cat((h,s1),1)),te,me);h=c.up0(F.interpolate(h,size=s0.shape[-1],mode='nearest'));out=c.output(c._blocks(c.decode0,c.merge0(torch.cat((h,s0),1)),te,me));return out[...,left:left+no]
+  c=self.core;te=c.time_embedding(time);me=c.metadata_encoder(anchor,metadata)
+  h=restrict50(c.stem(torch.cat((pack_i(anchor),dense),1)),self.rate)
+  return c.forward_features(h,te,me)[...,left:left+no]
 
-def build(config=None,rate=50,input_seconds=120,output_seconds=120):return FMExperimentUNet(config,rate,input_seconds,output_seconds)
+
+def build(config=None,rate=5,input_seconds=120,output_seconds=120):return FMExperimentUNet(config,rate,input_seconds,output_seconds)
 
 @torch.no_grad()
 def generate_native(model,raw_i,meta,scales,noise_std,kind,record_key,steps=16,samples=16,trajectory_batch=16):

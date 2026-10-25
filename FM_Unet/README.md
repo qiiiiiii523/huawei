@@ -1,4 +1,35 @@
-# FM+Unet：当前最佳慢分支
+# FM+Unet：七层慢 U-Net 与原三层基准
+
+## 当前代码：七个分辨率层级
+
+本次只扩充慢分支，固定 B5-fast 及快慢相加方式不变。新建 `build()` 默认使用 5Hz、120秒输入/输出的七层 U-Net：
+
+| 层级 | 通道数 | 120秒的时间点数 |
+|---|---:|---:|
+| E0 | 16 | 600 |
+| E1 | 32 | 300 |
+| E2 | 64 | 150 |
+| E3 | 128 | 75 |
+| E4 | 128 | 37 |
+| E5 | 128 | 18 |
+| 瓶颈 | 128 | 9 |
+
+共6次stride=2下采样，解码端6次上采样，并与相同层级的编码特征拼接。上采样显式对齐跳连长度，因此37/75等奇数长度可正确恢复。高层通道封顶128，避免一直翻倍到1024。每个编码/解码层级保留2个残差块，瓶颈保留9个膨胀残差块（d=1,1,1,1,2,3,6,13,26）；共33个残差块、3,064,687个参数。FM时间和人口学嵌入均为32维，仍注入全部残差块。
+
+```python
+from FM_Unet.fm_experiment import build
+slow_model = build()  # 新七层模型，随机初始化，需训练
+assert len(slow_model.config.channels) == 7
+# 保存新权重时必须一并保存 slow_model.config.to_dict() 到 model_config。
+```
+
+**尚未训练七层模型，以下分数全部属于原三层模型。** 仓库的 `best.pt` 保留原始三层EMA权重；`SlowPredictor()` 按checkpoint中的 `model_config` 严格重建，因此不传新checkpoint时仍运行三层基准。训练好七层模型后，通过 `SlowPredictor(checkpoint="七层模型路径", device="cuda")` 加载；checkpoint需包含与原接口一致的 `ema`、`model_config`、`native_hz`、`input_seconds`、`output_seconds`、`scale_uV`、`noise_std7`。旧三层权重不能直接作为七层训练成果。本分支目前提供模型/推理代码，不含完整训练入口。
+
+七层输入至少需要64个native时间点；5Hz的真实10秒只有50点，会明确报错。短记录预训练需另选可支持的分辨率（如50Hz的真实10秒），不可直接沿用5Hz的10秒输入。`build(rate=10/50)` 仍可显式选择其他分辨率。
+
+验证：`python -m unittest discover -s FM_Unet/tests -v`，覆盖七层前向/反向、奇数长度恢复、5/10/50Hz路径、短输入检查、采样输出、配置序列化及旧checkpoint严格加载和前向逐值一致性。
+
+## 原三层基准（随附best.pt）
 
 5Hz、七通道、120秒输入→120秒输出，365231参数。原始I保留500Hz，不使用I独立多尺度编码器。FM采用Heun16、K16正负噪声配对平均，固定种子42并结合record_key。
 

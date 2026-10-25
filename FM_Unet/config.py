@@ -1,4 +1,4 @@
-"""B7's own serializable configuration; no B5 weights or configuration imports."""
+"""Serializable slow U-Net configuration; explicit legacy widths remain supported."""
 from __future__ import annotations
 
 import json
@@ -9,14 +9,14 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ModelConfig:
-    channels: tuple[int, int, int] = (64, 128, 256)
-    time_dim: int = 128
-    metadata_dim: int = 128
-    dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
+    channels: tuple[int, ...] = (16, 32, 64, 128, 128, 128, 128)
+    time_dim: int = 32
+    metadata_dim: int = 32
+    dilations: tuple[int, ...] = (1, 1, 1, 1, 2, 3, 6, 13, 26)
 
     def __post_init__(self):
-        if len(self.channels) != 3 or any(c < 4 for c in self.channels):
-            raise ValueError("Three channel widths >=4 required")
+        if len(self.channels) < 2 or any(type(c) is not int or c < 4 for c in self.channels):
+            raise ValueError("At least two integer channel widths >=4 required")
         if self.time_dim < 4 or self.time_dim % 2 or self.metadata_dim < 4:
             raise ValueError("Invalid condition dimensions")
         if not self.dilations or any(d < 1 for d in self.dilations):

@@ -19,8 +19,7 @@ def to_native(target):
 class Native50UNet(nn.Module):
     def __init__(self,config=None):
         super().__init__()
-        self.config=config or ModelConfig(channels=(16,32,64),time_dim=32,metadata_dim=32,
-            dilations=(1,2,4,8,16,32,64))
+        self.config=config or ModelConfig()
         self.core=SlowUNet7(self.config)
         self.core.stem=nn.Conv1d(17,self.config.channels[0],7,padding=3)
 
@@ -29,10 +28,4 @@ class Native50UNet(nn.Module):
         if state.shape!=(len(anchor),7,anchor.shape[-1]//10):raise ValueError('State/anchor coordinates disagree')
         te=c.time_embedding(time);me=c.metadata_encoder(anchor,metadata)
         h=c.stem(torch.cat((pack_i(anchor),state),1))
-        s0=c._blocks(c.encode0,h,te,me)
-        s1=c._blocks(c.encode1,c.down1(s0),te,me)
-        h=c._blocks(c.bottleneck,c.down2(s1),te,me)
-        h=c.up1(F.interpolate(h,size=s1.shape[-1],mode='nearest'))
-        h=c._blocks(c.decode1,c.merge1(torch.cat((h,s1),1)),te,me)
-        h=c.up0(F.interpolate(h,size=s0.shape[-1],mode='nearest'))
-        return c.output(c._blocks(c.decode0,c.merge0(torch.cat((h,s0),1)),te,me))
+        return c.forward_features(h,te,me)
