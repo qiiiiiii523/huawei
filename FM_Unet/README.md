@@ -23,11 +23,13 @@ assert len(slow_model.config.channels) == 7
 # 保存新权重时必须一并保存 slow_model.config.to_dict() 到 model_config。
 ```
 
-**尚未训练七层模型，以下分数全部属于原三层模型。** 仓库的 `best.pt` 保留原始三层EMA权重；`SlowPredictor()` 按checkpoint中的 `model_config` 严格重建，因此不传新checkpoint时仍运行三层基准。训练好七层模型后，通过 `SlowPredictor(checkpoint="七层模型路径", device="cuda")` 加载；checkpoint需包含与原接口一致的 `ema`、`model_config`、`native_hz`、`input_seconds`、`output_seconds`、`scale_uV`、`noise_std7`。旧三层权重不能直接作为七层训练成果。本分支目前提供模型/推理代码，不含完整训练入口。
+**尚未训练七层模型，以下分数全部属于原三层模型。** 仓库的 `best.pt` 保留原始三层EMA权重；`SlowPredictor()` 按checkpoint中的 `model_config` 严格重建，因此不传新checkpoint时仍运行三层基准。训练好七层模型后，通过 `SlowPredictor(checkpoint="七层模型路径", device="cuda")` 加载；checkpoint需包含与原接口一致的 `ema`、`model_config`、`native_hz`、`input_seconds`、`output_seconds`、`scale_uV`、`noise_std7`。旧三层权重不能直接作为七层训练成果。本分支现已补齐 `python -m FM_Unet.train` 训练入口，支持三阶段串行、恢复与最终验证。
 
 七层输入至少需要64个native时间点；5Hz的真实10秒只有50点，会明确报错。短记录预训练需另选可支持的分辨率（如本次配置的10Hz真实10秒），不可直接沿用5Hz的10秒输入。`build(rate=10/50)` 仍可显式选择其他分辨率。
 
 验证：`python -m unittest discover -s FM_Unet/tests -v`，覆盖七层前向/反向、奇数长度恢复、5/10/50Hz路径、短输入检查、采样输出、配置序列化及旧checkpoint严格加载和前向逐值一致性。
+
+真实batch64训练可运行 `bash scripts/run_fm_unet_m7.sh`（服务器默认路径，物理GPU2）。中途不验证，每阶段仅最终EMA做Heun16/K16验证；三个阶段预算2000/4000/6000。华为最终以固定快+新慢完整波形评分。训练后的慢分支部署文件为 `huawei120/inference.pt`。
 
 实验计划、优化器与训练注意事项见 [七层M7宽度实验配置](../docs/fm_unet_m7_training.md)，配置文件在 `configs/fm_unet_m7/`。配置检查可运行 `python -m FM_Unet.experiment --config configs/fm_unet_m7/huawei120.json`；这不是训练命令。
 
