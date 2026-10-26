@@ -91,14 +91,20 @@ class SlowUNet7(nn.Module):
 
     def forward_features(self, h, time, metadata):
         """Run every resolution level, restoring exact skip lengths on the way up."""
-        minimum = 2 ** (len(self.config.channels) - 1)
+        minimum = self.config.min_bottleneck_points or 2 ** (len(self.config.channels) - 1)
         if h.shape[-1] < minimum:
             raise ValueError(f"Need at least {minimum} native points for {len(self.config.channels)} levels")
         skips = []
         for level in range(len(self.config.channels) - 1):
             h = self._blocks(getattr(self, f"encode{level}"), h, time, metadata)
             skips.append(h)
-            h = getattr(self, f"down{level + 1}")(h)
+            down = getattr(self, f"down{level + 1}")
+            if self.config.min_bottleneck_points and h.shape[-1] // 2 < self.config.min_bottleneck_points:
+                # Same learned channel transform at stride1 when halving would erase time structure.
+                # Asymmetric padding preserves length for the existing even kernel4.
+                h = F.conv1d(F.pad(h, (1, 2)), down.weight, down.bias, stride=1)
+            else:
+                h = down(h)
         h = self._blocks(self.bottleneck, h, time, metadata)
         for level in reversed(range(len(skips))):
             skip = skips[level]

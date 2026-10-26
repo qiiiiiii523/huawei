@@ -13,8 +13,11 @@ class ModelConfig:
     time_dim: int = 128
     metadata_dim: int = 128
     dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32)
+    min_bottleneck_points: int = 0
 
     def __post_init__(self):
+        if type(self.min_bottleneck_points) is not int or self.min_bottleneck_points < 0:
+            raise ValueError('min_bottleneck_points must be a nonnegative integer')
         if len(self.channels) < 2 or any(type(c) is not int or c < 4 for c in self.channels):
             raise ValueError("At least two integer channel widths >=4 required")
         if self.time_dim < 4 or self.time_dim % 2 or self.metadata_dim < 4:

@@ -16,10 +16,11 @@ def load_experiment(path):
     model_config = ModelConfig.from_dict(config['model'])
     LossConfig(**config['loss'])
     data = config['data']
-    expected = {'public10': (10, 10), 'public75': (5, 75), 'huawei120': (5, 120)}
+    expected = {'public10': ((5, 10), 10), 'public75': ((5,), 75), 'huawei120': ((5,), 120)}
     if config['stage'] not in expected:
         raise ValueError('Unknown stage')
-    if (data['native_hz'], data['input_seconds']) != expected[config['stage']]:
+    rates, seconds = expected[config['stage']]
+    if data['native_hz'] not in rates or data['input_seconds'] != seconds:
         raise ValueError('Stage rate/window mismatch')
     if data['output_seconds'] != data['input_seconds'] or data['target'] != 'MA501':
         raise ValueError('Expected full real-record MA501 slow targets')
@@ -32,14 +33,19 @@ def load_experiment(path):
     if not 0 <= training['ema_decay'] < 1 or training['gradient_clip'] <= 0:
         raise ValueError('Invalid EMA/clip')
     validation = config['validation']
-    if validation['mode'] != 'final_only' or validation['steps'] != 16 or validation['samples'] != 16:
-        raise ValueError('Expected final-only Heun16/K16 validation')
+    if validation['mode'] not in ('final_only', 'scheduled') or validation['steps'] != 16 or validation['samples'] != 16:
+        raise ValueError('Expected final_only/scheduled Heun16/K16 validation')
+    if validation['mode'] == 'scheduled':
+        steps = validation.get('updates', [])
+        if (not steps or any(type(s) is not int or s < 1 or s > training['updates'] for s in steps)
+                or steps != sorted(set(steps)) or steps[-1] != training['updates']):
+            raise ValueError('Validation updates must be sorted unique and include final update')
     if validation['solver'] != 'heun':
         raise ValueError('Expected Heun solver')
     model = build(model_config, data['native_hz'], data['input_seconds'], data['output_seconds'])
     count = sum(p.numel() for p in model.parameters())
-    if len(model_config.channels) != 7 or not 10_000_000 < count < 20_000_000:
-        raise ValueError('Expected seven levels with 10M–20M parameters')
+    if len(model_config.channels) not in (3, 7) or not 10_000_000 < count < 20_000_000:
+        raise ValueError('Expected three/seven levels with 10M–20M parameters')
     return config, model
 
 

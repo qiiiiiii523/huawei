@@ -1,4 +1,4 @@
-"""Train the slow branch only, with final-only EMA validation and exact resume."""
+"""Train the slow branch with scheduled EMA validation, selection and exact resume."""
 import argparse
 import copy
 import hashlib
@@ -116,7 +116,7 @@ def train(args):
     print(f'[train] stage={config["stage"]} parameters={sum(p.numel() for p in model.parameters())} '
           f'device={device} CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES")} '
           f'batch={training["batch_size"]} microbatch=none accumulation=1 '
-          f'updates={training["updates"]} validation=FINAL_ONLY no_initial_or_intermediate_validation', flush=True)
+          f'updates={training["updates"]} validation={config['validation']['mode']} validation_updates={validation_steps(config)}', flush=True)
     print('[preflight] checking immutable cached data and patient splits; no ODE generation', flush=True)
     dataset = SlowDataset(manifest, config, scales, args.cache_dir)
     # Hash held-out records too, so exact resume cannot silently change the final evaluation set.
@@ -137,7 +137,7 @@ def train(args):
         initial = torch.load(args.init_checkpoint, map_location='cpu', weights_only=True)
         previous = {'public75': 'public10', 'huawei120': 'public75'}.get(config['stage'])
         if (initial.get('architecture_id') != ARCHITECTURE or initial.get('stage') != previous
-                or not initial.get('final_validated')
+                or not (initial.get('validation_completed') or initial.get('final_validated'))
                 or ModelConfig.from_dict(initial['model_config']) != model.config
                 or initial['scale_uV'] != scales or initial['noise_std7'] != noise):
             raise ValueError('Stage initialization requires completed previous-stage matching EMA/statistics')
@@ -146,6 +146,7 @@ def train(args):
                               checkpoint_sha=file_sha(args.init_checkpoint), optimizer_reset=True)
     ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
     step, final_validated = 0, False
+    validated_steps, best_r, best_step = [], -float('inf'), None
     if args.resume:
         old = torch.load(output/'last.pt', map_location='cpu', weights_only=True)
         if old.get('architecture_id') != ARCHITECTURE or old['identity'] != identity:
@@ -154,6 +155,8 @@ def train(args):
         optimizer.load_state_dict(old['optimizer'])
         ema = {k: v.to(device) for k, v in old['ema'].items()}
         step, final_validated, initialization = old['step'], old['final_validated'], old['initialization']
+        validated_steps = old.get('validated_steps', [step] if final_validated else [])
+        best_r, best_step = old.get('best_r', -float('inf')), old.get('best_step')
         restore_rng(old['rng'])
         print(f'[resume] restored update={step} final_validated={final_validated}', flush=True)
     output.mkdir(parents=True, exist_ok=args.resume)
@@ -164,15 +167,58 @@ def train(args):
                     native_hz=model.rate, input_seconds=model.input_seconds, output_seconds=model.output_seconds,
                     scale_uV=scales, noise_std7=noise, model=model.state_dict(), ema=ema,
                     optimizer=optimizer.state_dict(), step=step, seed=seed, rng=pack_rng(), identity=identity,
-                    initialization=initialization, final_validated=final_validated)
+                    initialization=initialization, final_validated=final_validated, validated_steps=validated_steps,
+                    validation_completed=step in validated_steps, best_r=best_r, best_step=best_step)
+
+    def run_validation():
+        nonlocal final_validated, best_r, best_step
+        if step in validated_steps:
+            return
+        print(f'[validation] START EMA update={step}; Heun16/K16', flush=True)
+        training_rng = pack_rng()
+        evaluated = copy.deepcopy(model).eval()
+        evaluated.load_state_dict(ema, strict=True)
+        fast = FrozenFast(args.fast_code, args.fast_checkpoint, device) if config['stage'] == 'huawei120' else None
+        # Restore the pre-validation RNG, including randomness consumed by B5 initialization.
+        try:
+            metrics, rows = evaluate(evaluated, manifest, config, scales, noise, fast=fast,
+                                     fast_cache=Path(args.cache_dir)/'fixed_fast')
+        finally:
+            restore_rng(training_rng)
+        value = float(metrics['r'])
+        if not np.isfinite(value):
+            raise ValueError('Nonfinite validation r cannot select a checkpoint')
+        (output/f'validation_{step:07d}.json').write_text(
+            json.dumps(dict(update=step, metrics=metrics, records=rows), indent=2), encoding='utf-8')
+        won = value > best_r
+        if won:
+            best_r, best_step = value, step
+        validated_steps.append(step)
+        final_validated = step == training['updates']
+        atomic_save(output/f'step_{step:07d}.pt', payload())
+        if won:
+            atomic_save(output/'best.pt', payload())
+        atomic_save(output/'last.pt', payload())
+        if final_validated:
+            atomic_save(output/'final.pt', payload())
+            (output/'validation_final.json').write_text(json.dumps(dict(metrics=metrics, records=rows), indent=2), encoding='utf-8')
+            exported = payload()
+            inference = {k: exported[k] for k in ('ema', 'model_config', 'native_hz', 'input_seconds',
+                                                  'output_seconds', 'scale_uV', 'noise_std7', 'step', 'seed')}
+            atomic_save(output/'inference.pt', inference)
+        print('[validation] '+json.dumps(dict(update=step, metrics=metrics, new_best=won, best_step=best_step)), flush=True)
+        del evaluated, fast
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
 
     if not args.resume:
         atomic_save(output/'last.pt', payload())
+    elif step in validation_steps(config) and step not in validated_steps:
+        run_validation()  # Recover a checkpoint saved before an interrupted scheduled validation.
     loss_config = LossConfig(**config['loss'])
     started = time.monotonic()
     model.train()
     for step in range(step+1, training['updates']+1):
-        # A real batch: one full forward/backward, then one optimizer/EMA update.
         batch = move(default_collate([dataset[i] for i in dataset.indices(training['batch_size'])]), device)
         optimizer.zero_grad(set_to_none=True)
         loss, parts = flow_loss(model, batch, loss_config, noise)
@@ -189,30 +235,26 @@ def train(args):
             print('[train] '+json.dumps(report), flush=True)
             with (output/'history.jsonl').open('a', encoding='utf-8') as stream:
                 stream.write(json.dumps(report)+'\n')
-        if step % training['checkpoint_every'] == 0 or step == training['updates'] or step == args.stop_after:
+        due = step in validation_steps(config)
+        if step % training['checkpoint_every'] == 0 or due or step == args.stop_after:
             atomic_save(output/'last.pt', payload())
-            print(f'[checkpoint] update={step}; no validation', flush=True)
+            print(f'[checkpoint] update={step}; validation_due={due}', flush=True)
+        if due:
+            run_validation()
         if step == args.stop_after and step < training['updates']:
             return
     if not final_validated:
-        print(f'[final-validation] START final EMA at update={step}; Heun16/K16', flush=True)
-        evaluated = copy.deepcopy(model).eval()
-        evaluated.load_state_dict(ema, strict=True)
-        fast = FrozenFast(args.fast_code, args.fast_checkpoint, device) if config['stage'] == 'huawei120' else None
-        metrics, rows = evaluate(evaluated, manifest, config, scales, noise, fast=fast,
-                                 fast_cache=Path(args.cache_dir)/'fixed_fast')
-        (output/'validation_final.json').write_text(json.dumps(dict(metrics=metrics, records=rows), indent=2), encoding='utf-8')
-        final_validated = True
-        atomic_save(output/'last.pt', payload())
-        # Exactly one final checkpoint, no best-step search or intermediate selection.
-        atomic_save(output/'final.pt', payload())
-        exported = payload()
-        inference = {k: exported[k] for k in ('ema', 'model_config', 'native_hz', 'input_seconds',
-                                              'output_seconds', 'scale_uV', 'noise_std7', 'step', 'seed')}
-        atomic_save(output/'inference.pt', inference)
-        print('[final-validation] '+json.dumps(metrics), flush=True)
+        run_validation()
+    selected = torch.load(output/'best.pt', map_location='cpu', weights_only=True)
+    atomic_save(output/'best_inference.pt', {k: selected[k] for k in ('ema', 'model_config', 'native_hz',
+        'input_seconds', 'output_seconds', 'scale_uV', 'noise_std7', 'step', 'seed')})
     (output/'completed.json').write_text(json.dumps(dict(stage=config['stage'], update=step,
-        completed=True, final_validated=True, selection='final_ema_only')), encoding='utf-8')
+        completed=True, final_validated=True, selection='best_scheduled_ema', best_r=best_r,
+        best_step=best_step, validated_steps=validated_steps)), encoding='utf-8')
+
+
+def validation_steps(config):
+    return config['validation'].get('updates', [config['training']['updates']])
 
 
 def main():

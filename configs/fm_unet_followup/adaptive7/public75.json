@@ -1,0 +1,65 @@
+{
+  "stage": "public75",
+  "model": {
+    "channels": [
+      64,
+      128,
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "time_dim": 128,
+    "metadata_dim": 128,
+    "dilations": [
+      1,
+      1,
+      1,
+      2,
+      2,
+      2,
+      3,
+      3,
+      4
+    ],
+    "min_bottleneck_points": 8
+  },
+  "data": {
+    "native_hz": 5,
+    "raw_i_hz": 500,
+    "input_seconds": 75,
+    "output_seconds": 75,
+    "target": "MA501"
+  },
+  "loss": {
+    "mae_weight": 0.1,
+    "pcc_weight": 0.05,
+    "ii_weight": 1.0,
+    "target_variance_floor": 1e-08
+  },
+  "training": {
+    "seed": 42,
+    "optimizer": "AdamW",
+    "updates": 8000,
+    "batch_size": 64,
+    "learning_rate": 5e-05,
+    "weight_decay": 0.01,
+    "ema_decay": 0.999,
+    "gradient_clip": 1.0,
+    "checkpoint_every": 500
+  },
+  "validation": {
+    "mode": "scheduled",
+    "solver": "heun",
+    "steps": 16,
+    "samples": 16,
+    "seed": 42,
+    "sample_batch_size": 16,
+    "validation_batch_size": 4,
+    "updates": [
+      4000,
+      8000
+    ]
+  }
+}

@@ -23,7 +23,8 @@ class FMExperimentUNet(Native50UNet):
  def __init__(self,config=None,rate=5,input_seconds=120,output_seconds=120):
   if rate not in [50,10,5] or input_seconds not in [10,40,60,75,120] or output_seconds not in [10,30,60,75,120] or output_seconds>input_seconds:raise ValueError('Experiment contract')
   config=config or ModelConfig()
-  if input_seconds*rate < 2**(len(config.channels)-1):raise ValueError("Input too short for configured U-Net levels; use >=64 native points for seven levels")
+  minimum=config.min_bottleneck_points or 2**(len(config.channels)-1)
+  if input_seconds*rate < minimum:raise ValueError(f"Input too short for configured U-Net levels; need >={minimum} native points")
   super().__init__(config);self.rate=rate;self.input_seconds=input_seconds;self.output_seconds=output_seconds
  def forward(self,state,time,anchor,metadata):
   ni=self.input_seconds*self.rate;no=self.output_seconds*self.rate;left=(ni-no)//2

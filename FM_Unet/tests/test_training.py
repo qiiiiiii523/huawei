@@ -104,6 +104,69 @@ class TrainingTests(unittest.TestCase):
                 for group, value in [('task1', .8), ('machine', .4), ('body', .6)]]
         self.assertAlmostEqual(aggregate(rows, 'huawei120')['r'], .65)
 
+    def test_scheduled_validation_selects_earlier_checkpoint_and_restores_rng(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, config = self.fixture(directory)
+            cfg = json.loads(config.read_text())
+            cfg['validation'].update(mode='scheduled', updates=[1, 2])
+            config.write_text(json.dumps(cfg))
+            args = Namespace(manifest=str(manifest), config=str(config), cache_dir=str(Path(directory)/'cache'),
+                statistics=str(Path(__file__).parents[1]/'best.pt'), device='cpu', cpu_threads=2,
+                init_checkpoint=None, fast_code=None, fast_checkpoint=None, demographics_csv=None,
+                output=str(Path(directory)/'scheduled'), resume=False, stop_after=None)
+            calls = []
+            def validation(model, *unused, **kw):
+                # Simulate evaluation constructing a randomly initialized frozen B5 model.
+                torch.rand(100); np.random.rand(100)
+                calls.append(True)
+                return {'r': .2 if len(calls) == 1 else .1}, []
+            with patch('FM_Unet.train.evaluate', side_effect=validation):
+                train(args)
+            best = torch.load(Path(args.output)/'best.pt', weights_only=True)
+            final = torch.load(Path(args.output)/'final.pt', weights_only=True)
+            self.assertEqual(best['step'], 1)
+            self.assertTrue(best['validation_completed'])
+            self.assertFalse(best['final_validated'])
+            self.assertEqual(final['step'], 2)
+            self.assertEqual(final['validated_steps'], [1, 2])
+            self.assertEqual(final['best_step'], 1)
+            selected = torch.load(Path(args.output)/'best_inference.pt', weights_only=True)
+            self.assertEqual(selected['step'], 1)
+            # Interrupted scheduled validation must be retried before the next optimizer step.
+            args.output = str(Path(directory)/'interrupted_validation')
+            with patch('FM_Unet.train.evaluate', side_effect=RuntimeError('validation interrupted')):
+                with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                    train(args)
+            args.resume = True
+            calls.clear()
+            with patch('FM_Unet.train.evaluate', side_effect=validation):
+                train(args)
+            recovered = torch.load(Path(args.output)/'last.pt', weights_only=True)
+            for field in ('model', 'ema'):
+                for key in final[field]:
+                    torch.testing.assert_close(final[field][key], recovered[field][key], rtol=0, atol=0)
+
+    def test_followup_models_preserve_temporal_lengths(self):
+        from FM_Unet.experiment import load_experiment
+        root = Path(__file__).parents[2]/'configs/fm_unet_followup'
+        for name, count in [('wide3', 10_312_991), ('adaptive7', 15_988_319)]:
+            for stage, native, expected in [('public10', 50, 12), ('public75', 375, 11), ('huawei120', 600, 9)]:
+                cfg, model = load_experiment(root/name/f'{stage}.json')
+                self.assertEqual(sum(p.numel() for p in model.parameters()), count)
+                sizes = []
+                hook = model.core.bottleneck.register_forward_pre_hook(lambda module, args: None)
+                # ModuleList is iterated directly, so capture the first actual bottleneck block.
+                hook.remove()
+                hook = model.core.bottleneck[0].register_forward_pre_hook(lambda module, args: sizes.append(args[0].shape[-1]))
+                batch = dict(anchor=torch.zeros(1, 1, model.input_seconds*500),
+                             target=torch.zeros(1, 7, native), lead_mask=torch.ones(1, 7, dtype=torch.bool), metadata=None)
+                loss, _ = flow_loss(model, batch, LossConfig(), [1.]*7)
+                loss.backward()
+                hook.remove()
+                self.assertEqual(sizes, [native//4 if name == 'wide3' else expected])
+                self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+
 
 if __name__ == '__main__':
     unittest.main()
