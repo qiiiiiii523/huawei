@@ -1,0 +1,65 @@
+{
+  "stage": "public10",
+  "model": {
+    "channels": [
+      64,
+      128,
+      256,
+      256,
+      256,
+      256,
+      256
+    ],
+    "time_dim": 128,
+    "metadata_dim": 128,
+    "dilations": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32
+    ],
+    "output_head": "linear",
+    "head_channels": 64,
+    "coarse_interval_seconds": 0.5
+  },
+  "loss": {
+    "mae_weight": 1.0,
+    "pcc_weight": 0.3,
+    "ii_weight": 5.0,
+    "target_variance_floor": 1e-08,
+    "pcc_leads": 11,
+    "low_frequency_weight": 0.0,
+    "low_frequency_cutoff_hz": 0.5,
+    "limb_wave_weight": 0,
+    "projection_weight": 0,
+    "limb_std_floor_uV": 20.0,
+    "anchor_std_floor_uV": 20.0
+  },
+  "sampling": {
+    "sample_rate": 500,
+    "window_seconds": 10,
+    "core_seconds": 10,
+    "solver": "heun",
+    "steps": 16,
+    "samples": 16,
+    "seed": 42,
+    "sample_batch_size": 16,
+    "validation_batch_size": 4
+  },
+  "training": {
+    "seed": 42,
+    "updates": 20000,
+    "validate_every": 10000,
+    "batch_size": 64,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "ema_decay": 0.999,
+    "gradient_clip": 1.0,
+    "boundary_probability": 0.0,
+    "checkpoint_every": 500,
+    "validation_mode": "periodic",
+    "initial_validation": false
+  }
+}

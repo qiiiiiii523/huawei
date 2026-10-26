@@ -21,6 +21,30 @@ def pearson(prediction, target):
     return float(np.dot(p, y) / den) if den > 0 else float("nan")
 
 
+def limb_diagnostics(anchor, prediction, target, mask):
+    """Descriptive only; never changes best-checkpoint selection or lead formulas."""
+    result = {}
+    for j, name in ((1, 'II'), (2, 'III'), (5, 'aVF')):
+        if mask[j]:
+            y = target[j].astype('float64'); p = prediction[j].astype('float64')
+            std = float(y.std())
+            result[name] = {'target_std_uV': std, 'pred_std_uV': float(p.std()),
+                            'std_ratio': float(p.std()/std) if std > 0 else None,
+                            'normalized_mae': float(np.mean(abs(p-y))/max(std,20.))}
+    if mask[1]:
+        a = anchor[0].astype('float64'); y = target[1].astype('float64'); p = prediction[1].astype('float64')
+        a -= a.mean(); y -= y.mean(); p -= p.mean()
+        aa = float(a @ a)
+        if aa / len(a) >= 20.**2 and y.std() > 0:
+            actual, predicted = float(a@y/aa), float(a@p/aa)
+            true_r, pred_r = pearson(a,y), pearson(a,p)
+            result['I_II'] = {'true_r': true_r if np.isfinite(true_r) else None,
+                              'pred_r': pred_r if np.isfinite(pred_r) else None,
+                              'true_projection': actual, 'pred_projection': predicted,
+                              'projection_component_error': abs(actual-predicted)*float(a.std())/max(float(y.std()),20.)}
+    return result
+
+
 def aggregate(rows, stage):
     # QC differs by lead: lead means must be computed before the final 11-lead mean.
     # Averaging each pair's available leads first would over-weight sparsely eligible targets.
@@ -45,7 +69,7 @@ def aggregate(rows, stage):
             raise ValueError(f"No defined QC-eligible targets for every missing lead in group {group}")
         lead_means[group] = {lead: float(np.mean(values)) for lead, values in groups[group].items()}
         means[group] = float(np.mean(list(lead_means[group].values())))
-    if stage == "huawei40":
+    if stage in ("huawei40", "huawei10"):
         if set(means) != set(GROUPS):
             raise ValueError("Huawei best selection requires task1, machine and body validation groups")
         score = .5 * means["task1"] + .25 * means["machine"] + .25 * means["body"]
@@ -69,7 +93,7 @@ def evaluate(model, manifest, config, stage):
             return
         predictions = predict_records(model, [x[1] for x in pending], manifest["scales_uV"],
             [x[0]["record_id"] for x in pending], [x[4] for x in pending], config).cpu().numpy()
-        for (item, _, target, mask, _), prediction in zip(pending, predictions):
+        for (item, anchor, target, mask, _), prediction in zip(pending, predictions):
             correlations, by_lead = [], {}
             for j in range(1, 12):
                 if mask[j]:
@@ -81,7 +105,8 @@ def evaluate(model, manifest, config, stage):
             if by_lead:
                 rows.append({"record_id": item["record_id"], "group": item["group"],
                     "target_record_id": item["target_record_id"],
-                    "r": float(np.mean(correlations)) if correlations else None, "leads": by_lead})
+                    "r": float(np.mean(correlations)) if correlations else None, "leads": by_lead,
+                    "limb_diagnostics": limb_diagnostics(anchor, prediction, target, mask)})
         pending.clear()
         print(f"[validation] scored={len(rows)} scanned={scanned}/{total_records}", flush=True)
     target_masks, target_identity = {}, {}
@@ -103,6 +128,8 @@ def evaluate(model, manifest, config, stage):
             continue
         if stage == "huawei40" and target.shape[-1] != 60000:
             raise ValueError("Huawei validation must contain real full120s, not padded targets")
+        if stage == "huawei10" and target.shape[-1] != 5000:
+            raise ValueError("Huawei10 validation requires indexed real10s records")
         if stage != "huawei40":
             real_length = target.shape[-1] // 5000 * 5000
             if real_length < config.window_seconds * 500:

@@ -52,12 +52,20 @@ class LossConfig:
     pcc_leads: int = 7
     low_frequency_weight: float = 0.0
     low_frequency_cutoff_hz: float = 0.5
+    limb_wave_weight: float = 0.0
+    projection_weight: float = 0.0
+    limb_std_floor_uV: float = 20.0
+    anchor_std_floor_uV: float = 20.0
 
     def __post_init__(self):
         if any(not math.isfinite(v) or v < 0 for v in asdict(self).values()):
             raise ValueError("Loss settings must be finite and nonnegative")
         if self.ii_weight <= 0 or self.target_variance_floor <= 0:
             raise ValueError("II weight and variance floor must be positive")
+        if self.limb_std_floor_uV <= 0 or self.anchor_std_floor_uV <= 0:
+            raise ValueError("Physical amplitude floors must be positive")
+        if (self.limb_wave_weight or self.projection_weight) and self.pcc_leads != 11:
+            raise ValueError("Round-one physical losses require PCC11 data")
         if type(self.pcc_leads) is not int or self.pcc_leads not in (7, 11):
             raise ValueError("pcc_leads must be 7 or 11")
         if not 0 < self.low_frequency_cutoff_hz < 250:

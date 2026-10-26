@@ -67,6 +67,19 @@ def load_record(row):
         raise ValueError("Nonfinite supervised leads")
     if metadata and set(metadata) != {"numeric", "sex", "field_mask", "age_topcoded"}:
         raise ValueError("All four metadata arrays must be provided together")
+    if "window_start" in row or "window_stop" in row:
+        start, stop = row.get("window_start"), row.get("window_stop")
+        if (type(start) is not int or type(stop) is not int or start < 0 or stop > target.shape[-1]
+                or stop - start != 5000 or start % 5000):
+            raise ValueError("Indexed Huawei window must be an aligned real 5000-point slice")
+        anchor, target = anchor[:, start:stop], target[:, start:stop]
+        if "view_lead_mask" in row:
+            extra = np.asarray(row["view_lead_mask"])
+            if extra.shape != (12,) or not np.isin(extra, [0, 1]).all():
+                raise ValueError("Invalid per-window QC mask")
+            if (extra.astype(bool) & ~mask).any():
+                raise ValueError("A window cannot re-enable excluded parent leads")
+            mask = mask & extra.astype(bool)
     return anchor, target, mask, metadata
 
 

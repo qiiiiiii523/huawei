@@ -7,6 +7,7 @@ from .flow import linear_path
 from . import GENERATED_INDICES
 from .leads import compose_d12
 from .low_frequency import low_frequency_loss
+from .limb_losses import physical_losses
 
 
 def core_slice(length, sample_rate=500):
@@ -115,6 +116,12 @@ def flow_loss(model, batch, config=None, *, noise=None, time=None):
         parts.update(reconstructed_pcc11(endpoint, anchor, batch, tm, config))
     parts["fm"] = fm
     total = fm + config.mae_weight * parts["mae"] + config.pcc_weight * parts["pcc"]
+    if config.limb_wave_weight or config.projection_weight:
+        parts.update(physical_losses(endpoint, anchor, batch, tm, config))
+        if config.limb_wave_weight:
+            total = total + config.limb_wave_weight * parts["limb_wave"]
+        if config.projection_weight:
+            total = total + config.projection_weight * parts["projection"]
     if config.low_frequency_weight:
         parts.update(low_frequency_loss(endpoint, target, valid, config))
         total = total + config.low_frequency_weight * parts["low_frequency_mae"]

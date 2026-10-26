@@ -54,19 +54,28 @@ def balanced_indices(dataset, count):
 
 def validate_settings(cfg):
     allowed = {"stage", "model", "loss", "sampling", "training"}
-    if set(cfg) != allowed or cfg["stage"] not in ("public10", "public40", "huawei40"):
+    if set(cfg) != allowed or cfg["stage"] not in ("public10", "public40", "huawei40", "huawei10"):
         raise ValueError("Config requires stage/model/loss/sampling/training; B5 settings are not accepted")
     model = ModelConfig.from_dict(cfg["model"])
     loss, sampling = LossConfig(**cfg["loss"]), SamplingConfig(**cfg["sampling"])
-    expected = 10 if cfg["stage"] == "public10" else 40
+    expected = 10 if cfg["stage"] in ("public10", "huawei10") else 40
     if sampling.window_seconds != expected:
         raise ValueError("Stage and window disagree")
     tr = cfg["training"]
-    if set(tr) - {"checkpoint_every", "validation_mode"} != {"seed", "updates", "validate_every", "batch_size", "learning_rate", "weight_decay",
+    if set(tr) - {"checkpoint_every", "validation_mode", "initial_validation", "early_stop_patience", "early_stop_min_update", "early_stop_min_delta"} != {"seed", "updates", "validate_every", "batch_size", "learning_rate", "weight_decay",
                    "ema_decay", "gradient_clip", "boundary_probability"}:
         raise ValueError("Unexpected or missing training settings")
     if tr.get("validation_mode", "periodic") not in ("periodic", "final_only"):
         raise ValueError("validation_mode must be periodic or final_only")
+    if type(tr.get("initial_validation", True)) is not bool:
+        raise ValueError("initial_validation must be boolean")
+    for key in ("early_stop_patience", "early_stop_min_update"):
+        if type(tr.get(key, 0)) is not int or tr.get(key, 0) < 0:
+            raise ValueError("Nonnegative early stopping integer required")
+    if not np.isfinite(tr.get("early_stop_min_delta", 0.)) or tr.get("early_stop_min_delta", 0.) < 0:
+        raise ValueError("Invalid early stopping delta")
+    if tr.get("early_stop_patience", 0) and tr.get("validation_mode", "periodic") != "periodic":
+        raise ValueError("Early stopping needs periodic validation")
     if tr.get("validation_mode") == "final_only" and tr["validate_every"] != tr["updates"]:
         raise ValueError("final_only requires validate_every == updates")
     for key in ("updates", "validate_every", "batch_size"):
@@ -127,6 +136,7 @@ def train(args):
     ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
     step, best = 0, -float("inf")
     last_validated_update, pending_validation = -1, False
+    stale_validations, early_stop_best, best_update = 0, -float("inf"), None
     identity = {"manifest_sha256": file_sha256(args.manifest), "code_sha256": code_sha(), "config": cfg}
     data_sha = {r["record_id"]: file_sha256(r["resolved_path"]) for r in manifest["records"]}
     identity["record_sha256"] = data_sha
@@ -150,11 +160,14 @@ def train(args):
         step, best, initialization = old["update"], old["best_r"], old["initialization"]
         last_validated_update = old.get("last_validated_update", step)
         pending_validation = old.get("pending_validation", False)
+        stale_validations = old.get("stale_validations", 0)
+        early_stop_best = old.get("early_stop_best", best)
+        best_update = old.get("best_update")
         restore_rng(old["rng"])
         print(f"[resume] update={step} best_r={best:.6f} validate_every={tr['validate_every']} "
               f"checkpoint_every={tr.get('checkpoint_every', tr['validate_every'])}", flush=True)
     dataset = WindowDataset(manifest, sc.window_seconds, tr["boundary_probability"],
-                            include_d12=lc.pcc_leads == 11)
+                            include_d12=lc.pcc_leads == 11 or bool(lc.limb_wave_weight or lc.projection_weight))
     output.mkdir(parents=True, exist_ok=args.resume)
     (output / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -166,17 +179,23 @@ def train(args):
                 "model": model.state_dict(), "ema": ema, "optimizer": optimizer.state_dict(),
                 "update": step, "best_r": best, "identity": identity, "rng": pack_rng(),
                 "last_validated_update": last_validated_update, "pending_validation": pending,
+                "stale_validations": stale_validations, "early_stop_best": early_stop_best, "best_update": best_update,
                 "initialization": initialization}
 
     def validate(training_parts=None):
-        nonlocal best, last_validated_update
+        nonlocal best, last_validated_update, stale_validations, early_stop_best, best_update
         evaluated = copy.deepcopy(model).eval()
         evaluated.load_state_dict(ema, strict=True)
         metrics, rows = evaluate(evaluated, manifest, sc, cfg["stage"])
         last_validated_update = step
+        if metrics["r"] > early_stop_best + tr.get("early_stop_min_delta", 0.):
+            early_stop_best, stale_validations = metrics["r"], 0
+        else:
+            stale_validations += 1
         won = metrics["r"] > best
         if won:
             best = metrics["r"]
+            best_update = step
             best_payload = payload()
             save_checkpoint(output / "best_r.pt", best_payload)
             save_checkpoint(output / "best.pt", best_payload)
@@ -191,15 +210,20 @@ def train(args):
 
     if not args.resume:
         save_checkpoint(output / "initial.pt", payload())
-        if tr.get("validation_mode", "periodic") == "periodic":
+        if tr.get("validation_mode", "periodic") == "periodic" and tr.get("initial_validation", True):
             validate()
         else:
-            print("[validation] initial and intermediate full validation disabled; final EMA only", flush=True)
+            print("[validation] initial validation disabled; " +
+                  ("final EMA only" if tr.get("validation_mode") == "final_only" else "periodic EMA validation retained"), flush=True)
     elif pending_validation:
         print(f"[resume] completing interrupted validation at update={step}", flush=True)
         validate()
     started = time.monotonic()
-    for step in range(step + 1, tr["updates"] + 1):
+    def should_stop():
+        return (bool(tr.get("early_stop_patience", 0)) and step >= tr.get("early_stop_min_update", 0)
+                and stale_validations >= tr["early_stop_patience"])
+    stopped_early = should_stop()
+    for step in (() if stopped_early else range(step + 1, tr["updates"] + 1)):
         model.train()
         batch = move(default_collate([dataset[i] for i in balanced_indices(dataset, tr["batch_size"])]), device)
         optimizer.zero_grad(set_to_none=True)
@@ -219,6 +243,10 @@ def train(args):
             logged = {k: float(v.detach()) for k, v in {"total": loss, **parts}.items()}
             logged["window_r"] = 1 - logged["pcc"] if logged["pcc_valid_leads"] else None
             validate(logged)
+            if should_stop():
+                stopped_early = True
+                print(f"[early-stop] update={step} best_update={best_update} best_r={best:.6f}", flush=True)
+                break
         elif step == 1 or step % 50 == 0:
             details = ""
             if lc.low_frequency_weight:
@@ -226,9 +254,13 @@ def train(args):
                            f" mae={float(parts['mae'].detach()):.6g}"
                            f" pcc={float(parts['pcc'].detach()):.6g}"
                            f" lf={float(parts['low_frequency_mae'].detach()):.6g}")
+            if lc.limb_wave_weight or lc.projection_weight:
+                details += "".join(f" {k}={float(v.detach()):.6g}" for k, v in parts.items()
+                                   if k in ("limb_wave", "projection", "limb_wave_valid", "projection_valid"))
             print(f"[train] update={step}/{tr['updates']} loss={float(loss.detach()):.6g}{details}", flush=True)
     (output / "completed.json").write_text(json.dumps({"completed": True, "update": step,
         "best_r": best, "selection": "final_ema" if tr.get("validation_mode") == "final_only" else "best_validation_r",
+        "best_update": best_update, "stopped_early": stopped_early, "maximum_updates": tr["updates"],
         "elapsed_seconds_this_invocation": time.monotonic() - started}), encoding="utf-8")
 
 
