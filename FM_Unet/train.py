@@ -116,7 +116,7 @@ def train(args):
     print(f'[train] stage={config["stage"]} parameters={sum(p.numel() for p in model.parameters())} '
           f'device={device} CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES")} '
           f'batch={training["batch_size"]} microbatch=none accumulation=1 '
-          f'updates={training["updates"]} validation={config['validation']['mode']} validation_updates={validation_steps(config)}', flush=True)
+          f'updates={training["updates"]} validation={config["validation"]["mode"]} validation_updates={validation_steps(config)}', flush=True)
     print('[preflight] checking immutable cached data and patient splits; no ODE generation', flush=True)
     dataset = SlowDataset(manifest, config, scales, args.cache_dir)
     # Hash held-out records too, so exact resume cannot silently change the final evaluation set.
