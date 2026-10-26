@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import numpy as np
 import torch
@@ -20,6 +21,17 @@ def file_sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def file_hashes(paths):
+    """Hash each physical file once, bounded I/O concurrency; order/RNG independent."""
+    unique = sorted(set(map(str, paths)))
+    result = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for start in range(0, len(unique), 256):
+            chunk = unique[start:start + 256]
+            result.update(zip(chunk, pool.map(file_sha256, chunk)))
+    return result
 
 
 def save_checkpoint(path, value):

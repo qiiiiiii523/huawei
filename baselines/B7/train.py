@@ -16,7 +16,7 @@ import torch
 from torch.utils.data import default_collate
 
 from . import ARCHITECTURE_ID, CHECKPOINT_VERSION, GENERATED_LEADS
-from .checkpoint import file_sha256, load_checkpoint, pack_rng, restore_rng, save_checkpoint
+from .checkpoint import file_sha256, file_hashes, load_checkpoint, pack_rng, restore_rng, save_checkpoint
 from .config import LossConfig, ModelConfig, SamplingConfig, read_json
 from .data import WindowDataset, read_manifest
 from .evaluate import SCORE_PROTOCOL, evaluate
@@ -138,7 +138,8 @@ def train(args):
     last_validated_update, pending_validation = -1, False
     stale_validations, early_stop_best, best_update = 0, -float("inf"), None
     identity = {"manifest_sha256": file_sha256(args.manifest), "code_sha256": code_sha(), "config": cfg}
-    data_sha = {r["record_id"]: file_sha256(r["resolved_path"]) for r in manifest["records"]}
+    hashes = file_hashes(r['resolved_path'] for r in manifest['records'])
+    data_sha = {r['record_id']: hashes[r['resolved_path']] for r in manifest['records']}
     identity["record_sha256"] = data_sha
     if args.init_checkpoint:
         source = load_checkpoint(args.init_checkpoint)

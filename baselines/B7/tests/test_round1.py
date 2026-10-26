@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from baselines.B7 import GENERATED_INDICES
 from baselines.B7.config import LossConfig, SamplingConfig
-from baselines.B7.data import read_manifest, load_record
+from baselines.B7.data import read_manifest, load_record, checked_records
 from baselines.B7.evaluate import aggregate, limb_diagnostics
 from baselines.B7 import round1
 from baselines.B7.huawei10 import build
@@ -19,7 +19,7 @@ from baselines.B7.limb_losses import physical_losses
 from baselines.B7.round1 import configurations, check_configs, verify_stage, lock_run
 from baselines.B7.train import validation_due
 from baselines.B7 import train as trainer
-from baselines.B7.checkpoint import load_checkpoint
+from baselines.B7.checkpoint import load_checkpoint, file_hashes, file_sha256
 from baselines.B7.tests.test_b7 import small_config, make_manifest
 from baselines.B7.tests.test_pcc11 import example
 from baselines.B7.losses import flow_loss
@@ -167,6 +167,18 @@ class RoundOneTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     with lock_run(path):pass
             with lock_run(path):pass
+
+    def test_parallel_reads_preserve_order_rng_and_hashes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);path=make_manifest(root);m=read_manifest(path)
+            state=np.random.get_state();rows=list(checked_records(m['records']))
+            again=np.random.get_state()
+            self.assertEqual([r['record_id'] for r,_ in rows],['train','validation'])
+            self.assertTrue(np.array_equal(state[1],again[1]));self.assertEqual(state[2:],again[2:])
+            for row,values in rows:
+                for actual,expected in zip(values[:3],load_record(row)[:3]):self.assertTrue(np.array_equal(actual,expected))
+            paths=[r['resolved_path'] for r in m['records']]
+            self.assertEqual(file_hashes(paths+paths),{p:file_sha256(p) for p in paths})
 
     def test_no_initial_P_validation_and_resume_after_early_stop(self):
         with tempfile.TemporaryDirectory() as td:

@@ -9,9 +9,9 @@ import subprocess
 import sys
 import numpy as np
 
-from .checkpoint import file_sha256, load_checkpoint
+from .checkpoint import file_sha256, file_hashes, load_checkpoint
 from .config import read_json
-from .data import GROUPS, load_record, read_manifest
+from .data import GROUPS, checked_records, read_manifest
 from .huawei10 import VIEW_PROTOCOL
 from .presets import m7_config
 from .public_qc import PUBLIC_QC_VERSION, PUBLIC_SOURCES
@@ -67,8 +67,7 @@ def preflight(public_path, huawei_path):
                 raise ValueError(f"{name} missing reliable {split} data")
             if name == "A" and {r["group"] for r in reliable} != set(GROUPS):
                 raise ValueError("Huawei10 requires all three paired groups in train and validation")
-        for index, row in enumerate(manifest["records"], 1):
-            anchor, target, mask, _ = load_record(row)
+        for index, (row, (anchor, target, mask, _)) in enumerate(checked_records(manifest['records']), 1):
             if anchor.shape != (1, 5000) or target.shape != (12, 5000):
                 raise ValueError("Both stages require actual full10s windows")
             if name == "A" and (row["source"] in PUBLIC_SOURCES or row["group"] not in GROUPS):
@@ -139,7 +138,7 @@ def run(args):
         specification = {"variant": args.variant, "configs": configs, "code_sha256": code_sha(),
                          "public_manifest": str(public_path), "huawei_manifest": str(huawei_path),
                          "manifest_sha256": [file_sha256(public_path), file_sha256(huawei_path)],
-                         "raw_sha256": {p: file_sha256(p) for p in raw}}
+                         "raw_sha256": file_hashes(raw)}
         spec_path = output / 'specification.json'
         if spec_path.exists() and read_json(spec_path) != specification:
             raise ValueError("Data/code/config changed; use a new round1 output")

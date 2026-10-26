@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import torch
 
@@ -100,6 +101,14 @@ def fit_scales(records, minimum=100.0):
     return [max(float(np.median(r)), minimum) for r in ranges]
 
 
+def checked_records(rows):
+    """Ordered real-array reads, at most64 queued records and8 concurrent readers."""
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for start in range(0, len(rows), 64):
+            chunk = rows[start:start + 64]
+            yield from zip(chunk, pool.map(load_record, chunk))
+
+
 class WindowDataset(torch.utils.data.Dataset):
     def __init__(self, manifest, window_seconds=40, boundary_probability=0.15, include_d12=False):
         if window_seconds not in (10, 40) or not 0 <= boundary_probability <= 1:
@@ -111,11 +120,10 @@ class WindowDataset(torch.utils.data.Dataset):
         self.include_d12 = include_d12
         self.scales = np.asarray(manifest["scales_uV"], dtype="float32")
         self.rows = []
-        for row in manifest["records"]:
-            if row["split"] == "train" and row["input_reliable"]:
-                anchor, _, mask, _ = load_record(row)
-                if anchor.shape[-1] >= self.width and mask[list(GENERATED_INDICES)].any():
-                    self.rows.append(row)
+        training_rows = [r for r in manifest['records'] if r['split'] == 'train' and r['input_reliable']]
+        for row, (anchor, _, mask, _) in checked_records(training_rows):
+            if anchor.shape[-1] >= self.width and mask[list(GENERATED_INDICES)].any():
+                self.rows.append(row)
         if not self.rows:
             raise ValueError("No reliable real training records long enough for selected window")
 
