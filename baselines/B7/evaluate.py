@@ -91,8 +91,9 @@ def evaluate(model, manifest, config, stage):
     def flush():
         if not pending:
             return
+        from .position import view_metadata
         predictions = predict_records(model, [x[1] for x in pending], manifest["scales_uV"],
-            [x[0]["record_id"] for x in pending], [x[4] for x in pending], config).cpu().numpy()
+            [x[0]["record_id"] for x in pending], [view_metadata(x[4], x[0]) for x in pending], config).cpu().numpy()
         for (item, anchor, target, mask, _), prediction in zip(pending, predictions):
             correlations, by_lead = [], {}
             for j in range(1, 12):

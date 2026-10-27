@@ -157,4 +157,8 @@ class WindowDataset(torch.utils.data.Dataset):
         else:
             result["metadata"] = {"numeric": torch.zeros(3), "sex": torch.tensor(2),
                                   "field_mask": torch.zeros(4, dtype=torch.bool), "age_topcoded": torch.zeros(1)}
+        from .position import absolute_position
+        offset = self.rows[index].get("window_start", 0)
+        result["metadata"]["record_offset"] = torch.tensor(offset, dtype=torch.long)
+        result["metadata"]["record_position"] = absolute_position(torch.from_numpy(positions), offset)[None]
         return result

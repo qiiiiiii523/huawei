@@ -44,7 +44,7 @@ class MetadataEncoder(nn.Module):
 
     def forward(self, reference, metadata=None):
         b = len(reference)
-        if not metadata:
+        if not metadata or set(metadata) == {"record_position"}:
             numeric = reference.new_zeros(b, 3)
             valid = torch.zeros(b, 4, dtype=torch.bool, device=reference.device)
             sex = torch.full((b,), 2, dtype=torch.long, device=reference.device)
@@ -124,6 +124,12 @@ class B7UNet(nn.Module):
             nn.ModuleList([block(widths[i]), block(widths[i])])
             for i in reversed(range(2, len(widths) - 1))])
         self.output = nn.Conv1d(c0, 7, 1)
+        if self.config.record_position:
+            # Preserve trunk initialization and subsequent training/noise RNG.
+            with torch.random.fork_rng(devices=[]):
+                self.position_projection = nn.Conv1d(3, c0, 1)
+                nn.init.zeros_(self.position_projection.weight)
+                nn.init.zeros_(self.position_projection.bias)
         # Preserve the original trunk initialization and RNG consumed by it in all
         # four experiments. Extra heads must not change subsequent noise/t draws.
         with torch.random.fork_rng(devices=[]):
@@ -156,6 +162,16 @@ class B7UNet(nn.Module):
         te = self.time_embedding(time)
         me = self.metadata_encoder(anchor, metadata)
         h = self.stem(torch.cat((anchor, state), dim=1))
+        if self.config.record_position:
+            if metadata is None or "record_position" not in metadata:
+                raise ValueError("Position-conditioned model requires absolute record_position")
+            position = metadata["record_position"].to(device=state.device, dtype=state.dtype)
+            if (position.shape != (len(state), 1, state.shape[-1])
+                    or not torch.isfinite(position).all()
+                    or torch.any((position < -1) | (position > 1))):
+                raise ValueError("record_position must be finite [B,1,T] in [-1,1]")
+            h = h + self.position_projection(torch.cat(
+                (position, position.square(), position.pow(3)), dim=1))
         s0 = self._blocks(self.encode0, h, te, me)
         s1 = self._blocks(self.encode1, self.down1(s0), te, me)
         h = self.down2(s1)

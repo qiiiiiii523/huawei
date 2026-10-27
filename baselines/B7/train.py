@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 import os
@@ -94,6 +94,30 @@ def validate_settings(cfg):
     return model, loss, sampling
 
 
+def initialize_stage(model, source, scales, stage):
+    """Strict P -> A-Pos upgrade; only new zero position projection may be absent."""
+    mc = model.config
+    previous = ModelConfig.from_dict(source["model_config"])
+    if list(source["scales_uV"]) != list(scales):
+        raise ValueError("B7 stage initialization must preserve frozen scales")
+    upgrade = mc.record_position and not previous.record_position
+    if upgrade:
+        if (stage != "huawei10" or source["stage"] != "public10"
+                or replace(mc, record_position=False) != previous):
+            raise ValueError("Position upgrade requires matching public10 P -> huawei10 C5 architecture")
+        missing, unexpected = model.load_state_dict(source["ema"], strict=False)
+        if set(missing) != {"position_projection.weight", "position_projection.bias"} or unexpected:
+            raise ValueError("Unexpected missing/extra P checkpoint parameters")
+        with torch.no_grad():
+            model.position_projection.weight.zero_()
+            model.position_projection.bias.zero_()
+    else:
+        if previous != mc:
+            raise ValueError("B7 stage initialization must preserve architecture")
+        model.load_state_dict(source["ema"], strict=True)
+    return upgrade
+
+
 def train(args):
     cfg = read_json(args.config)
     mc, lc, sc = validate_settings(cfg)
@@ -103,6 +127,11 @@ def train(args):
             and manifest.get("public_qc_version") != PUBLIC_QC_VERSION):
         raise ValueError("New public pretraining requires QC-v2 data; rebuild public10 in a new cache")
     tr = cfg["training"]
+    if mc.record_position:
+        from .position import validate_position_views
+        validate_position_views(manifest, cfg["stage"])
+        if not args.resume and not args.init_checkpoint:
+            raise ValueError("C5 initializes from the matching C0 public P checkpoint")
     if args.resume and args.init_checkpoint:
         raise ValueError("Choose resume or a new B7 stage initialization")
     output = Path(args.output).resolve()
@@ -127,7 +156,7 @@ def train(args):
           f"ode_batch={sc.sample_batch_size} validation_batch={sc.validation_batch_size} "
           f"validation_mode={tr.get('validation_mode', 'periodic')} "
           f"pcc_leads={lc.pcc_leads} "
-          f"head={mc.output_head} lf_weight={lc.low_frequency_weight} "
+          f"head={mc.output_head} record_position={mc.record_position} lf_weight={lc.low_frequency_weight} "
           f"scales={len(mc.channels)} downsamplings={len(mc.channels)-1} "
           f"lf_cutoff_hz={lc.low_frequency_cutoff_hz} "
           f"parameters={sum(p.numel() for p in model.parameters())}", flush=True)
@@ -143,13 +172,12 @@ def train(args):
     identity["record_sha256"] = data_sha
     if args.init_checkpoint:
         source = load_checkpoint(args.init_checkpoint)
-        if ModelConfig.from_dict(source["model_config"]) != mc or list(source["scales_uV"]) != list(manifest["scales_uV"]):
-            raise ValueError("B7 stage initialization must preserve architecture and frozen scales")
-        model.load_state_dict(source["ema"], strict=True)
+        position_upgrade = initialize_stage(model, source, manifest["scales_uV"], cfg["stage"])
         ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
         initialization = {"kind": "previous_B7_stage", "sha256": file_sha256(args.init_checkpoint),
                           "source_stage": source["stage"], "source_update": source["update"],
                           "source_loss": source.get("loss"), "optimizer_reset": True,
+                          "zero_initialized_position_upgrade": position_upgrade,
                           "lineage": source["initialization"], "B5_weights_used": False}
     if args.resume:
         old = load_checkpoint(output / "last.pt")
@@ -238,6 +266,8 @@ def train(args):
         due_validation = validation_due(tr, step)
         if "checkpoint_every" in tr and (step % tr["checkpoint_every"] == 0 or due_validation):
             save_checkpoint(output / "last.pt", payload(pending=due_validation))
+            if mc.record_position:
+                save_checkpoint(output / f"checkpoint_{step:07d}.pt", payload(pending=due_validation))
             print(f"[checkpoint] update={step} last_validated={last_validated_update} "
                   f"pending_validation={due_validation}", flush=True)
         if due_validation:

@@ -16,8 +16,11 @@ class ModelConfig:
     output_head: str = "linear"
     head_channels: int = 64
     coarse_interval_seconds: float = 0.5
+    record_position: bool = False
 
     def __post_init__(self):
+        if type(self.record_position) is not bool:
+            raise ValueError("record_position must be boolean")
         if not 3 <= len(self.channels) <= 8 or any(type(c) is not int or c < 4 for c in self.channels):
             raise ValueError("Three to eight scale widths, integer channels >=4 required")
         if self.time_dim < 4 or self.time_dim % 2 or self.metadata_dim < 4:

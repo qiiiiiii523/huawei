@@ -51,12 +51,18 @@ def predict_records(model, anchors_uV, scales_uV, record_keys, metadatas=None, c
     unknown = {"numeric": [0., 0., 0.], "sex": 2, "field_mask": [False]*4, "age_topcoded": [0.]}
     metadata = {k: torch.stack([torch.as_tensor((m or unknown)[k], device=device) for m in metadatas])
                 for k in unknown}
+    uses_position = getattr(getattr(model, "config", None), "record_position", False)
+    from .position import inference_offsets, absolute_position
+    offsets = inference_offsets(metadatas, length, device) if uses_position else None
     result = anchor.new_empty(len(anchor), 7, length)
     for s in range(0, length, core):
         positions = torch.arange(s - margin, s - margin + width, device=device).clamp(0, length - 1)
         # Fixed full-resolution I is the first channel at every ODE evaluation.
         q = anchor[:, :, positions] / scales[0]
-        predicted = sample(model, q, [f"{key}:core={s}" for key in record_keys], metadata, config)
+        conditions = dict(metadata)
+        if uses_position:
+            conditions["record_position"] = absolute_position(positions[None], offsets[:, None])[:, None]
+        predicted = sample(model, q, [f"{key}:core={s}" for key in record_keys], conditions, config)
         result[:, :, s:s + core] = predicted[:, :, margin:margin + core]
     result = result * scales[list(GENERATED_INDICES)][None, :, None]
     output = compose_d12(anchor, result)
