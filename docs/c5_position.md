@@ -1,3 +1,5 @@
+> 2026-10-27修正：C5与C0-C4的Huawei10验证、best、早停统一完整120秒，不再使用窗口平均r。
+
 # C5：C0的10→10华为适配＋原记录位置
 
 ## 要回答的问题
@@ -32,9 +34,9 @@ python -u -m baselines.B7.c5 \
 
 完成A后自动评估：
 
-1. 原C系列的非重叠10秒窗口验证r，用于同口径选best。
-2. 将完整120秒按10秒输入生成后拼接，在60000点上算一次r；对窗口指标选出的best及最终EMA分别评估，规则/精度与C0–C4已有full120核查一致。不用完整120秒分数重新挑权重。
+1. 训练中每次验证都从原记录生成12个10秒预测，先拼完整120秒，再计算缺失11导联r；据此选best和早停。
+2. 训练后复核完整120秒指标选出的best及最终EMA；必须与训练验证同口径。历史旧窗口选点的权重通过独立复评修正，不覆盖原文件。
 
 完整评估使用源记录的原QC；短窗评估使用既有view QC，两者分母不同。两种推理的keyed noise记录键也按既有各自协议保留，不把分数差全部解释成DC。正式结论需分别对照C0的对应指标，尤其关注V1/V3/V6和完整120秒收益。raw与EMA不得混比。这里不保证能达到外部全记录慢分量校正器约0.713的结果。
 
-产物：specification.json、A/config.json、A/history.jsonl、A/validation_*.json、A/checkpoint_*.pt、A/best_r.pt、A/last.pt、full120_best_segment_selected.json、full120_final.json、completed.json。
+产物：specification.json、A/config.json、A/history.jsonl、A/validation_*.json、A/checkpoint_*.pt、A/best_r.pt、A/last.pt、full120_best_full120_selected.json、full120_final.json、completed.json。

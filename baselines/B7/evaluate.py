@@ -81,7 +81,7 @@ def aggregate(rows, stage):
             "targets": len(targets), "pairs": len(rows), "score_protocol": SCORE_PROTOCOL}
 
 
-def evaluate(model, manifest, config, stage):
+def _evaluate_records(model, manifest, config, stage):
     rows = []
     pending = []
     scanned = 0
@@ -145,6 +145,20 @@ def evaluate(model, manifest, config, stage):
             flush()
     flush()
     return aggregate(rows, stage), rows
+
+
+
+def evaluate(model, manifest, config, stage):
+    """Public scores retain their protocol; every Huawei selection scores full120."""
+    if stage not in ("huawei10", "huawei40"):
+        return _evaluate_records(model, manifest, config, stage)
+    from .huawei120 import full120_validation_manifest, full120_precision, HUAWEI_SELECTION_PROTOCOL
+    full = full120_validation_manifest(manifest) if stage == "huawei10" else manifest
+    with full120_precision():
+        metrics, rows = _evaluate_records(model, full, config, "huawei40")
+    metrics.update(scored_seconds=120, selection_protocol=HUAWEI_SELECTION_PROTOCOL,
+                   prediction_window_seconds=config.window_seconds)
+    return metrics, rows
 
 
 def main():

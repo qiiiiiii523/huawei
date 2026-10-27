@@ -82,6 +82,8 @@ def run(args):
                             output=str(a),device=args.device,resume=(a/'last.pt').exists(),
                             init_checkpoint=None if (a/'last.pt').exists() else str(checkpoint)))
         done=read_json(a/'completed.json')
+        if done.get('selection') != 'best_full120_validation_r':
+            raise ValueError('Legacy short-window-selected run: rescore saved weights separately, use a new training output')
         if not done['completed']:
             raise ValueError('C5 adaptation did not complete')
         # Same precision policy and complete120 scorer as C0-C4 full-record audit.
@@ -90,7 +92,7 @@ def run(args):
         torch.use_deterministic_algorithms(True)
         reports={}
         previous=None
-        for label,filename in [('best_segment_selected','best_r.pt'),('final','last.pt')]:
+        for label,filename in [('best_full120_selected','best_r.pt'),('final','last.pt')]:
             target=output/f'full120_{label}.json'
             ck=load_checkpoint(a/filename)
             if ck['identity']['code_sha256']!=code_sha() or ck['identity']['config']!=cfg:
@@ -109,7 +111,7 @@ def run(args):
                 previous=(ck,metrics,rows)
             reports[label]=read_json(target)['metrics']
         write(output/'completed.json',dict(completed=True,variant='C5',A=done,full120=reports,
-              control='C0',note='Segment and full120 scores are distinct; no full120-based checkpoint selection'))
+              control='C0',note='Best checkpoint and early stopping selected by complete stitched120s validation r'))
 
 
 def main():

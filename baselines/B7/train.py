@@ -160,6 +160,8 @@ def train(args):
           f"scales={len(mc.channels)} downsamplings={len(mc.channels)-1} "
           f"lf_cutoff_hz={lc.low_frequency_cutoff_hz} "
           f"parameters={sum(p.numel() for p in model.parameters())}", flush=True)
+    if cfg['stage'] in ('huawei10', 'huawei40'):
+        print('[validation-policy] stitch complete120s first; missing11 Pearson; best and early-stop use full120 only', flush=True)
     initialization = {"kind": "random_B7", "seed": tr["seed"], "B5_weights_used": False}
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["learning_rate"], weight_decay=tr["weight_decay"])
     ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
@@ -205,6 +207,7 @@ def train(args):
                 "generated_leads": GENERATED_LEADS, "model_config": mc.to_dict(), "loss": asdict(lc),
                 "sampling": asdict(sc), "scales_uV": manifest["scales_uV"], "stage": cfg["stage"],
                 "score_protocol": SCORE_PROTOCOL,
+                "validation_unit": "full120" if cfg["stage"] in ("huawei10", "huawei40") else "public_record",
                 "model": model.state_dict(), "ema": ema, "optimizer": optimizer.state_dict(),
                 "update": step, "best_r": best, "identity": identity, "rng": pack_rng(),
                 "last_validated_update": last_validated_update, "pending_validation": pending,
@@ -266,7 +269,7 @@ def train(args):
         due_validation = validation_due(tr, step)
         if "checkpoint_every" in tr and (step % tr["checkpoint_every"] == 0 or due_validation):
             save_checkpoint(output / "last.pt", payload(pending=due_validation))
-            if mc.record_position:
+            if cfg["stage"] in ("huawei10", "huawei40"):
                 save_checkpoint(output / f"checkpoint_{step:07d}.pt", payload(pending=due_validation))
             print(f"[checkpoint] update={step} last_validated={last_validated_update} "
                   f"pending_validation={due_validation}", flush=True)
@@ -289,8 +292,11 @@ def train(args):
                 details += "".join(f" {k}={float(v.detach()):.6g}" for k, v in parts.items()
                                    if k in ("limb_wave", "projection", "limb_wave_valid", "projection_valid"))
             print(f"[train] update={step}/{tr['updates']} loss={float(loss.detach()):.6g}{details}", flush=True)
+    selection = ("best_full120_validation_r" if cfg["stage"] in ("huawei10", "huawei40")
+                 else "final_ema" if tr.get("validation_mode") == "final_only" else "best_validation_r")
     (output / "completed.json").write_text(json.dumps({"completed": True, "update": step,
-        "best_r": best, "selection": "final_ema" if tr.get("validation_mode") == "final_only" else "best_validation_r",
+        "best_r": best, "selection": selection,
+        "validation_unit": "full120" if cfg["stage"] in ("huawei10", "huawei40") else "public_record",
         "best_update": best_update, "stopped_early": stopped_early, "maximum_updates": tr["updates"],
         "elapsed_seconds_this_invocation": time.monotonic() - started}), encoding="utf-8")
 
