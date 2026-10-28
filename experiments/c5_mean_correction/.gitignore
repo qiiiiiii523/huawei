@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+plan.json
+tasks.json
+*.pt
+*.npy
+*.npz
+*.csv
+outputs/
