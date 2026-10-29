@@ -14,3 +14,14 @@ python -m baselines.B8.train --manifest HUAWEI10_MANIFEST --config configs/B8/A.
 ```
 
 所有 checkpoint 均以 `B8-M1-time-only-regression-v1` 标识，加载器会拒绝 B7/FM checkpoint，防止误将生成模型权重混入回归实验。
+
+## B8 后处理：冻结预测缓存的 120 秒 TCN 校正
+
+`baselines/B8/tcn120.py` 是独立于 B8 主干的第二阶段。它先把冻结 B8 checkpoint 对每个完整 120 秒记录生成的 7 通道预测写入缓存；缓存只保存预测、身份、QC 和 hash，**不保存 target**。TCN 推理的唯一波形输入就是该预测缓存，不读取 anchor、context 或真实标签。
+
+TCN 将缓存的 `[7,60000]` 预测平均池化为 5 Hz 的 600 点序列，经 8 个非因果扩张残差卷积块（dilation `1…128`）生成 7 条低频修正曲线，并线性插回 500 Hz。每条曲线都会执行 `delta -= mean(delta, time)`，因此不能注入每条记录/导联的直流偏移。末层零初始化，第 0 轮严格复现 B8 缓存。训练时 target 只作为离线监督，使用相同 QC mask；模型选择仍按完整 120 秒 missing11 评分。
+
+```powershell
+python -m baselines.B8.tcn120 cache --checkpoint runs/B8/A/best_r.pt --manifest HUAWEI120_MANIFEST --output runs/B8/A_prediction_cache --device cuda
+python -m baselines.B8.tcn120 train --cache runs/B8/A_prediction_cache --manifest HUAWEI120_MANIFEST --output runs/B8/A_tcn120 --device cuda
+```
