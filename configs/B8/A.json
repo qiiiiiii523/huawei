@@ -1,0 +1,6 @@
+{
+  "stage": "huawei10",
+  "model": {"d_model": 128, "blocks": 4, "heads": 4, "ffn": 256, "dropout": 0.1},
+  "loss": {"mae_weight": 1.0, "pcc_weight": 0.3, "ii_weight": 5.0, "pcc_leads": 11, "target_variance_floor": 1e-08},
+  "training": {"seed": 42, "updates": 4000, "validate_every": 1000, "batch_size": 32, "learning_rate": 0.00001, "weight_decay": 0.01, "ema_decay": 0.999, "gradient_clip": 1.0, "boundary_probability": 0.0}
+}

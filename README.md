@@ -1,5 +1,9 @@
 # B7：干净I直连的七通道条件Flow Matching
 
+## B8：M1 time-only 直接回归
+
+`baselines/B8` 是基于当前 B7-C5 数据与完整 120 秒评分契约的独立回归候选。它只输入测试时可见的同步机器 I，并直接预测与 B7 一致的 7 个通道 `II,V1–V6`；推理时再用 B7 的导联公式组合为 d12。它不会加载 B7/FM/U-Net checkpoint。详见 [`docs/b8_architecture.md`](docs/b8_architecture.md)。
+
 本分支的新实验入口：[M2/M3两组结构实验与服务器命令](docs/b7_m2_m3.md)。复用B7数据缓存，两组独立预训练，仅阶段末全量验证，默认不限制训练并发，按阶段依赖启动。
 
 新增可选[M2-L：7通道FM/MAE＋11导联PCC](docs/b7_m2_l.md)，从已完成M2公开EMA开始新实验，复用原缓存；原M2/M3配置保留。
