@@ -213,6 +213,7 @@ def run(args: argparse.Namespace) -> None:
                       "scale_uV": data.scale.tolist(),
                       "parameters": sum(p.numel() for p in model.parameters()),
                       "device": str(device), "validation_steps": VALIDATE_AT}), flush=True)
+    max_steps = args.max_steps
     if args.smoke_test:
         max_steps = 1
     else:
