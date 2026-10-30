@@ -1,0 +1,13 @@
+{
+  "protocol": "B5-final-tcn120-official-submission-v1",
+  "device": "cpu",
+  "batch_size": 8,
+  "base_checkpoint": "models/base.pt",
+  "body_checkpoint": "models/body.pt",
+  "tcn_checkpoint": "models/tcn7_best.pt",
+  "tcn_sha256": "0cb480cfb7fbe8e79d650924b9ac9fa8851b94fbe69d5053c3b2b45eecb61c42",
+  "d12_fs_fallback": 1000,
+  "d6_fs_fallback": 1000,
+  "scale_fs_fallback": 500,
+  "max_history_seconds": 3600
+}

@@ -1,0 +1,17 @@
+{
+  "protocol": "B5-final-g120-c3-submission-v1",
+  "device": "auto",
+  "batch_size": 8,
+  "base_checkpoint": "models/base.pt",
+  "original_body_checkpoint": "models/original_body.pt",
+  "g120_checkpoint": "models/g120.pt",
+  "c3_checkpoint": "models/body_c3.pt",
+  "slow120_study": "config/slow120_study.json",
+  "g120_sha256": "eb136c9c95be27abdf31bfec3e16f6e82da408c21d4d81cc47b38072eeca47b9",
+  "c3_sha256": "daaad0784aad8e005e02514f5b584d1cb07e1455fd40b1c8b1410638b6d1d596",
+  "slow120_study_sha256": "0761c19226b6bd27e5899db82c78b4535abccc954f1c97febe37ef4898e537d7",
+  "d12_fs_fallback": 1000,
+  "d6_fs_fallback": 1000,
+  "scale_fs_fallback": 500,
+  "max_history_seconds": 3600
+}

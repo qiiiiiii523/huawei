@@ -158,15 +158,68 @@ def stage_g120_c3(destination,asset_root,*,build_exe=False,archive=False):
     return manifest
 
 
+def stage_tcn(destination, asset_root, *, build_exe=False, archive=False):
+    """Stage the pinned B5-final base/body weights plus TCN correction."""
+    root=Path(__file__).resolve().parents[2];destination=Path(destination).resolve();asset_root=Path(asset_root).resolve()
+    if destination.exists() and any(destination.iterdir()): raise FileExistsError('Use a new empty release directory')
+    if archive and Path(str(destination)+'_package.zip').exists(): raise FileExistsError('Release ZIP already exists')
+    sources={'base.pt':asset_root/'base.pt','body.pt':asset_root/'body.pt','tcn7_best.pt':asset_root/'tcn7_best_step1750.pt'}
+    missing=[str(path) for path in sources.values() if not path.is_file()]
+    if missing: raise FileNotFoundError('Missing TCN deployment asset: '+', '.join(missing))
+    from .tcn_submission import resolve_assets
+    setting=read(root/'configs/b5_submission_tcn.json')
+    source_settings={**setting, 'base_checkpoint':str(sources['base.pt']), 'body_checkpoint':str(sources['body.pt']),
+                     'tcn_checkpoint':str(sources['tcn7_best.pt'])}
+    resolve_assets(root,root/'configs/b5_final.json',source_settings)
+    destination.mkdir(parents=True);models=destination/'models';models.mkdir()
+    for name,source in sources.items(): shutil.copyfile(source,models/name)
+    shutil.copyfile(root/'configs/b5_submission_tcn.json',destination/'submission.json')
+    staged=read(destination/'submission.json')
+    assets=resolve_assets(destination,root/'configs/b5_final.json',staged)
+    if build_exe:
+        if os.name!='nt': raise RuntimeError('Windows EXE must be built on Windows, not Linux')
+        for module in ('PyInstaller','torch','scipy','yaml','numpy'):
+            if importlib.util.find_spec(module) is None: raise RuntimeError('Install build dependency in the active Windows environment: '+module)
+        _build_exe(root,destination,
+                   ('baselines.B5','baselines.B5_best','baselines.B5_best_context','baselines.B5_final','ecg12gen','competition_interface'),
+                   ((root/'configs/b5_final.json','configs'),(root/'configs/b5_best_context.json','configs'),
+                    (root/'configs/b5_submission_tcn.json','configs/b5_submission.json')))
+    else:
+        for folder in ('baselines','ecg12gen','competition_interface'):
+            shutil.copytree(root/folder,destination/folder,ignore=shutil.ignore_patterns('__pycache__','tests','test_data','*.pyc'))
+        (destination/'configs').mkdir()
+        for name in ('b5_final.json','b5_best_context.json','b5_submission_tcn.json'):
+            shutil.copyfile(root/'configs'/name,destination/'configs'/name)
+        shutil.copyfile(root/'competition_main.py',destination/'competition_main.py')
+    manifest={'windows_exe_built':build_exe,'training_started':False,'model_variant':'B5-final+TCN120',
+        'assets':assets.report(),'test_data_included':False,
+        'runtime_entry':'B5Submit.exe' if build_exe else 'python competition_main.py',
+        'checks':{'weights_SHA256':True,'model_forward_checked':False,'real_inference_checked':False,'clean_PC_checked':False},
+        'files':{p.relative_to(destination).as_posix():sha(p) for p in destination.rglob('*') if p.is_file()},
+        'run_instructions':'Place organizer test_data beside B5Submit.exe. Run B5Submit.exe without arguments.\n'
+        'This B5-final+TCN120 package needs models/base.pt, models/body.pt and models/tcn7_best.pt.\n'
+        'Keep _internal, models and submission.json together. Results are written to results/<userid>.csv.\n'
+        'Clear/archive old results before another run. Do not include test_data, results, training caches or gold files in the submission ZIP.\n'}
+    archive_path=_finish(destination,manifest,archive=archive)
+    print({'package':str(destination),'zip':archive_path,'windows_exe_built':build_exe,
+           'model_variant':'B5-final+TCN120','note':'No training or target data were used while staging/building.'},flush=True)
+    return manifest
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--base-checkpoint');p.add_argument('--body-checkpoint')
     p.add_argument('--asset-root',help='Asset root containing models/base.pt, original_body.pt, g120_best.pt, body_c3_seed42_best.pt and config/slow120_study.json')
+    p.add_argument('--tcn-asset-root',help='Asset root containing base.pt, body.pt and tcn7_best_step1750.pt')
     p.add_argument('--destination',required=True)
     p.add_argument('--build-exe',action='store_true',help='Windows only; omit for portable Python staging/test package')
     p.add_argument('--no-zip',action='store_true',help='Leave the requested release folder uncompressed')
     args=p.parse_args()
-    if args.asset_root:
+    if args.asset_root and args.tcn_asset_root: p.error('Use only one asset-root option')
+    if args.tcn_asset_root:
+        if args.base_checkpoint or args.body_checkpoint: p.error('Use either --tcn-asset-root or old checkpoint arguments')
+        stage_tcn(args.destination,args.tcn_asset_root,build_exe=args.build_exe,archive=not args.no_zip)
+    elif args.asset_root:
         if args.base_checkpoint or args.body_checkpoint: p.error('Use either --asset-root for G120+C3 or old --base-checkpoint/--body-checkpoint')
         stage_g120_c3(args.destination,args.asset_root,build_exe=args.build_exe,archive=not args.no_zip)
     else:
