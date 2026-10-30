@@ -15,6 +15,10 @@ from .profile import resolve_assets,DEFAULT_PROFILE
 from .official_data import OfficialDataset
 
 
+STANDARD_PROTOCOL = 'B5-final-official-submission-v1'
+G120_C3_PROTOCOL = 'B5-final-g120-c3-submission-v1'
+
+
 def executable_root():
     return Path(sys.executable).resolve().parent if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[2]
 
@@ -25,12 +29,17 @@ def resource_root():
 
 def load_settings(path):
     value=read(path)
-    if value.get('protocol')!='B5-final-official-submission-v1': raise ValueError('Wrong submission config protocol')
+    if value.get('protocol') not in (STANDARD_PROTOCOL,G120_C3_PROTOCOL): raise ValueError('Wrong submission config protocol')
     if value.get('device') not in ('auto','cpu','cuda') or not isinstance(value.get('batch_size'),int) or value['batch_size']<1:
         raise ValueError('Invalid device/batch size')
     for name in ('d12_fs_fallback','d6_fs_fallback','scale_fs_fallback'):
         if value.get(name) is not None and (isinstance(value[name],bool) or not 1<=float(value[name])<=10000): raise ValueError('Invalid explicit rate fallback')
     if not 120<=float(value.get('max_history_seconds',0))<=86400: raise ValueError('Invalid history memory limit')
+    if value['protocol']==G120_C3_PROTOCOL:
+        required=('base_checkpoint','original_body_checkpoint','g120_checkpoint','c3_checkpoint','slow120_study',
+                  'g120_sha256','c3_sha256','slow120_study_sha256')
+        if any(not isinstance(value.get(name),str) or not value[name] for name in required):
+            raise ValueError('Incomplete G120+C3 submission configuration')
     return value
 
 
@@ -114,17 +123,23 @@ def main(argv=None):
     if args.device: settings['device']=args.device
     if args.inspect_input:
         print(json.dumps(OfficialDataset(args.data_root,settings).inspect(),ensure_ascii=False,indent=2));return
-    checkpoint=args.checkpoint or settings['base_checkpoint']
-    body=args.body_checkpoint or settings['body_checkpoint']
-    assets=resolve_assets(args.repository_root,args.profile,checkpoint,body)
-    os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':4096:8')
-    if args.check_model:
+    if settings['protocol']==G120_C3_PROTOCOL and (args.checkpoint or args.body_checkpoint):
+        p.error('G120+C3 submission pins all four model files in submission.json; do not override old base/body arguments')
+    if settings['protocol']==G120_C3_PROTOCOL:
+        from .g120_submission import Predictor,resolve_assets
+        assets=resolve_assets(args.repository_root,settings)
+    else:
+        checkpoint=args.checkpoint or settings['base_checkpoint']
+        body=args.body_checkpoint or settings['body_checkpoint']
+        assets=resolve_assets(args.repository_root,args.profile,checkpoint,body)
         from .predict import Predictor
-        from baselines.B5.runtime import device_from_name
-        Predictor(device_from_name(settings['device']),assets=assets)
+    os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':4096:8')
+    from baselines.B5.runtime import device_from_name
+    engine=Predictor(device_from_name(settings['device']),assets=assets)
+    if args.check_model:
         print(json.dumps({'model_loaded':True,'model_forward_checked':False,'training_started':False,
                           **assets.report()},ensure_ascii=False,indent=2));return
-    run(args.data_root,args.output_dir,settings,assets=assets,device=settings['device'])
+    run(args.data_root,args.output_dir,settings,assets=assets,device=settings['device'],engine=engine)
 
 
 if __name__=='__main__': main()
