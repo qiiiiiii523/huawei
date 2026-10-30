@@ -12,7 +12,7 @@ from baselines.B5.metadata import encode_demographics
 from baselines.B5.runtime import device_from_name, seed_all
 from . import LEADS
 from .bundle import DEFAULT_PROFILE, load_inference_bundle, models, bundle_slow_beta
-from .combine import combine, upsample_native
+from .combine import combine, slow_curve, upsample_native
 from .common import read, write, sha
 from .slow import predict_native
 
@@ -25,7 +25,13 @@ class Predictor:
         self.scale = np.asarray(bundle["fm"]["scales"]["d12"], np.float32)
 
     @torch.no_grad()
-    def predict_encoded(self, anchor_uV, demographics, record_key, batch_size=8):
+    def predict_components_encoded(self, anchor_uV, demographics, record_key, batch_size=8):
+        """Return frozen FM and slow-branch components for full 120-second inference.
+
+        ``fast_uV + slow_uV`` exactly equals the deployed B5-best hybrid
+        output.  Lead I is entirely FM/fast because the SlowCNN never predicts
+        I; slow_uV therefore has a zero I row.
+        """
         raw = np.asarray(anchor_uV, dtype=np.float32)
         if raw.ndim == 1:
             raw = raw[None]
@@ -50,7 +56,17 @@ class Predictor:
             restored = generated.float().cpu().numpy() * self.scale[None, :, None]
             for i, start in enumerate(group):
                 original[:, start:start + 5000] = restored[i]
-        return combine(original, learned, slow_beta=self.slow_beta)
+        fast = original.astype(np.float64).copy()
+        fast[1:] -= slow_curve(original[1:])
+        slow = np.zeros((12, 60000), dtype=np.float64)
+        slow[1:] = self.slow_beta * learned
+        combined = (fast + slow).astype(np.float32)
+        if not np.allclose(combined, combine(original, learned, slow_beta=self.slow_beta), rtol=0, atol=2e-4):
+            raise AssertionError("B5 branch decomposition no longer reproduces deployed combine")
+        return {"fast_uV": fast.astype(np.float32), "slow_uV": slow.astype(np.float32), "combined_uV": combined}
+
+    def predict_encoded(self, anchor_uV, demographics, record_key, batch_size=8):
+        return self.predict_components_encoded(anchor_uV, demographics, record_key, batch_size)["combined_uV"]
 
     def predict(self, anchor_uV, metadata, record_key, batch_size=8):
         if not isinstance(metadata, dict):

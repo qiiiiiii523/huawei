@@ -70,7 +70,7 @@ def verify_reference_inputs(bundle, config):
 
 
 def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_reference=False,
-             legacy_target_qc_only=False, reference_report=None):
+             legacy_target_qc_only=False, reference_report=None, save_branches=False):
     protocol, reference, same_reference_scope = reference_settings(bundle, legacy_target_qc_only, reference_report)
     if verify_reference and (reference is None or not same_reference_scope):
         raise ValueError("Historical bundle reference excludes no bad-I records. Use --legacy-target-qc-only "
@@ -88,6 +88,10 @@ def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_
         folder.mkdir(parents=True, exist_ok=True)
         shape = (len(ds), 12, 5000)
         prediction = np.lib.format.open_memmap(folder / "prediction_uV.npy", mode="w+", dtype=np.float32, shape=shape)
+        fast = (np.lib.format.open_memmap(folder / "fast_uV.npy", mode="w+", dtype=np.float32, shape=shape)
+                if save_branches else None)
+        slow = (np.lib.format.open_memmap(folder / "slow_uV.npy", mode="w+", dtype=np.float32, shape=shape)
+                if save_branches else None)
         target = np.lib.format.open_memmap(folder / "target_uV.npy", mode="w+", dtype=np.float32, shape=shape)
         quality = np.lib.format.open_memmap(folder / "target_quality_mask.npy", mode="w+", dtype=bool, shape=(len(ds), 12))
         metadata = [None] * len(ds)
@@ -105,16 +109,31 @@ def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_
                 if previous_digest != digest.hexdigest():
                     raise ValueError("Repeated target has different visible I/demographics")
             else:
-                generated = predictor.predict_encoded(anchor, demographics, key, batch_size)
+                if save_branches:
+                    generated = predictor.predict_components_encoded(anchor, demographics, key, batch_size)
+                else:
+                    generated = predictor.predict_encoded(anchor, demographics, key, batch_size)
                 cache[key] = (digest.hexdigest(), generated)
+            generated = cache[key][1]
+            if save_branches:
+                if set(generated) != {"fast_uV", "slow_uV", "combined_uV"}:
+                    raise AssertionError("Incomplete B5 branch export")
+                combined = generated["combined_uV"]
+            else:
+                combined = generated
             for start, index in enumerate(indices):
                 item = ds[index]
-                prediction[index] = generated[:, start * 5000:(start + 1) * 5000]
+                prediction[index] = combined[:, start * 5000:(start + 1) * 5000]
+                if save_branches:
+                    fast[index] = generated["fast_uV"][:, start * 5000:(start + 1) * 5000]
+                    slow[index] = generated["slow_uV"][:, start * 5000:(start + 1) * 5000]
                 target[index] = item["target_uV"]
                 quality[index] = item["quality_mask"]
                 metadata[index] = item["evaluation_metadata"]
             print(f"{task}: {key} complete", flush=True)
         prediction.flush(); target.flush(); quality.flush()
+        if save_branches:
+            fast.flush(); slow.flush()
         options = {} if legacy_target_qc_only else {
             "input_quality_mask": quality[:, 0], "require_reliable_input": True,
             "input_quality_source": "same_record_target_I"}
@@ -129,7 +148,7 @@ def evaluate(bundle, datasets, device, output, bundle_sha, batch_size=8, verify_
         population[task] = {"metadata_sha256": sha(folder / "window_metadata.csv"),
                             "target_sha256": sha(folder / "target_uV.npy"),
                             "QC_sha256": sha(folder / "target_quality_mask.npy")}
-        del prediction, target, quality
+        del prediction, target, quality, fast, slow
     scorer = legacy_scoring if legacy_target_qc_only else None
     score = scorer.scores_from_summaries(summaries) if scorer else scores_from_summaries(summaries)
     (scorer.write_score_report if scorer else write_score_report)(output, score)
@@ -159,6 +178,7 @@ def main():
     p.add_argument("--verify-reference", action="store_true")
     p.add_argument("--legacy-target-qc-only", action="store_true", help="Explicit historical reproduction; does NOT filter bad input I")
     p.add_argument("--reference-report", help="New correlation_score.json to verify new input-QC scores without changing weights")
+    p.add_argument("--save-branches", action="store_true", help="Save exact frozen FM-fast and SlowCNN branch arrays for target-free slow-branch experiments")
     args = p.parse_args()
     bundle, checkpoint = load_inference_bundle(args.checkpoint, args.profile)
     reference_report = None if args.reference_report is None else json.loads(Path(args.reference_report).read_text(encoding="utf-8-sig"))
@@ -179,7 +199,7 @@ def main():
             raise ValueError("Validation population differs from source: " + task)
     evaluate(bundle, datasets, device_from_name(args.device), args.output_dir,
              sha(checkpoint), args.batch_size, args.verify_reference,
-             args.legacy_target_qc_only, reference_report)
+             args.legacy_target_qc_only, reference_report, args.save_branches)
 
 
 if __name__ == "__main__":

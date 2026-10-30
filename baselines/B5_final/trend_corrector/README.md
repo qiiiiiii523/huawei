@@ -20,9 +20,9 @@ The corrector follows the final lead contract exactly:
    evaluation and are never copied into the prediction cache.
 4. Apply the selected checkpoint with `apply.py`.
 
-The trainer selects `best.pt` by centered full-120-second correlation over the
-held-out records.  The cache is record-level split, so all twelve 10-second
-windows from one 120-second record stay in the same split.
+The trainer selects `best.pt` by centered full-120-second correlation over
+held-out subjects.  The cache splits by `subject_id`, so every input form and
+every 120-second record from one participant stays on the same side.
 
 Run the unit tests with:
 

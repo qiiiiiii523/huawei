@@ -32,6 +32,21 @@ def make_features(prediction: np.ndarray, scales: np.ndarray) -> torch.Tensor:
     return torch.cat((x, slow_1s, slow_5s, x - slow_1s, slow_1s - slow_5s), dim=1)[0].contiguous()
 
 
+def make_slow_branch_features(fast_uV: np.ndarray, slow_uV: np.ndarray, scales: np.ndarray) -> torch.Tensor:
+    """Features for slow-branch correction: fixed FM I plus SlowCNN V1--V6.
+
+    SlowCNN has no I output, so lead I is the immutable FM anchor.  No final
+    post-combination/context output is used as a TCN feature.
+    """
+    fast = np.asarray(fast_uV, dtype=np.float32)
+    slow = np.asarray(slow_uV, dtype=np.float32)
+    if fast.shape != (N_LEADS, SAMPLES) or slow.shape != fast.shape:
+        raise ValueError("Expected fast/slow B5 branches shaped [12,60000]")
+    branch_input = slow.copy()
+    branch_input[0] = fast[0]
+    return make_features(branch_input, scales)
+
+
 class _Block(nn.Module):
     def __init__(self, width: int, dilation: int):
         super().__init__()

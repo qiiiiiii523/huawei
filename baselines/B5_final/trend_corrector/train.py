@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from .model import OUTPUT_INDICES, TrendCorrector, compose_d12, make_features
+from .model import OUTPUT_INDICES, TrendCorrector, compose_d12, make_features, make_slow_branch_features
 
 
 def _read_json(path: Path):
@@ -52,10 +52,21 @@ def _load_items(cache: Path, baseline: Path, scales: np.ndarray):
         # the II/V1--V6 residuals from its valid direct-lead labels.
         if pred.shape != (12, 60000) or y.shape != pred.shape or not mask[1:].any():
             raise ValueError(f"Bad cached record {row['pair_id']}")
-        result[split].append({"prediction": torch.from_numpy(pred.copy()), "target": torch.from_numpy(y.copy()),
+        branch_mode = index.get("branch_mode", "final")
+        item = {"prediction": torch.from_numpy(pred.copy()), "target": torch.from_numpy(y.copy()),
                               "mask": torch.from_numpy(mask[1:].copy()),
-                              "output_mask": torch.from_numpy(mask[list(OUTPUT_INDICES)].copy()),
-                              "features": make_features(pred, scales)})
+                              "output_mask": torch.from_numpy(mask[list(OUTPUT_INDICES)].copy())}
+        if branch_mode == "slow":
+            fast = np.load(cache / row["fast_file"], allow_pickle=False)
+            slow = np.load(cache / row["slow_file"], allow_pickle=False)
+            if fast.shape != pred.shape or slow.shape != pred.shape:
+                raise ValueError(f"Bad branch record {row['pair_id']}")
+            item["features"] = make_slow_branch_features(fast, slow, scales)
+        elif branch_mode == "final":
+            item["features"] = make_features(pred, scales)
+        else:
+            raise ValueError(f"Unsupported branch_mode {branch_mode}")
+        result[split].append(item)
     if not result["train"] or not result["validation"]:
         raise ValueError("Cache must contain train and validation records")
     return result
@@ -114,7 +125,7 @@ def main() -> None:
     torch.manual_seed(args.seed); np.random.seed(args.seed); random.seed(args.seed)
     items = _load_items(cache, baseline, scales)
     output.mkdir(parents=True)
-    config = {"protocol": "B5-final-120s-zero-mean-tcn-v1", "cache": str(cache.resolve()),
+    config = {"protocol": "B5-final-120s-zero-mean-tcn-v2-slow-branch" if _read_json(cache / "index.json").get("branch_mode") == "slow" else "B5-final-120s-zero-mean-tcn-v1", "cache": str(cache.resolve()),
               "baseline_evaluation": str(baseline.resolve()), "updates": args.updates, "batch_size": args.batch_size,
               "validate_every": args.validate_every, "seed": args.seed, "base_bundle": str(Path(args.base_bundle).resolve()), "scales_uV": scales.tolist(),
               "loss": "1-r(centered) + .2*zero-mean 4Hz residual + .01*curvature"}

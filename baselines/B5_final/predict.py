@@ -34,6 +34,20 @@ class Predictor:
         return self.engine.predict_encoded(anchor_uV, demographics, record_key, task_id=task_id,
                                            input_type=input_type, history=history, batch_size=batch_size)
 
+    def predict_branch_components_encoded(self, anchor_uV, demographics, record_key, *, task_id, input_type,
+                                          history=None, batch_size=8):
+        """Keep FM fast and SlowCNN curves explicit through B5-final routing.
+
+        Context/body adapters remain frozen and are represented by their
+        target-free difference from the hybrid baseline.  A downstream trend
+        corrector may add only to the slow pathway while the FM branch stays
+        immutable.
+        """
+        pieces = self.engine.base.predict_components_encoded(anchor_uV, demographics, record_key, batch_size)
+        routed, status = self.engine.router.apply(pieces["combined_uV"], anchor_uV,
+                                                  task_id=task_id, input_type=input_type, history=history)
+        return {**pieces, "final_uV": routed.astype(np.float32, copy=False), "context": status}
+
     def predict_tasks(self, anchor_uV, metadata, record_key, *, machine_history=None, body_history=None, batch_size=8):
         """Same current I/metadata/key: generate once, route three official tasks.
 
